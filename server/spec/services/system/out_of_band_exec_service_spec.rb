@@ -14,7 +14,10 @@ RSpec.describe System::OutOfBandExecService do
 
   let(:account)  { create(:account) }
   let(:node)     { create(:system_node, account: account) }
-  let(:instance) { create(:system_node_instance, :running, node: node, account: account) }
+  # :with_ssh_host_key (IMP-190834701b0a): out-of-band exec refuses outright
+  # for a host whose SSH host key was never recorded, so every describe block
+  # below that is NOT about that refusal starts from a keyed instance.
+  let(:instance) { create(:system_node_instance, :running, :with_ssh_host_key, node: node, account: account) }
 
   # A decoy self-hosting node, unrelated to `node`/`instance` and with NO
   # instances of its own — self_hosting_node_id must be CONFIGURED for
@@ -133,6 +136,37 @@ RSpec.describe System::OutOfBandExecService do
     end
   end
 
+  # IMP-190834701b0a — the IP pin proves the DB record was not repointed; it
+  # says nothing about which HOST answers at that address. Without a recorded
+  # host key the connection cannot verify the host at all, so out-of-band exec
+  # refuses — at request time (nothing is ever parked for an operator to
+  # approve) and again at execution time, audited like every other refusal.
+  describe "the no-recorded-host-key refusal" do
+    before { instance.update_columns(ssh_host_keys: nil) }
+
+    it "refuses via #refusal with a message naming the missing host key" do
+      message = described_class.new.refusal(instance: instance, command: "uptime")
+
+      expect(message).to match(/no SSH host key/i)
+      expect(message).to include(instance.id.to_s)
+    end
+
+    it "refuses via #execute!, audits the refusal, and never reaches SshExecutionService" do
+      expect { execute! }.to raise_error(described_class::Refused, /no SSH host key/i)
+
+      expect(::System::SshExecutionService).not_to have_received(:execute_bounded)
+      row = ::AuditLog.find_by!(resource_type: "System::NodeInstance", resource_id: instance.id.to_s,
+                                 action: described_class::REFUSED_ACTION)
+      expect(row.metadata["reason"]).to match(/no SSH host key/i)
+    end
+
+    it "treats a stored document whose every key fails validation as no key at all" do
+      instance.update_columns(ssh_host_keys: { "keys" => [ { "type" => "ssh-ed25519", "key" => "not base64!" } ] })
+
+      expect(described_class.new.refusal(instance: instance, command: "uptime")).to match(/no SSH host key/i)
+    end
+  end
+
   describe "the secret-shaped command refusal (security review, command-text decision)" do
     let(:secret_command) { "export PASSWORD=hunter2-secret-pw && restart-service" }
 
@@ -186,7 +220,7 @@ RSpec.describe System::OutOfBandExecService do
 
     it "leaves other nodes reachable" do
       other_node = create(:system_node, account: account)
-      other_instance = create(:system_node_instance, :running, node: other_node, account: account,
+      other_instance = create(:system_node_instance, :running, :with_ssh_host_key, node: other_node, account: account,
                               private_ip_address: "10.0.9.9", public_ip_address: "203.0.114.9")
       other_op = approved_operation(target_instance: other_instance)
 

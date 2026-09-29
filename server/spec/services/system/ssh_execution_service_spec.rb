@@ -186,7 +186,11 @@ RSpec.describe System::SshExecutionService do
       )
     end
 
+    # IMP-190834701b0a: #execute_bounded refuses a host with no recorded key
+    # (covered under "host key verification" below), so this block's argv and
+    # result contracts run against a keyed instance.
     before do
+      instance.update_columns(ssh_host_keys: SshHostKeyFixtures.document(SshHostKeyFixtures.entry))
       allow(System::BoundedCommandRunner).to receive(:run).and_return(bounded_result)
     end
 
@@ -326,6 +330,231 @@ RSpec.describe System::SshExecutionService do
       expect(result.success?).to be false
       expect(result.error).to include("SYSTEM_SSH_ENABLED")
       expect(System::BoundedCommandRunner).not_to have_received(:run)
+    end
+  end
+
+  # IMP-190834701b0a — every path used to connect with
+  # StrictHostKeyChecking=no + UserKnownHostsFile=/dev/null, so a root command
+  # ran on whatever host answered at the recorded address. VMID and IP reuse
+  # is routine in this fleet, which makes that a live hazard, not a theory.
+  # Now: a per-call known_hosts file written from the key(s) the node's agent
+  # reported, strict checking, and a refusal policy for hosts with no key.
+  describe "host key verification" do
+    let(:recorded_entry) { SshHostKeyFixtures.entry("ssh-ed25519") }
+    let(:host_alias) { "powernode-node-instance-#{instance.id}" }
+
+    def option_values(argv)
+      argv.each_cons(2).select { |flag, _| flag == "-o" }.map(&:last)
+    end
+
+    def known_hosts_path(argv)
+      option_values(argv).find { |v| v.start_with?("UserKnownHostsFile=") }&.delete_prefix("UserKnownHostsFile=")
+    end
+
+    def expect_strict(argv)
+      options = option_values(argv)
+      expect(options).to include("StrictHostKeyChecking=yes", "GlobalKnownHostsFile=/dev/null",
+                                 "HostKeyAlias=#{host_alias}")
+      expect(options).not_to include("StrictHostKeyChecking=no")
+      expect(options).not_to include("UserKnownHostsFile=/dev/null")
+      expect(known_hosts_path(argv)).to be_present
+    end
+
+    context "when a host key is recorded" do
+      before { instance.update_columns(ssh_host_keys: SshHostKeyFixtures.document(recorded_entry)) }
+
+      it "#execute connects strictly against a per-call known_hosts file holding exactly the recorded key" do
+        seen = {}
+        allow(Open3).to receive(:capture3) do |*argv|
+          path = known_hosts_path(argv)
+          seen[:argv] = argv
+          seen[:path] = path
+          seen[:content] = File.read(path)
+          seen[:mode] = File.stat(path).mode & 0o777
+          [ "", "", ok_status ]
+        end
+
+        result = execute!
+
+        expect(result.success?).to be(true)
+        expect_strict(seen[:argv])
+        expect(seen[:content]).to eq("#{host_alias} ssh-ed25519 #{recorded_entry['key']}\n")
+        expect(seen[:mode]).to eq(0o600)
+        expect(File.exist?(seen[:path])).to be(false)
+      end
+
+      it "removes the known_hosts file when the ssh call raises" do
+        seen = {}
+        allow(Open3).to receive(:capture3) do |*argv|
+          seen[:path] = known_hosts_path(argv)
+          raise IOError, "connection torn down"
+        end
+
+        result = execute!
+
+        expect(result.success?).to be(false)
+        expect(seen[:path]).to be_present
+        expect(File.exist?(seen[:path])).to be(false)
+      end
+
+      it "keys the entry on the instance, not the address, so an IP change does not break the match" do
+        seen = []
+        allow(Open3).to receive(:capture3) do |*argv|
+          seen << File.read(known_hosts_path(argv))
+          [ "", "", ok_status ]
+        end
+
+        execute!
+        allow(instance).to receive(:ssh_ip_address).and_return("192.0.2.44")
+        execute!
+
+        expect(seen.size).to eq(2)
+        expect(seen.uniq.size).to eq(1)
+        expect(seen.first).to eq("#{host_alias} ssh-ed25519 #{recorded_entry['key']}\n")
+        expect(seen.first).not_to include("10.0.0.9")
+        expect(seen.first).not_to include("192.0.2.44")
+      end
+
+      it "writes one line per recorded key" do
+        second = SshHostKeyFixtures.entry("ecdsa-sha2-nistp256")
+        instance.update_columns(ssh_host_keys: SshHostKeyFixtures.document(recorded_entry, second))
+        content = nil
+        allow(Open3).to receive(:capture3) do |*argv|
+          content = File.read(known_hosts_path(argv))
+          [ "", "", ok_status ]
+        end
+
+        execute!
+
+        expect(content.lines).to contain_exactly(
+          "#{host_alias} ssh-ed25519 #{recorded_entry['key']}\n",
+          "#{host_alias} ecdsa-sha2-nistp256 #{second['key']}\n"
+        )
+      end
+
+      # A stored value is re-validated before it reaches the file: a newline in
+      # a key must never become a second known_hosts entry (e.g. a
+      # @cert-authority line trusting any host).
+      it "drops a stored entry carrying an injected newline instead of writing it" do
+        injected = recorded_entry.merge(
+          "key" => "#{recorded_entry['key']}\n@cert-authority * ssh-ed25519 #{SshHostKeyFixtures.key}"
+        )
+        instance.update_columns(ssh_host_keys: { "keys" => [ injected, SshHostKeyFixtures.entry("ssh-rsa", body_bytes: 64) ] })
+        content = nil
+        allow(Open3).to receive(:capture3) do |*argv|
+          content = File.read(known_hosts_path(argv))
+          [ "", "", ok_status ]
+        end
+
+        execute!
+
+        expect(content.lines.size).to eq(1)
+        expect(content).not_to include("@cert-authority")
+        expect(content).to start_with("#{host_alias} ssh-rsa ")
+      end
+
+      it "stays strict for a legacy caller even with the require setting OFF" do
+        ::SiteSetting.set(described_class::REQUIRE_HOST_KEY_SETTING, "false", setting_type: "boolean")
+        argv = nil
+        allow(Open3).to receive(:capture3) { |*a| argv = a; [ "", "", ok_status ] }
+
+        execute!
+
+        expect_strict(argv)
+      end
+
+      it "#scp_file connects strictly and removes the known_hosts file" do
+        seen = {}
+        allow(Open3).to receive(:capture3) do |*argv|
+          seen[:argv] = argv
+          seen[:path] = known_hosts_path(argv)
+          seen[:content] = File.read(seen[:path])
+          [ "", "", ok_status ]
+        end
+
+        result = described_class.new.scp_file(instance: instance, local_path: __FILE__, remote_path: "/tmp/x")
+
+        expect(result.success?).to be(true)
+        expect(seen[:argv].first).to eq("scp")
+        expect_strict(seen[:argv])
+        expect(seen[:content]).to eq("#{host_alias} ssh-ed25519 #{recorded_entry['key']}\n")
+        expect(File.exist?(seen[:path])).to be(false)
+      end
+
+      it "#execute_bounded connects strictly and removes the known_hosts file" do
+        seen = {}
+        allow(System::BoundedCommandRunner).to receive(:run) do |argv, **|
+          seen[:argv] = argv
+          seen[:path] = known_hosts_path(argv)
+          seen[:content] = File.read(seen[:path])
+          System::BoundedCommandRunner::Result.new(stdout: "ok", stderr: "", exit_code: 0,
+                                                    timed_out: false, truncated: false)
+        end
+
+        result = described_class.new.execute_bounded(instance: instance, command: "uptime",
+                                                     timeout_seconds: 45, max_output_bytes: 1024)
+
+        expect(result.success?).to be(true)
+        expect_strict(seen[:argv])
+        expect(seen[:content]).to eq("#{host_alias} ssh-ed25519 #{recorded_entry['key']}\n")
+        expect(File.exist?(seen[:path])).to be(false)
+      end
+    end
+
+    context "when no host key is recorded" do
+      before { instance.update_columns(ssh_host_keys: nil) }
+
+      it "#execute_bounded (out-of-band exec) refuses outright, whatever the setting" do
+        allow(System::BoundedCommandRunner).to receive(:run)
+
+        result = described_class.new.execute_bounded(instance: instance, command: "uptime",
+                                                     timeout_seconds: 45, max_output_bytes: 1024)
+
+        expect(result.success?).to be(false)
+        expect(result.error).to match(/no SSH host key/i)
+        expect(System::BoundedCommandRunner).not_to have_received(:run)
+      end
+
+      context "with system.ssh.require_host_key OFF (the default)" do
+        it "connects as before for a legacy caller, warns, and emits an unverified-host event" do
+          argv = nil
+          allow(Open3).to receive(:capture3) { |*a| argv = a; [ "", "", ok_status ] }
+          allow(Rails.logger).to receive(:warn).and_call_original
+
+          result = execute!
+
+          expect(result.success?).to be(true)
+          expect(option_values(argv)).to include("StrictHostKeyChecking=no")
+          expect(Rails.logger).to have_received(:warn).with(/no SSH host key recorded/i)
+          event = System::FleetEvent.find_by(kind: described_class::UNVERIFIED_HOST_EVENT_KIND,
+                                             node_instance_id: instance.id)
+          expect(event).to be_present
+        end
+      end
+
+      context "with system.ssh.require_host_key ON" do
+        before { ::SiteSetting.set(described_class::REQUIRE_HOST_KEY_SETTING, "true", setting_type: "boolean") }
+
+        it "refuses a legacy #execute without connecting" do
+          allow(Open3).to receive(:capture3)
+
+          result = execute!
+
+          expect(result.success?).to be(false)
+          expect(result.error).to match(/no SSH host key/i)
+          expect(Open3).not_to have_received(:capture3)
+        end
+
+        it "refuses a legacy #scp_file without connecting" do
+          allow(Open3).to receive(:capture3)
+
+          result = described_class.new.scp_file(instance: instance, local_path: __FILE__, remote_path: "/tmp/x")
+
+          expect(result.success?).to be(false)
+          expect(result.error).to match(/no SSH host key/i)
+          expect(Open3).not_to have_received(:capture3)
+        end
+      end
     end
   end
 end

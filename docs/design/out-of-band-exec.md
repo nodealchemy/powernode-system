@@ -117,6 +117,12 @@ configuration that changes between the two is caught either way:
    (R2-2) rather than treated as "no pin supplied, skip the check" — a
    legitimately parked operation always carries one, so its absence at
    execution time means a bypass of the normal gate.
+   The pin proves the RECORD was not repointed. It cannot prove which host
+   answers at that address, so it is paired with the host-key check below
+   (IMP-190834701b0a): out-of-band exec refuses an instance with no recorded
+   SSH host key, at request time and again at execution time, and otherwise
+   verifies the host strictly against that key
+   ([ssh-host-key-verification.md](ssh-host-key-verification.md)).
 8. **SSH disabled** (security review finding S6, execution-time only) — when
    `SYSTEM_SSH_ENABLED=false`, `#execute!` refuses outright rather than
    letting `SshExecutionService`'s test-env mock convenience (built for the
@@ -300,10 +306,11 @@ that is everything documented above instead.
 Named here rather than silently left for a future reader to rediscover
 (security review):
 
-- **SSH host keys are not verified.** `execute_ssh_command_bounded` still
-  sets `StrictHostKeyChecking=no` / `UserKnownHostsFile=/dev/null`, same as
-  `#execute`. Tracked as **IMP-190834701b0a**, approved separately — out of
-  scope for this design.
+- **SSH host keys were not verified — closed by IMP-190834701b0a.**
+  Out-of-band exec now connects only to a node whose agent has reported its
+  SSH host key, verified strictly against a per-call known_hosts file, and
+  refuses (before anything is parked) when no key is recorded. See
+  [ssh-host-key-verification.md](ssh-host-key-verification.md).
 - **An operation can be stranded `approved`** if the process advancing it
   from `approved` to `executing` dies in between (a crash, a deploy, a
   killed worker). The reaper (above) only ever catches a row already

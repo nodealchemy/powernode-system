@@ -11,7 +11,7 @@ RSpec.describe "SystemFleetTool out-of-band exec gating (IMP-9ce0ed39c557)" do
   let(:user)     { create(:user, account: account, permissions: %w[system.instances.control]) }
   let(:tool)     { Ai::Tools::SystemFleetTool.new(account: account, user: user) }
   let(:node)     { create(:system_node, account: account) }
-  let(:instance) { create(:system_node_instance, :running, node: node, account: account) }
+  let(:instance) { create(:system_node_instance, :running, :with_ssh_host_key, node: node, account: account) }
 
   let(:ssh_result) do
     ::System::Runtime::Result.ok(data: { stdout: "ok", stderr: "", exit_code: 0, timed_out: false, truncated: false })

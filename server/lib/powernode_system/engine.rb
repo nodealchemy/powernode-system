@@ -737,6 +737,21 @@ module PowernodeSystem
                        "non-positive falls back to " \
                        "System::OutOfBandExecService::DEFAULT_MAX_OUTPUT_BYTES."
         )
+        # IMP-190834701b0a — flips the legacy SSH callers (sync, maintenance,
+        # deploy) from "no host key recorded: connect unverified, warn" to
+        # "refuse". Protected: turning host verification off again is a
+        # person's decision, not an agent's. Flip it only after the fleet's
+        # agents report host keys (docs/design/ssh-host-key-verification.md).
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::SshExecutionService::REQUIRE_HOST_KEY_SETTING,
+          setting_type: "boolean",
+          description: "When true, System::SshExecutionService refuses to connect to a node " \
+                       "with no recorded SSH host key, on every path. When false (the default), " \
+                       "legacy callers connect unverified to such a node and log a warning plus " \
+                       "a fleet event. A node WITH a recorded key is always verified strictly, " \
+                       "and out-of-band exec always refuses without one, whatever this says.",
+          protected: true
+        )
 
         ::Ai::Tools::SiteSettingTool.register_key(
           ::System::Fleet::Sensors::BootImageStalenessSensor::SOURCE_REPO_SETTING,

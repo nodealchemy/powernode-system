@@ -16,6 +16,52 @@ module System
     SSH_USER_FORMAT = /\A[a-zA-Z0-9_][a-zA-Z0-9_.\-]*\z/
     SSH_HOST_FORMAT = /\A[a-zA-Z0-9][a-zA-Z0-9_.:\-]*\z/
 
+    # IMP-190834701b0a — host identity verification. Every path used to
+    # connect with StrictHostKeyChecking=no + UserKnownHostsFile=/dev/null,
+    # so a root command ran on whatever host answered at the recorded
+    # address, and VMID/IP reuse is routine in this fleet. Now:
+    #
+    #   * a node WITH a recorded host key (NodeInstance#ssh_host_keys, which
+    #     its agent reports on heartbeat) is always verified strictly, on
+    #     every path. The verification uses a per-call 0600 known_hosts
+    #     tempfile holding only that node's keys, StrictHostKeyChecking=yes,
+    #     and the global known_hosts disabled. HostKeyAlias keys the entry on
+    #     the INSTANCE rather than the address, so an IP change does not break
+    #     the match, and a different host at the same IP cannot pass it;
+    #   * out-of-band exec (#execute_bounded) REFUSES a node with no key;
+    #   * the legacy callers (#execute, #scp_file, #sync) connect to a node
+    #     with no key unverified, as before, with a warning and a fleet event,
+    #     until REQUIRE_HOST_KEY_SETTING is turned on, after which they refuse
+    #     too. See docs/design/ssh-host-key-verification.md for the migration
+    #     order.
+    REQUIRE_HOST_KEY_SETTING   = "system.ssh.require_host_key"
+    UNVERIFIED_HOST_EVENT_KIND = "system.instance.ssh_host_unverified"
+    HOST_KEY_ALIAS_PREFIX      = "powernode-node-instance-"
+    # One unverified-host event per instance per window. The legacy callers
+    # can run a dozen commands per operation, and the event is a coverage
+    # signal, not a per-connection log.
+    UNVERIFIED_EVENT_WINDOW = 1.hour
+
+    # The pre-verification options, kept ONLY for a legacy caller reaching a
+    # node that has not reported a key while REQUIRE_HOST_KEY_SETTING is off.
+    UNVERIFIED_HOST_OPTIONS = [
+      "-o", "StrictHostKeyChecking=no",
+      "-o", "UserKnownHostsFile=/dev/null"
+    ].freeze
+
+    # Whether legacy callers refuse a node with no recorded host key. Default
+    # OFF. A read failure answers true (refuse): an unreadable setting is not
+    # an operator's decision to connect unverified.
+    def self.require_host_key?
+      raw = ::SiteSetting.get(REQUIRE_HOST_KEY_SETTING)
+      return raw if raw == true || raw == false
+
+      %w[true 1 yes on].include?(raw.to_s.strip.downcase)
+    rescue StandardError => e
+      Rails.logger.error("[SshExecutionService] could not read #{REQUIRE_HOST_KEY_SETTING}: #{e.class} — refusing unverified hosts")
+      true
+    end
+
     def self.execute(instance:, command:, sudo: true, operation_id: nil)
       new.execute(instance: instance, command: command, sudo: sudo, operation_id: operation_id)
     end
@@ -57,6 +103,8 @@ module System
       if (endpoint_err = endpoint_error(admin_user, ssh_ip))
         return Runtime::Result.err(error: endpoint_err, data: { exit_code: -1 })
       end
+      host_keys, host_key_err = host_key_policy(instance, always_require: false)
+      return Runtime::Result.err(error: host_key_err, data: { exit_code: -1 }) if host_key_err
 
       full_command = sudo ? "sudo #{command}" : command
 
@@ -65,7 +113,8 @@ module System
         "#{ShellOutputSanitizer.redact(command[0..100])}..."
       )
 
-      raw = execute_ssh_command(host: ssh_ip, user: admin_user, key: ssh_key, command: full_command)
+      raw = execute_ssh_command(host: ssh_ip, user: admin_user, key: ssh_key, command: full_command,
+                                host_keys: host_keys, host_alias: host_key_alias(instance))
 
       build_exec_result(raw)
     rescue ArgumentError
@@ -103,6 +152,11 @@ module System
       if (endpoint_err = endpoint_error(admin_user, ssh_ip))
         return Runtime::Result.err(error: endpoint_err, data: { exit_code: -1 })
       end
+      # Out-of-band exec never connects to a host it cannot verify, whatever
+      # REQUIRE_HOST_KEY_SETTING says (System::OutOfBandExecService refuses
+      # the same case earlier, before anything is parked for approval).
+      host_keys, host_key_err = host_key_policy(instance, always_require: true)
+      return Runtime::Result.err(error: host_key_err, data: { exit_code: -1 }) if host_key_err
 
       # The command text is NEVER logged here (review finding — the previous
       # version logged a redacted/truncated preview of it, which still
@@ -126,7 +180,8 @@ module System
       # timeout invocation.
       raw = execute_ssh_command_bounded(
         host: ssh_ip, user: admin_user, key: ssh_key, command: command, sudo: sudo,
-        timeout_seconds: timeout_seconds, max_output_bytes: max_output_bytes
+        timeout_seconds: timeout_seconds, max_output_bytes: max_output_bytes,
+        host_keys: host_keys, host_alias: host_key_alias(instance)
       )
 
       Rails.logger.info(
@@ -165,6 +220,8 @@ module System
       if (endpoint_err = endpoint_error(admin_user, ssh_ip))
         return Runtime::Result.err(error: endpoint_err, data: { exit_code: -1 })
       end
+      host_keys, host_key_err = host_key_policy(instance, always_require: false)
+      return Runtime::Result.err(error: host_key_err, data: { exit_code: -1 }) if host_key_err
 
       Rails.logger.info("[SshExecutionService] SCP #{local_path} -> #{admin_user}@#{ssh_ip}:#{remote_path}")
 
@@ -174,7 +231,9 @@ module System
         key: ssh_key,
         local_path: local_path,
         remote_path: remote_path,
-        recursive: recursive
+        recursive: recursive,
+        host_keys: host_keys,
+        host_alias: host_key_alias(instance)
       )
 
       # Optional chmod after a successful transfer. Done as a separate exec
@@ -252,12 +311,86 @@ module System
       nil
     end
 
+    # Returns [host_keys, nil] to connect (host_keys nil = unverified legacy
+    # connection) or [nil, message] to refuse. See REQUIRE_HOST_KEY_SETTING.
+    def host_key_policy(instance, always_require:)
+      host_keys = ::System::SshHostKeys.recorded_for(instance)
+      return [ host_keys, nil ] if host_keys.any?
+
+      if always_require
+        return [ nil, no_host_key_message(instance, "out-of-band exec never connects to an unverified host") ]
+      end
+      if self.class.require_host_key?
+        return [ nil, no_host_key_message(instance, "#{REQUIRE_HOST_KEY_SETTING} is on") ]
+      end
+
+      note_unverified_host(instance)
+      [ nil, nil ]
+    end
+
+    def no_host_key_message(instance, why)
+      "No SSH host key recorded for instance #{instance.id} — refusing to connect, because the " \
+        "host's identity cannot be verified (#{why}). The node's agent reports its host key on " \
+        "heartbeat; confirm the agent is current and heartbeating, then retry."
+    end
+
+    def note_unverified_host(instance)
+      Rails.logger.warn(
+        "[SshExecutionService] No SSH host key recorded for instance #{instance.id} — connecting " \
+        "WITHOUT host verification (#{REQUIRE_HOST_KEY_SETTING} is off)"
+      )
+      return unless Rails.cache.write("system:ssh_host_unverified:#{instance.id}", true,
+                                      unless_exist: true, expires_in: UNVERIFIED_EVENT_WINDOW)
+
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: instance.account,
+        kind: UNVERIFIED_HOST_EVENT_KIND,
+        severity: :medium,
+        payload: { instance_id: instance.id, require_host_key: false },
+        source: "system/ssh_execution_service",
+        node_instance_id: instance.id
+      )
+    rescue StandardError => e
+      Rails.logger.warn("[SshExecutionService] unverified-host event failed for #{instance.id}: #{e.class}")
+    end
+
+    def host_key_alias(instance)
+      "#{HOST_KEY_ALIAS_PREFIX}#{instance.id}"
+    end
+
+    # Yields the host-verification ssh/scp options. With recorded keys, it
+    # writes them to a per-call 0600 known_hosts tempfile, removed in ensure
+    # whether the call succeeds or raises. CheckHostIP=no and
+    # UpdateHostKeys=no keep ssh from adding its own entries to that file.
+    # With no keys (the legacy, setting-off case only), it yields the old
+    # unverified options.
+    def with_host_verification(host_keys, host_alias)
+      return yield(UNVERIFIED_HOST_OPTIONS.dup) if host_keys.blank?
+
+      known_hosts = Tempfile.new([ "known_hosts", "" ])
+      begin
+        File.chmod(0o600, known_hosts.path)
+        known_hosts.write(::System::SshHostKeys.known_hosts(host_alias, host_keys))
+        known_hosts.close
+        yield [
+          "-o", "StrictHostKeyChecking=yes",
+          "-o", "UserKnownHostsFile=#{known_hosts.path}",
+          "-o", "GlobalKnownHostsFile=/dev/null",
+          "-o", "HostKeyAlias=#{host_alias}",
+          "-o", "CheckHostIP=no",
+          "-o", "UpdateHostKeys=no"
+        ]
+      ensure
+        known_hosts.close!
+      end
+    end
+
     def get_ssh_key(instance)
       return instance.key if instance.key.present?
       instance.node&.ssh_key
     end
 
-    def execute_ssh_command(host:, user:, key:, command:)
+    def execute_ssh_command(host:, user:, key:, command:, host_keys: nil, host_alias: nil)
       unless ssh_available?
         Rails.logger.warn("[SshExecutionService] SSH not available - returning mock response")
         return mock_ssh_response(command)
@@ -272,18 +405,19 @@ module System
         key_file.close
         File.chmod(0o600, key_file.path)
 
-        ssh_options = [
-          "-o", "StrictHostKeyChecking=no",
-          "-o", "UserKnownHostsFile=/dev/null",
-          "-o", "PasswordAuthentication=no",
-          "-o", "ConnectTimeout=30",
-          "-i", key_file.path
-        ]
+        with_host_verification(host_keys, host_alias) do |host_options|
+          ssh_options = [
+            *host_options,
+            "-o", "PasswordAuthentication=no",
+            "-o", "ConnectTimeout=30",
+            "-i", key_file.path
+          ]
 
-        ssh_command = [ "ssh", *ssh_options, "#{user}@#{host}", command ]
+          ssh_command = [ "ssh", *ssh_options, "#{user}@#{host}", command ]
 
-        stdout, stderr, status = Open3.capture3(*ssh_command)
-        { stdout: stdout, stderr: stderr, exit_code: status.exitstatus }
+          stdout, stderr, status = Open3.capture3(*ssh_command)
+          { stdout: stdout, stderr: stderr, exit_code: status.exitstatus }
+        end
       ensure
         key_file.unlink
       end
@@ -307,7 +441,8 @@ module System
     # racing only its first word. `sudo` wraps the outside: `sudo timeout -k
     # 5 N sh -c '<command>'` runs `timeout` itself as root, which is what
     # lets it signal a root-owned command's process group.
-    def execute_ssh_command_bounded(host:, user:, key:, command:, sudo:, timeout_seconds:, max_output_bytes:)
+    def execute_ssh_command_bounded(host:, user:, key:, command:, sudo:, timeout_seconds:, max_output_bytes:,
+                                    host_keys:, host_alias:)
       unless ssh_available?
         Rails.logger.warn("[SshExecutionService] SSH not available - returning mock bounded response")
         return mock_ssh_response(command).merge(timed_out: false, truncated: false)
@@ -322,26 +457,27 @@ module System
         key_file.close
         File.chmod(0o600, key_file.path)
 
-        ssh_options = [
-          "-o", "StrictHostKeyChecking=no",
-          "-o", "UserKnownHostsFile=/dev/null",
-          "-o", "PasswordAuthentication=no",
-          "-o", "ConnectTimeout=30",
-          "-o", "BatchMode=yes",
-          "-o", "ServerAliveInterval=10",
-          "-i", key_file.path
-        ]
+        with_host_verification(host_keys, host_alias) do |host_options|
+          ssh_options = [
+            *host_options,
+            "-o", "PasswordAuthentication=no",
+            "-o", "ConnectTimeout=30",
+            "-o", "BatchMode=yes",
+            "-o", "ServerAliveInterval=10",
+            "-i", key_file.path
+          ]
 
-        bounded_command = "timeout -k 5 #{timeout_seconds.to_i} sh -c #{Shellwords.escape(command)}"
-        remote_command = sudo ? "sudo #{bounded_command}" : bounded_command
+          bounded_command = "timeout -k 5 #{timeout_seconds.to_i} sh -c #{Shellwords.escape(command)}"
+          remote_command = sudo ? "sudo #{bounded_command}" : bounded_command
 
-        ssh_command = [ "ssh", *ssh_options, "#{user}@#{host}", remote_command ]
+          ssh_command = [ "ssh", *ssh_options, "#{user}@#{host}", remote_command ]
 
-        result = ::System::BoundedCommandRunner.run(
-          ssh_command, timeout_seconds: timeout_seconds, max_output_bytes: max_output_bytes
-        )
-        { stdout: result.stdout, stderr: result.stderr, exit_code: result.exit_code,
-          timed_out: result.timed_out?, truncated: result.truncated? }
+          result = ::System::BoundedCommandRunner.run(
+            ssh_command, timeout_seconds: timeout_seconds, max_output_bytes: max_output_bytes
+          )
+          { stdout: result.stdout, stderr: result.stderr, exit_code: result.exit_code,
+            timed_out: result.timed_out?, truncated: result.truncated? }
+        end
       ensure
         key_file.unlink
       end
@@ -385,7 +521,7 @@ module System
       { stdout: "Mock execution of: #{command}", stderr: "", exit_code: 0 }
     end
 
-    def execute_scp_command(host:, user:, key:, local_path:, remote_path:, recursive:)
+    def execute_scp_command(host:, user:, key:, local_path:, remote_path:, recursive:, host_keys: nil, host_alias: nil)
       unless ssh_available?
         Rails.logger.warn("[SshExecutionService] SSH not available - returning mock SCP response")
         return mock_ssh_response("scp #{local_path} -> #{user}@#{host}:#{remote_path}")
@@ -400,19 +536,20 @@ module System
         key_file.close
         File.chmod(0o600, key_file.path)
 
-        scp_options = [
-          "-o", "StrictHostKeyChecking=no",
-          "-o", "UserKnownHostsFile=/dev/null",
-          "-o", "PasswordAuthentication=no",
-          "-o", "ConnectTimeout=30",
-          "-i", key_file.path
-        ]
-        scp_options << "-r" if recursive
+        with_host_verification(host_keys, host_alias) do |host_options|
+          scp_options = [
+            *host_options,
+            "-o", "PasswordAuthentication=no",
+            "-o", "ConnectTimeout=30",
+            "-i", key_file.path
+          ]
+          scp_options << "-r" if recursive
 
-        scp_command = [ "scp", *scp_options, local_path, "#{user}@#{host}:#{remote_path}" ]
-        stdout, stderr, status = Open3.capture3(*scp_command)
+          scp_command = [ "scp", *scp_options, local_path, "#{user}@#{host}:#{remote_path}" ]
+          stdout, stderr, status = Open3.capture3(*scp_command)
 
-        { stdout: stdout, stderr: stderr, exit_code: status.exitstatus }
+          { stdout: stdout, stderr: stderr, exit_code: status.exitstatus }
+        end
       ensure
         key_file.unlink
       end

@@ -33,6 +33,12 @@ module System
   #       #self_managed_target?'s node-id-keyed one: a target's declared
   #       node_id could be stale or wrong while its actual address still
   #       resolves onto the self-hosting node.
+  #     * NO RECORDED SSH HOST KEY (IMP-190834701b0a). The IP pin below
+  #       proves the DB record was not repointed. It says nothing about WHICH
+  #       host answers at that address, and VMID/IP reuse is routine. With no
+  #       recorded key, SshExecutionService cannot verify the host, so this
+  #       refuses before anything is parked (#execute_bounded refuses the
+  #       same case again, as a backstop).
   #     * the IP PIN — the gating surface resolves and stores the instance's
   #       SSH IP into the parked operation at approval-REQUEST time
   #       (`pinned_ip:`); this re-checks it against the instance's CURRENT SSH
@@ -240,6 +246,7 @@ module System
       return self_managed_refusal(instance) if self_managed_target?(instance)
       return self_hosting_unconfigured_refusal if self_hosting_node_id.blank?
       return unsafe_ip_refusal(instance) if unsafe_ip?(instance.ssh_ip_address)
+      return no_host_key_refusal(instance) if ::System::SshHostKeys.recorded_for(instance).empty?
       return ip_pin_refusal(instance, pinned_ip) if pinned_ip.present? && instance.ssh_ip_address != pinned_ip
 
       nil
@@ -368,6 +375,13 @@ module System
         end
       end
       @self_hosting_addresses = raw.compact.filter_map { |address| parse_ip(address) }
+    end
+
+    def no_host_key_refusal(instance)
+      "refusing to run an out-of-band command on instance #{instance.id} — no SSH host key is " \
+        "recorded for it, so the host's identity cannot be verified and the command could run on " \
+        "whatever host now answers at its address. The node's agent reports its host key on " \
+        "heartbeat; confirm the agent is current and heartbeating, then re-submit."
     end
 
     def nil_pin_refusal

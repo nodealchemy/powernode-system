@@ -8,7 +8,7 @@ RSpec.describe "Api::V1::System::NodeInstances#out_of_band_exec", type: :request
   let(:control_user)  { user_with_permissions("system.instances.control", account: account) }
   let(:read_user)     { user_with_permissions("system.instances.read", account: account) }
   let(:node)          { create(:system_node, account: account) }
-  let!(:instance)     { create(:system_node_instance, :running, node: node, account: account) }
+  let!(:instance)     { create(:system_node_instance, :running, :with_ssh_host_key, node: node, account: account) }
 
   let(:ssh_result) do
     ::System::Runtime::Result.ok(data: { stdout: "ok", stderr: "", exit_code: 0, timed_out: false, truncated: false })
