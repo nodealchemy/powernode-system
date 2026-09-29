@@ -96,7 +96,7 @@ module GateComposedTaskCategories
   GATE_SITES = [
     {
       file: "app/controllers/api/v1/system/tasks_controller.rb",
-      line: 96,
+      line: 112,
       source: 'action_category: "system.task.#{attrs[:command]}"',
       executor: "System::Executors::ExecuteTask",
       domain: "attrs[:command] is caller-supplied free text from task_params. " \
@@ -109,8 +109,12 @@ module GateComposedTaskCategories
               "does pin one real property (the constant and the validator have " \
               "not been decoupled) and because omitting the busiest gate site " \
               "from an enumeration whose whole point is completeness would be " \
-              "the wrong lesson to leave behind.",
-      commands: -> { ::System::Task::COMMANDS }
+              "the wrong lesson to leave behind. MINUS unit.dropin " \
+              "(IMP-9951cbf20bb0): the controller refuses that command BEFORE " \
+              "this gate site, because its only door is the human-only " \
+              "system_apply_unit_dropin verb, so this site never names " \
+              "system.task.unit.dropin at all.",
+      commands: -> { ::System::Task::COMMANDS - [ ::System::UnitDropinService::COMMAND ] }
     },
     {
       file: "app/controllers/concerns/system/node_instance_gating.rb",

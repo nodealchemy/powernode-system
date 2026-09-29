@@ -78,6 +78,22 @@ module Api
             )
           end
 
+          # IMP-9951cbf20bb0 — unit.dropin has exactly one door, the human-only
+          # system_apply_unit_dropin verb. This one gates on
+          # system.task.unit.dropin with no person's own-session confirmation
+          # and none of System::UnitDropinService's unit checks, and the model
+          # refuses a row that service did not mint anyway, so refusing here,
+          # before the gate, is what keeps an operator from being asked to
+          # approve something that could never run.
+          if attrs[:command].to_s == ::System::UnitDropinService::COMMAND
+            return render_error(
+              "#{::System::UnitDropinService::COMMAND} is not created through this endpoint. Use the " \
+              "system_apply_unit_dropin MCP verb, which requires a person's own-session approval, " \
+              "checks the unit and audits the drop-in.",
+              status: :unprocessable_content
+            )
+          end
+
           # IMP-93d9f4a31627 — refuse an on-node reconcile aimed at an instance
           # whose agent will never pull it, BEFORE the gate. System::Executors
           # ::ExecuteTask carries the same check (it is the load-bearing one:

@@ -657,7 +657,8 @@ module PowernodeSystem
             ::System::Governance::PolicyReconciler::AUDITED_ACTIONS +
             ::System::Governance::GapMaterializer::AUDITED_ACTIONS +
             ::System::OutOfBandExecService::AUDITED_ACTIONS +
-            ::System::UnitRestartService::AUDITED_ACTIONS
+            ::System::UnitRestartService::AUDITED_ACTIONS +
+            ::System::UnitDropinService::AUDITED_ACTIONS
         )
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not register audit actions: #{e.message}"
@@ -939,7 +940,8 @@ module PowernodeSystem
         # records names that must stay absent, and the registration spec pins
         # both directions.
         declarations = ::System::Governance::PolicyDeclarations
-        categories = ([ declarations::MANUAL_OPERATION_POLICIES, declarations::OUT_OF_BAND_EXEC_POLICIES ] +
+        categories = ([ declarations::MANUAL_OPERATION_POLICIES, declarations::OUT_OF_BAND_EXEC_POLICIES,
+                        declarations::UNIT_DROPIN_POLICIES ] +
                       declarations::POLICY_SETS.map { |set| set[:policies] })
                      .flat_map(&:keys)
 

@@ -86,6 +86,7 @@ module System
       ci.lint_discovery
       probe.module_smoke
       probe.node_inspect
+      unit.dropin
     ].freeze
 
     # `restart` is the one command whose NAME does not say what it does, and its
@@ -342,6 +343,18 @@ module System
     # refused here too, not only in the MCP verb. CHANGE-guarded like the two
     # above: an existing row must stay saveable through its status transitions.
     validate :node_inspect_options_valid, if: :node_inspect_options_validatable?
+    # unit.dropin writes a systemd drop-in as root (IMP-9951cbf20bb0). Its
+    # controls — a person's own-session approval and the unit fence — live in
+    # System::UnitDropinService, so a row that service did not mint is refused
+    # here, whichever producer tried (POST /api/v1/system/tasks and its
+    # ExecuteTask replay included), and the options are re-checked either way.
+    # CHANGE-guarded like the two above.
+    validate :unit_dropin_governed, if: :unit_dropin_validatable?
+
+    # Set only by System::UnitDropinService#apply!, in memory, never persisted:
+    # the marker that this unit.dropin row was minted through the governed verb.
+    attr_accessor :governed_unit_dropin
+
     validates :status, presence: true, inclusion: { in: STATUSES }
     validates :progress, numericality: { only_integer: true, greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
 
@@ -548,6 +561,22 @@ module System
     # new row: on create the command goes nil -> value, which reads as changed.
     def restart_scope_validatable?
       command == "restart" && (will_save_change_to_command? || will_save_change_to_options?)
+    end
+
+    def unit_dropin_validatable?
+      command == ::System::UnitDropinService::COMMAND && (will_save_change_to_command? || will_save_change_to_options?)
+    end
+
+    def unit_dropin_governed
+      unless governed_unit_dropin == true
+        errors.add(:command, "#{::System::UnitDropinService::COMMAND} is created only by the system_apply_unit_dropin " \
+                             "MCP verb (a person's own-session approval, the unit checks and an audit row)")
+        return
+      end
+
+      ::System::UnitDropinService.validate_task_options!(options)
+    rescue ::System::UnitDropinService::Invalid => e
+      errors.add(:options, "refused for #{::System::UnitDropinService::COMMAND}: #{e.message}")
     end
 
     def node_inspect_options_validatable?

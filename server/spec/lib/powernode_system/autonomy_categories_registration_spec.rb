@@ -60,7 +60,10 @@ RSpec.describe "PowernodeSystem autonomy category registration", type: :lib do
   # that used to find them — it cannot miss a reformatted hash.
   let(:declared_categories) do
     d = System::Governance::PolicyDeclarations
-    ([ d::MANUAL_OPERATION_POLICIES ] + d::POLICY_SETS.map { |set| set[:policies] })
+    # OUT_OF_BAND_EXEC_POLICIES and UNIT_DROPIN_POLICIES (IMP-9951cbf20bb0) are
+    # reconciled outside POLICY_SETS, like the manual set.
+    ([ d::MANUAL_OPERATION_POLICIES, d::OUT_OF_BAND_EXEC_POLICIES, d::UNIT_DROPIN_POLICIES ] +
+      d::POLICY_SETS.map { |set| set[:policies] })
       .flat_map(&:keys)
   end
 

@@ -98,8 +98,11 @@ module System
         # lanes (a destroyed instance whose guest the provider still lists, and
         # a cloud sync that stopped succeeding; IMP-ff6d46f2c3e1). Instance
         # lifecycle, declared beside system.node_lkg_investigate; they stranded
-        # in "other" until filed here.
-        "node_lifecycle"    => %w[system.cert_ system.acme_cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.capability_gap_ system.observation system.task. system.task_ system.template_closure_ system.node_boot_image_ system.node_lkg_ system.fulfill_capability_ system.relocate_ system.replica_promote system.abandoned_instance_ system.pool_guest_ system.cloud_sync_]
+        # in "other" until filed here. system.instance.unit_dropin
+        # (IMP-9951cbf20bb0, a runtime drop-in on a composed unit) is named
+        # exactly: its dot does not match system.instance_.
+        "node_lifecycle"    => %w[system.cert_ system.acme_cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.capability_gap_ system.observation system.task. system.task_ system.template_closure_ system.node_boot_image_ system.node_lkg_ system.fulfill_capability_ system.relocate_ system.replica_promote system.abandoned_instance_ system.pool_guest_ system.cloud_sync_
+                                  system.instance.unit_dropin]
       }.freeze
     end
   end

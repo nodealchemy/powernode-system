@@ -183,7 +183,11 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
 
     describe "and then the reconciler" do
       it "creates every declared set on a fresh install — nothing skipped, nothing missing afterwards" do
+        # OUT_OF_BAND_EXEC_POLICIES and UNIT_DROPIN_POLICIES (IMP-9951cbf20bb0)
+        # are reconciled outside POLICY_SETS, like the manual set.
         declared_total = declarations::MANUAL_OPERATION_POLICIES.size +
+                         declarations::OUT_OF_BAND_EXEC_POLICIES.size +
+                         declarations::UNIT_DROPIN_POLICIES.size +
                          declarations::POLICY_SETS.sum { |set| set[:policies].size }
 
         core_rows = core_written_rows.count
@@ -380,6 +384,8 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
       expect(core_written_rows.where.not(action_category: Ai::InterventionPolicy::ENGINEERING_CATEGORIES).count).to eq(0)
 
       declared_total = declarations::MANUAL_OPERATION_POLICIES.size +
+                       declarations::OUT_OF_BAND_EXEC_POLICIES.size +
+                       declarations::UNIT_DROPIN_POLICIES.size +
                        declarations::POLICY_SETS.sum { |set| set[:policies].size }
 
       expect { load_seed!(reconcile_seed) }

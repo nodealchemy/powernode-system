@@ -262,7 +262,17 @@ module System
         # The routine sibling of system_out_of_band_exec, which stays
         # human-only and approval-gated and shares no code path with this. If an
         # eighth collector is ever added, re-derive this verb before shipping it.
-        "probe.node_inspect" => "auto_approve"
+        "probe.node_inspect" => "auto_approve",
+
+        # unit.dropin (IMP-9951cbf20bb0) — writes a runtime systemd drop-in as
+        # root. This row is INERT by design: POST /api/v1/system/tasks refuses
+        # the command before it reaches the gate, and System::Task refuses a
+        # unit.dropin row that System::UnitDropinService did not mint, so the
+        # one door is the human-only system_apply_unit_dropin verb, governed
+        # under system.instance.unit_dropin (UNIT_DROPIN_POLICIES). Declared
+        # because this map is total over COMMANDS, and declared at the
+        # strictest verb so a future door that did reach it would still park.
+        "unit.dropin" => "require_approval"
       }.freeze
 
       # Fail-safe for a command added to System::Task::COMMANDS without a verb
@@ -1313,6 +1323,19 @@ module System
       # same reason: arbitrary code execution on a fleet node.
       OUT_OF_BAND_EXEC_POLICIES = {
         "system.instance.out_of_band_exec" => "require_approval"
+      }.freeze
+
+      # IMP-9951cbf20bb0 — the governed runtime drop-in door
+      # (system_apply_unit_dropin): write or remove ONE
+      # /run/systemd/system/<unit>.d/zz-operator-<name>.conf on a node. Its own
+      # category, declared exactly as system.instance.out_of_band_exec is and
+      # for the same reasons: one agent-less row at scope "global" (agent-binding
+      # by design), no owning agent, require_approval. The verb is also
+      # human_only, so the gate forces require_approval whatever this row says.
+      # NOT system.task.unit.dropin: that is the REST door's category, and the
+      # REST door refuses the command outright.
+      UNIT_DROPIN_POLICIES = {
+        "system.instance.unit_dropin" => "require_approval"
       }.freeze
 
       # IMP-0467eee9fc57 — the cordon-only (unschedulable) mode for a

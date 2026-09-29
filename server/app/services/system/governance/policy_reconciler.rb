@@ -434,7 +434,20 @@ module System
         }
       end
 
-      def declared_sets = [ manual_set, out_of_band_exec_set ] + PolicyDeclarations::POLICY_SETS
+      # IMP-9951cbf20bb0. A third member of the "no owner, not a POLICY_SETS
+      # entry" class, for exactly #out_of_band_exec_set's reasons.
+      def unit_dropin_set
+        {
+          key: "unit-dropin-operator",
+          agent_key: nil,
+          scope: "global",
+          priority: 5,
+          conditions: {},
+          policies: PolicyDeclarations::UNIT_DROPIN_POLICIES
+        }
+      end
+
+      def declared_sets = [ manual_set, out_of_band_exec_set, unit_dropin_set ] + PolicyDeclarations::POLICY_SETS
 
       # Yields (set, agent, skip_reason). skip_reason is non-nil when the set
       # cannot be reconciled — today only "agent absent". A set is SKIPPED, never

@@ -65,8 +65,10 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # with the comment explaining where that oracle went (120 -> 133). The
       # re-audit is the point of keying on the line — `command: cmd` still
       # ranges over System::Task::COMMANDS itself, so every value the binding
-      # can carry is a member by construction.
-      "models/system/task_spec.rb" => [ 133 ],
+      # can carry is a member by construction. RE-AUDITED for IMP-9951cbf20bb0
+      # (-> 147: the probe.node_inspect and unit.dropin option arms above it);
+      # still `command: cmd` over COMMANDS itself.
+      "models/system/task_spec.rb" => [ 147 ],
       # `command` is a keyword param defaulting to a listed literal
       # ("sync_modules"); every caller in the file passes a listed literal.
       "models/system/preserves_task_history_spec.rb" => [ 28 ],
@@ -171,7 +173,9 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # three comment lines above it (246 -> 249). RE-AUDITED — line 249 is
       # still `::System::Task.new(command: command, ...)` inside
       # #command_insertable?, which calls .new + .valid? and never persists.
-      "integration/gate_composed_task_categories_spec.rb" => [ 249 ]
+      # 249 -> 253 when the tasks_controller entry's value set gained its
+      # unit.dropin exclusion (IMP-9951cbf20bb0); RE-AUDITED, unchanged.
+      "integration/gate_composed_task_categories_spec.rb" => [ 253 ]
     }
   end
 

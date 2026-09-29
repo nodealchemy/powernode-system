@@ -132,13 +132,20 @@ RSpec.describe System::Task, type: :model do
           #
           # probe.node_inspect (IMP-52762a704a3d) likewise must name a collector:
           # it is a root read on the node, so a row with no options is refused.
+          #
+          # unit.dropin (IMP-9951cbf20bb0) is minted only by
+          # System::UnitDropinService, which marks its row and whose options the
+          # model re-checks; task_unit_dropin_spec.rb covers the refusals.
           options =
             case cmd
             when 'restart' then { 'scope' => 'unit', 'unit' => 'powernode-example.service' }
             when 'probe.node_inspect' then { 'collector' => 'routes' }
+            when 'unit.dropin'
+              { 'unit' => 'powernode-example-sidekiq.service', 'name' => 'trial', 'revert' => true, 'directives' => [] }
             else {}
             end
           task = build(:system_task, account: account, operable: node, command: cmd, options: options)
+          task.governed_unit_dropin = true if cmd == 'unit.dropin'
           expect(task).to be_valid, "#{cmd} is listed but rejected: #{task.errors.full_messages.join('; ')}"
         end
       end
