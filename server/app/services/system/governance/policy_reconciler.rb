@@ -134,9 +134,11 @@ module System
         # the structural rule before the map existed). The 14 SDWAN / federation
         # remediations → SDWAN Manager, gitops drift → GitOps Reconciler, the
         # publication streak → Disk Image Manager. All from Fleet Autonomy.
+        # 13 remain: system.sdwan_key_rotate was RETIRED (IMP-2e7816b5ee95) —
+        # no longer declared, so there is nothing to re-home it to, and its
+        # rows are deleted by the retirement migration instead.
         "system.federation_peer_remediate"            => %w[fleet-autonomy],
         "system.sdwan_peer_remediate"                 => %w[fleet-autonomy],
-        "system.sdwan_key_rotate"                     => %w[fleet-autonomy],
         "system.sdwan_failover"                       => %w[fleet-autonomy],
         "system.sdwan_user_device_revoke"             => %w[fleet-autonomy],
         "system.sdwan_bgp_session_remediate"          => %w[fleet-autonomy],

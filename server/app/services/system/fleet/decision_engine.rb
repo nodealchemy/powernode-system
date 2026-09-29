@@ -825,7 +825,9 @@ module System
         # via the constellation signer, ready for the agent's next pull.
         # The previous binding rotated the WireGuard keypair
         # (SdwanPeerRemediateExecutor under system.sdwan_key_rotate,
-        # auto_approve): that does nothing for the MC but REVOKES the
+        # auto_approve — a category since RETIRED, IMP-2e7816b5ee95; a
+        # governed rotation is sdwan.peer_key_rotate, require_approval, via
+        # system_sdwan_rotate_peer_key): that does nothing for the MC but REVOKES the
         # active key, so hubs drop the old pubkey on their next compile and
         # the still-connected, not-yet-polling peer loses a WORKING tunnel.
         # Key rotation stays bound to the drift signal

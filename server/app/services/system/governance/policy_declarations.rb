@@ -773,8 +773,8 @@ module System
       # Manager by the fleet tick (the sensors run on Fleet Autonomy's tick; the
       # bindings declare `owner: "sdwan-manager"` — see the note above
       # CAPACITY_POLICY_KEYS). Agent set ONLY — but be precise about WHY, because
-      # the rule does not generalise from the shape: 13 of the 14 are
-      # sensor-routed, so no operator door issues them at all. The 14th,
+      # the rule does not generalise from the shape: 12 of the 13 are
+      # sensor-routed, so no operator door issues them at all. The 13th,
       # system.federation_acceptance, has NO SIGNAL_BINDINGS entry and no sensor
       # — it is an operator/Concierge-driven gated skill executor
       # (FederationAcceptanceExecutor) grouped here because it is SDWAN-domain,
@@ -801,12 +801,13 @@ module System
         # Phase 3 (SDWAN autonomous remediation). Autonomy levels preserved from
         # the original SDWAN Manager seed.
         "system.sdwan_peer_remediate"        => "notify_and_proceed",
-        # NOTE: no signal routes here since IMP-df40782d3f4d moved
-        # system.sdwan_credential_expiring to system.sdwan_credential_refresh
-        # below. Kept seeded + registered (subset invariant allows a category
-        # without a producer) so live rows stay operator-tunable and a future
-        # true key-TTL lane inherits its recorded intent.
-        "system.sdwan_key_rotate"            => "auto_approve",
+        # (system.sdwan_key_rotate, auto_approve, lived here with no producer
+        # from IMP-df40782d3f4d until IMP-2e7816b5ee95 RETIRED it: a governed
+        # key rotation is sdwan.peer_key_rotate in SDWAN_OPERATOR_POLICIES,
+        # require_approval, and the retirement migration deletes the stranded
+        # rows. A future key-TTL lane gates on THAT category — an auto_approve
+        # placeholder for a lane nobody built was a second, looser control over
+        # the same act.)
         "system.sdwan_failover"              => "require_approval",
         "system.sdwan_user_device_revoke"    => "require_approval",
         "system.sdwan_bgp_session_remediate" => "notify_and_proceed",
@@ -881,6 +882,13 @@ module System
         "sdwan.peer_create"                 => "notify_and_proceed",
         "sdwan.peer_update"                 => "notify_and_proceed",
         "sdwan.peer_delete"                 => "require_approval",
+        # IMP-2e7816b5ee95 — system_sdwan_rotate_peer_key: revoke a peer's
+        # active WireGuard key and generate a new one IN PLACE. Destructive in
+        # the sense this table cares about: the live tunnel drops until both
+        # ends re-pull, and on a hub every issued user-device config stops
+        # handshaking until re-issued. So it carries the delete tier, on both
+        # audiences (this set and its SDWAN Manager twin).
+        "sdwan.peer_key_rotate"             => "require_approval",
 
         # Firewall rules — additive auto, removal/edit notify
         "sdwan.firewall_rule_create"        => "notify_and_proceed",
@@ -1019,7 +1027,7 @@ module System
       }.freeze
 
       # The SDWAN Manager AGENT set: operator CRUD + the sensor-routed
-      # remediations. 57 keys. POLICY_SETS binds this at scope "agent" and
+      # remediations. 57 keys (44 + 13). POLICY_SETS binds this at scope "agent" and
       # SDWAN_OPERATOR_POLICIES alone at scope "action_type".
       SDWAN_MANAGER_POLICIES = SDWAN_OPERATOR_POLICIES.merge(SDWAN_REMEDIATION_POLICIES).freeze
 

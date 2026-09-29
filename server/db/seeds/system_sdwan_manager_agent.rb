@@ -101,10 +101,10 @@ System::Seeds::CanonicalAgentContent.refresh!(sdwan_agent, system_prompt: sdwan_
 # The approval chain below stays here: the reconciler writes policy rows and
 # nothing else. Proposal §5 ruling 7 / IMP-10e4f6c3bcd2.
 # TWO sets, two audiences (HIER-P2A, IMP-187124ca2984). The AGENT set is the
-# 43 `sdwan.*` operator CRUD keys plus the 14 sensor-routed `system.sdwan_*`
-# / `system.federation_*` remediations the fleet tick gates under THIS
+# 44 `sdwan.*` operator keys plus the 13 `system.sdwan_*` /
+# `system.federation_*` remediations the fleet tick gates under THIS
 # agent. The OPERATOR-path twin (SDWAN_OPERATOR_POLICIES, POLICY_SETS
-# "sdwan-operator", scope "action_type") mirrors the 43 CRUD verbs for an
+# "sdwan-operator", scope "action_type") mirrors the 44 operator verbs for an
 # agent-less caller — `Ai::GatedActions#gate!` passes no `agent:`, and an
 # agent-scoped row can never match one — while `InterventionPolicyService
 # #resolve` drops that audience for an agent caller (IMP-cb36021d4094), so

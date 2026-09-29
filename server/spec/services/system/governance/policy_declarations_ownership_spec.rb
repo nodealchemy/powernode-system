@@ -5,8 +5,10 @@ require "rails_helper"
 # HIER-P2A — policy ownership moves WITHOUT changing any verb.
 #
 # The 14 SDWAN remediation keys leave FLEET_AUTONOMY_POLICIES for the SDWAN
-# Manager AGENT set (the operator set keeps its 43 CRUD keys and gains none of
-# them); system.gitops_drift_remediate joins GITOPS_RECONCILER_POLICIES and
+# Manager AGENT set (the operator set keeps its CRUD keys and gains none of
+# them); IMP-2e7816b5ee95 later RETIRED one of the 14, system.sdwan_key_rotate
+# (no producer), and added sdwan.peer_key_rotate to the operator set, so the
+# counts below are 13 and 44 while the agent set stays at 57; system.gitops_drift_remediate joins GITOPS_RECONCILER_POLICIES and
 # system.disk_image_publication_investigate joins DISK_IMAGE_MANAGER_POLICIES.
 # What stays on Fleet Autonomy is grouped into named sub-hashes so a later
 # increment can lift a whole domain with a one-line change.
@@ -17,7 +19,6 @@ RSpec.describe System::Governance::PolicyDeclarations, "ownership (HIER-P2A)" do
     %w[
       system.federation_peer_remediate
       system.sdwan_peer_remediate
-      system.sdwan_key_rotate
       system.sdwan_failover
       system.sdwan_user_device_revoke
       system.sdwan_bgp_session_remediate
@@ -39,7 +40,6 @@ RSpec.describe System::Governance::PolicyDeclarations, "ownership (HIER-P2A)" do
     {
       "system.federation_peer_remediate" => "notify_and_proceed",
       "system.sdwan_peer_remediate" => "notify_and_proceed",
-      "system.sdwan_key_rotate" => "auto_approve",
       "system.sdwan_failover" => "require_approval",
       "system.sdwan_user_device_revoke" => "require_approval",
       "system.sdwan_bgp_session_remediate" => "notify_and_proceed",
@@ -59,16 +59,16 @@ RSpec.describe System::Governance::PolicyDeclarations, "ownership (HIER-P2A)" do
   def set(key) = d::POLICY_SETS.find { |s| s[:key] == key }
 
   describe "the SDWAN split" do
-    it "moves the 14 remediation keys onto the SDWAN Manager agent set" do
+    it "moves the remediation keys (13 since IMP-2e7816b5ee95) onto the SDWAN Manager agent set" do
       expect(d::SDWAN_MANAGER_POLICIES.keys).to include(*sdwan_remediation_keys)
       expect(d::FLEET_AUTONOMY_POLICIES.keys & sdwan_remediation_keys).to be_empty
       expect(set("sdwan-manager")[:policies]).to equal(d::SDWAN_MANAGER_POLICIES)
     end
 
-    it "keeps the operator set at exactly the 43 CRUD keys" do
+    it "keeps the operator set at exactly its 44 keys" do
       operator = set("sdwan-operator")[:policies]
       expect(operator.keys).to all(start_with("sdwan."))
-      expect(operator.size).to eq(43)
+      expect(operator.size).to eq(44)
       expect(operator.keys & sdwan_remediation_keys).to be_empty
       expect(operator).to eq(d::SDWAN_OPERATOR_POLICIES)
     end

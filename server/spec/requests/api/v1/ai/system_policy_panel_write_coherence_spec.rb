@@ -68,10 +68,12 @@ RSpec.describe "System policy panel write coherence", type: :request do
   # IMP-17bc5546009a (2026-08-21): was 7 — system.sdwan_route_policy_audit is
   # gone. It had no sensor, no DecisionEngine binding, and no executor, so it
   # was a permanently no-op auto_approve row; deleted rather than built out.
+  # IMP-2e7816b5ee95: was 6 — system.sdwan_key_rotate is retired the same way
+  # (no producer since IMP-df40782d3f4d; sdwan.peer_key_rotate is the governed
+  # rotation now).
   let(:autonomous_sdwan_categories) do
     %w[
       system.sdwan_peer_remediate
-      system.sdwan_key_rotate
       system.sdwan_failover
       system.sdwan_user_device_revoke
       system.sdwan_bgp_session_remediate

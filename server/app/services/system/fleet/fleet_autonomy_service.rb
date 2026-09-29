@@ -1026,13 +1026,13 @@ module System
         # the sensor stamps federation_peer_id onto the signal payload.
         when "system.federation_peer_remediate"
           key_value(metadata, "federation_peer_id")
-        # Slice 5 of the SDWAN plan: per-peer dedup for remediation/rotation/
+        # Slice 5 of the SDWAN plan: per-peer dedup for remediation/
         # failover — and (IMP-df40782d3f4d) credential refresh, whose sensor
         # re-fires each tick while an MC sits in the expiry window; per-device
         # for revocation. Without these, repeat sensor firings would queue
-        # duplicate ApprovalRequests every tick.
+        # duplicate ApprovalRequests every tick. (system.sdwan_key_rotate was
+        # listed here until IMP-2e7816b5ee95 retired it; nothing routed to it.)
         when "system.sdwan_peer_remediate",
-             "system.sdwan_key_rotate",
              "system.sdwan_credential_refresh",
              "system.sdwan_failover"
           key_value(metadata, "peer_id") || key_value(metadata, "network_id")

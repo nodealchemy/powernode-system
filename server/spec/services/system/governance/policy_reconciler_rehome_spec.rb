@@ -239,14 +239,17 @@ RSpec.describe System::Governance::PolicyReconciler, "FORMER_OWNERS (HIER-P2DECL
          system.abandoned_instance_reap]
     end
 
-    it "records every key wave 1 lifted off Fleet Autonomy — 35 — and P2A's 16 before them" do
+    # P2A moved 16; IMP-2e7816b5ee95 later RETIRED one of them
+    # (system.sdwan_key_rotate — no producer, rows deleted by migration), so
+    # 15 remain both declared and recorded.
+    it "records every key wave 1 lifted off Fleet Autonomy — 35 — and P2A's 15 still declared before them" do
       wave1 = d::CAPACITY_POLICY_KEYS.keys + d::INSTANCE_POOL_POLICIES.keys + d::PROVISIONING_POLICIES.keys +
               d::STORAGE_POLICY_KEYS.keys + d::INGRESS_MANAGER_POLICIES.keys + d::SUPPLY_CHAIN_MANAGER_POLICIES.keys +
               %w[system.multi_tenant_isolation system.service_discovery_compose]
       wave1 -= added_after_wave1
       expect(wave1.size).to eq(35)
       p2a = d::SDWAN_REMEDIATION_POLICIES.keys + %w[system.gitops_drift_remediate system.disk_image_publication_investigate]
-      expect(p2a.size).to eq(16)
+      expect(p2a.size).to eq(15)
 
       (wave1 + p2a).each do |category|
         expect(map[category]).to eq([ "fleet-autonomy" ]), "#{category} is not recorded as moved off fleet-autonomy"

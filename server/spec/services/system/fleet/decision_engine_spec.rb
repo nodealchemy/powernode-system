@@ -1163,10 +1163,12 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
 
       before do
-        # Both categories declared as PolicyDeclarations ships them, so this
-        # example pins the PROPERTY (which remediation runs)
-        # rather than mirroring whichever binding is currently live.
-        policy!("system.sdwan_key_rotate", "auto_approve")
+        # The rotation category held at its LOOSEST (it was the retired
+        # system.sdwan_key_rotate, auto_approve, until IMP-2e7816b5ee95; the
+        # governed rotation is sdwan.peer_key_rotate now), so this example pins
+        # the PROPERTY (which remediation runs) rather than leaning on the
+        # rotation gate happening to park.
+        policy!("sdwan.peer_key_rotate", "auto_approve")
         policy!("system.sdwan_credential_refresh", "notify_and_proceed")
       end
 
