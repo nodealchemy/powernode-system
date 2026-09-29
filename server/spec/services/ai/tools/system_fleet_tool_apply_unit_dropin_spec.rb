@@ -178,8 +178,17 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_apply_unit_dropin" do
       expect_refused(apply!(directives: [ { "key" => "ReadWritePaths", "value" => "/persist/../etc" } ]), /ReadWritePaths/)
     end
 
-    it "refuses a secret-shaped Environment value" do
-      expect_refused(apply!(directives: [ { "key" => "Environment", "value" => "DB_PASSWORD=#{'q7' * 8}" } ]), /secret/i)
+    it "refuses Environment= outright, benign or not" do
+      %w[LOG_LEVEL=debug LD_PRELOAD=/persist/x/evil.so].each do |value|
+        expect_refused(apply!(directives: [ { "key" => "Environment", "value" => value } ]),
+                       /Environment= is not settable through this verb/)
+      end
+    end
+
+    it "refuses a capability the unit's manifest does not grant, and a trust path" do
+      expect_refused(apply!(directives: [ { "key" => "AmbientCapabilities", "value" => "CAP_SYS_ADMIN" } ]), /CAP_SYS_ADMIN/)
+      expect_refused(apply!(directives: [ { "key" => "ReadWritePaths", "value" => "/persist/var/lib/powernode/pki" } ]),
+                     /ReadWritePaths/)
     end
 
     it "refuses newline, CR, control-character, backslash and section-header injection in keys and values" do

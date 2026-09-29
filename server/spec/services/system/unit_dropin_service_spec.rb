@@ -59,7 +59,7 @@ RSpec.describe System::UnitDropinService do
 
   describe "the shared table (agent parity)" do
     it "is not empty in any section" do
-      %w[name_ok name_refused accepted refused render].each do |k|
+      %w[name_ok name_refused accepted refused capability_subset render].each do |k|
         expect(UnitDropinSharedCases::ALL[k]).to be_present, "fixture section #{k} is empty"
       end
     end
@@ -89,6 +89,14 @@ RSpec.describe System::UnitDropinService do
       end
     end
 
+    UnitDropinSharedCases::ALL["capability_subset"].each do |entry|
+      it "#{entry['ok'] ? 'accepts' : 'refuses'} #{entry['why']} against the unit's resolved set" do
+        pairs = described_class.normalize_directives(entry["directives"])
+        refusal = described_class.capability_subset_refusal(pairs, entry["resolved"])
+        entry["ok"] ? expect(refusal).to(be_nil) : expect(refusal).to(be_present)
+      end
+    end
+
     UnitDropinSharedCases::ALL["render"].each do |entry|
       it "renders #{entry['name']} byte-for-byte as the agent does" do
         pairs = described_class.normalize_directives(entry["directives"])
@@ -104,7 +112,7 @@ RSpec.describe System::UnitDropinService do
     end
 
     it "refuses more than MAX_DIRECTIVES entries" do
-      many = Array.new(described_class::MAX_DIRECTIVES + 1) { |i| { "key" => "Environment", "value" => "V#{i}=x" } }
+      many = Array.new(described_class::MAX_DIRECTIVES + 1) { { "key" => "MemoryMax", "value" => "1G" } }
       expect { described_class.normalize_directives(many) }.to raise_error(described_class::Invalid, /at most/)
     end
 
@@ -113,25 +121,19 @@ RSpec.describe System::UnitDropinService do
       expect { described_class.normalize_directives(nil) }.to raise_error(described_class::Invalid)
     end
 
-    it "names the injection it refuses, and never echoes a refused Environment value" do
+    it "names the injection it refuses" do
       expect { described_class.normalize_directives([ { "key" => "MemoryMax", "value" => "1G\nExecStart=/bin/sh" } ]) }
         .to raise_error(described_class::Invalid, /control character/)
-      secret = "DB_PASSWORD=#{'q7' * 8}"
-      expect { described_class.normalize_directives([ { "key" => "Environment", "value" => secret } ]) }
-        .to raise_error(described_class::Invalid) { |e| expect(e.message).not_to include("q7q7") }
     end
-  end
 
-  describe ".masked_render" do
-    it "keeps Environment keys and masks their values" do
-      pairs = described_class.normalize_directives([
-        { "key" => "Environment", "value" => "LOG_LEVEL=debug" }, { "key" => "MemoryMax", "value" => "1G" }
-      ])
-      masked = described_class.masked_render("trial", pairs)
-
-      expect(masked).to include("Environment=\"LOG_LEVEL=[FILTERED]\"")
-      expect(masked).to include("MemoryMax=1G")
-      expect(masked).not_to include("debug")
+    # F1: a name denylist is incomplete by construction (LD_*, NODE_OPTIONS,
+    # BASH_ENV, PATH, a module's own DATABASE_URL), so Environment= is off the
+    # list entirely until manifests declare tunable names.
+    it "refuses Environment= outright, benign or not, and says why" do
+      [ "LOG_LEVEL=debug", "LD_PRELOAD=/persist/x/evil.so", "NODE_OPTIONS=--inspect" ].each do |value|
+        expect { described_class.normalize_directives([ { "key" => "Environment", "value" => value } ]) }
+          .to raise_error(described_class::Invalid, /Environment= is not settable through this verb; env tuning needs manifest-declared tunables/)
+      end
     end
   end
 
@@ -214,15 +216,87 @@ RSpec.describe System::UnitDropinService do
     end
   end
 
+  # F2: a capability directive may only NARROW. The drop-in's
+  # AmbientCapabilities / CapabilityBoundingSet must be a subset of the set the
+  # agent renders into that unit's capabilities.conf, resolved here from the
+  # module's security block and the service row exactly as the agent resolves
+  # it; a set that cannot be resolved accepts only the empty (zero-caps) list.
+  describe "capability narrowing against the service's resolved set" do
+    subject(:service) { described_class.new }
+
+    def compose_caps!(security:, own: :absent, presence: true)
+      mod = create(:system_node_module, account: account, config: { "security" => security })
+      attrs = { node_module: mod, name: "web" }
+      attrs[:capabilities] = own unless own == :absent
+      svc = create(:system_module_service, **attrs)
+      svc.update_columns(capabilities_presence_recorded: presence)
+      create(:system_node_module_assignment, node: instance.node, node_module: mod)
+      System::RestartAfterUpdate.unit_name(mod.id, svc.name)
+    end
+
+    def caps_refusal(unit, key, value)
+      service.refusal(instance: instance, unit: unit, name: "trial",
+                      directives: [ { "key" => key, "value" => value } ], revert: false)
+    end
+
+    it "refuses CAP_SYS_ADMIN on a unit whose manifest lacks it, accepts a subset and the empty list" do
+      unit = compose_caps!(security: { "capabilities" => %w[CAP_NET_BIND_SERVICE CAP_CHOWN] })
+
+      expect(caps_refusal(unit, "AmbientCapabilities", "CAP_SYS_ADMIN")).to match(/CAP_SYS_ADMIN/)
+      expect(caps_refusal(unit, "CapabilityBoundingSet", "CAP_NET_BIND_SERVICE CAP_SYS_ADMIN")).to match(/CAP_SYS_ADMIN/)
+      expect(caps_refusal(unit, "CapabilityBoundingSet", "CAP_NET_BIND_SERVICE")).to be_nil
+      expect(caps_refusal(unit, "AmbientCapabilities", "")).to be_nil
+    end
+
+    it "normalizes the manifest's spellings as the agent does (cap_chown, chown)" do
+      unit = compose_caps!(security: { "capabilities" => %w[cap_chown net_bind_service] })
+
+      expect(caps_refusal(unit, "CapabilityBoundingSet", "CAP_CHOWN CAP_NET_BIND_SERVICE")).to be_nil
+    end
+
+    it "uses the service's own declared list when it declares one" do
+      unit = compose_caps!(security: { "capabilities" => %w[CAP_CHOWN CAP_NET_RAW] }, own: %w[CAP_CHOWN])
+
+      expect(caps_refusal(unit, "AmbientCapabilities", "CAP_NET_RAW")).to match(/CAP_NET_RAW/)
+      expect(caps_refusal(unit, "AmbientCapabilities", "CAP_CHOWN")).to be_nil
+    end
+
+    it "treats a declared [] as zero only under the presence marker, as the agent does" do
+      zero = compose_caps!(security: { "capabilities" => %w[CAP_CHOWN] }, own: [])
+      expect(caps_refusal(zero, "AmbientCapabilities", "CAP_CHOWN")).to match(/CAP_CHOWN/)
+    end
+
+    it "inherits the ceiling for a legacy [] with no presence marker" do
+      legacy = compose_caps!(security: { "capabilities" => %w[CAP_CHOWN] }, own: [], presence: false)
+      expect(caps_refusal(legacy, "AmbientCapabilities", "CAP_CHOWN")).to be_nil
+    end
+
+    it "treats a module with no security block as zero capabilities" do
+      unit = compose_caps!(security: nil)
+      expect(caps_refusal(unit, "AmbientCapabilities", "CAP_CHOWN")).to match(/CAP_CHOWN/)
+      expect(caps_refusal(unit, "AmbientCapabilities", "")).to be_nil
+    end
+
+    it "fails closed when the set cannot be resolved (privileged, or a service outside its ceiling)" do
+      privileged = compose_caps!(security: { "privileged" => true })
+      outside = compose_caps!(security: { "capabilities" => %w[CAP_CHOWN] }, own: %w[CAP_NET_RAW])
+
+      [ privileged, outside ].each do |unit|
+        expect(caps_refusal(unit, "CapabilityBoundingSet", "CAP_CHOWN")).to match(/cannot resolve/)
+        expect(caps_refusal(unit, "CapabilityBoundingSet", "")).to be_nil
+      end
+    end
+  end
+
   describe "#apply!" do
     let!(:unit) { compose!(instance, "sidekiq").first }
 
-    it "creates exactly one unit.dropin task and an audit row carrying the masked diff" do
+    it "creates exactly one unit.dropin task and an audit row carrying the rendered diff" do
       task = nil
       expect {
         task = described_class.new.apply!(
           instance: instance, unit: unit, name: "trial",
-          directives: [ { "key" => "Environment", "value" => "LOG_LEVEL=debug" }, { "key" => "MemoryMax", "value" => "1G" } ],
+          directives: [ { "key" => "TasksMax", "value" => "64" }, { "key" => "MemoryMax", "value" => "1G" } ],
           revert: false, initiated_by: user
         )
       }.to change { dropin_tasks.count }.by(1)
@@ -231,15 +305,14 @@ RSpec.describe System::UnitDropinService do
       expect(task.status).to eq("pending")
       expect(task.options).to include("unit" => unit, "name" => "trial", "revert" => false)
       expect(task.options["directives"]).to eq([
-        { "key" => "Environment", "value" => "LOG_LEVEL=debug" }, { "key" => "MemoryMax", "value" => "1G" }
+        { "key" => "TasksMax", "value" => "64" }, { "key" => "MemoryMax", "value" => "1G" }
       ])
 
       audit = AuditLog.find_by!(action: described_class::AUDIT_ACTION, resource_id: instance.id.to_s)
       expect(audit.user_id).to eq(user.id)
       expect(audit.metadata).to include("unit" => unit, "name" => "trial", "task_id" => task.id, "revert" => false,
                                         "path" => "/run/systemd/system/#{unit}.d/zz-operator-trial.conf")
-      expect(audit.metadata["diff"]).to include("+Environment=\"LOG_LEVEL=[FILTERED]\"", "+MemoryMax=1G")
-      expect(audit.metadata.to_json).not_to include("debug")
+      expect(audit.metadata["diff"]).to include("+TasksMax=64", "+MemoryMax=1G")
     end
 
     it "addresses ONLY zz-operator-<name>.conf on a revert, and carries no directives" do

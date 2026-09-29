@@ -16,10 +16,19 @@ module System
   # verbs cannot drift apart on the agent's unit, the node-scoped INV-1 fence or
   # the silent-agent check.
   #
-  # WHAT may be written: a fixed allow-list of directives, each with a strict
-  # value grammar, rendered here under a single [Service] header from validated
-  # pairs. A drop-in line is a directive, so one newline in a value would make
-  # this verb exec by another name (ExecStartPre=...); control characters,
+  # WHAT may be written: a fixed allow-list of resource and confinement
+  # directives, each with a strict value grammar, rendered here under a single
+  # [Service] header from validated pairs. Every one of them can only LIMIT the
+  # unit or narrow its confinement relaxations:
+  #   - no Environment= (a name denylist is incomplete by construction:
+  #     LD_PRELOAD, NODE_OPTIONS, BASH_ENV, PATH, a module's own DATABASE_URL);
+  #     env tuning needs manifest-declared tunables;
+  #   - capability lists must be a SUBSET of the set the agent renders for that
+  #     unit (.resolved_capabilities), and an unresolvable set admits only the
+  #     empty list;
+  #   - ReadWritePaths never names the agent's own trust material.
+  # A drop-in line is a directive, so one newline in a value would make this
+  # verb exec by another name (ExecStartPre=...); control characters,
   # backslashes (a trailing one continues the line), brackets (a section
   # header), double quotes and %-specifiers are refused in every key and value
   # before any grammar is consulted. The agent's UnitDropinHandler validates
@@ -54,14 +63,17 @@ module System
     MAX_PATHS = 16
 
     ALLOWED_DIRECTIVES = %w[
-      Environment MemoryMax CPUQuota TasksMax LimitNOFILE
+      MemoryMax CPUQuota TasksMax LimitNOFILE
       AmbientCapabilities CapabilityBoundingSet ReadWritePaths
     ].freeze
+
+    ENVIRONMENT_REFUSAL = "Environment= is not settable through this verb; env tuning needs manifest-declared tunables"
 
     # Rendered as "reset, then the list": a capability line in a drop-in is
     # UNIONED with the unit's own, so without the reset a drop-in could only
     # widen. An empty value renders the reset alone, i.e. no capabilities —
-    # the zero-caps trial.
+    # the zero-caps trial. A non-empty list must also be a subset of the unit's
+    # resolved set (#capability_refusal), so the reset can only narrow.
     CAPABILITY_DIRECTIVES = %w[AmbientCapabilities CapabilityBoundingSet].freeze
 
     # The only directives whose grammar admits a "%" (a trailing percentage).
@@ -75,11 +87,23 @@ module System
     }.freeze
     LIMIT_PART = /\A(?:infinity|[1-9][0-9]{0,9})\z/
 
-    ENV_NAME = /\A[A-Z][A-Z0-9_]{0,127}\z/
-
     # ReadWritePaths only ever relaxes a unit's sandbox, so it may name a path
-    # strictly BENEATH one of these and nothing else.
-    READ_WRITE_ROOTS = %w[/persist /run/powernode].freeze
+    # strictly BENEATH /persist and nothing else. /run/powernode is NOT a root:
+    # every entry the agent keeps there is its own (identity.cfg, storage/keys,
+    # modules, exec, the overlay and its scratch upper, nextroot-scratch*,
+    # pending-prune), and a denylist under it would be incomplete by
+    # construction.
+    READ_WRITE_ROOTS = %w[/persist].freeze
+    # The agent's trust material and state under /persist, refused at the path
+    # and anywhere beneath it: its state, PKI, module-signing keys, security
+    # profiles and staged compositions (/persist/var/lib/powernode), the module
+    # and boot-image blob caches (/persist/cache), the persistent /etc overlay
+    # (identity.cfg, module-signing.conf), the lint-discovery workdirs, the
+    # ingress certificate and router store, and the dev toolchain it executes.
+    TRUST_PATHS = %w[
+      /persist/var/lib/powernode /persist/cache /persist/etc /persist/lint-discovery
+      /persist/powernode-traefik /persist/dev
+    ].freeze
     PATH_SHAPE = %r{\A(?:/[A-Za-z0-9._-]+)+\z}
 
     # Why a directive off the allow-list is refused, for the ones a caller is
@@ -92,8 +116,6 @@ module System
       [ /(?:File|Credential|Credentials|Directory)\z|\A(?:LoadCredential|SetCredential|ImportCredential|BindPaths|BindReadOnlyPaths)/,
         "references a file" ]
     ].freeze
-
-    MASK = ::Ai::SensitiveParams::MASK
 
     class << self
       # nil when the name is acceptable; else the refusal.
@@ -110,7 +132,7 @@ module System
 
       # Validates caller-supplied directives, an Array of { key:, value: }, and
       # returns them as [key, value] String pairs in the caller's order. Raises
-      # Invalid naming the entry. An Environment VALUE is never echoed.
+      # Invalid naming the entry.
       def normalize_directives(directives)
         raise Invalid, "directives must be a list of { key, value } entries" unless directives.is_a?(Array)
         raise Invalid, "directives must not be empty: name at least one directive, or revert" if directives.empty?
@@ -119,19 +141,14 @@ module System
         end
 
         seen_keys = {}
-        seen_env = {}
         directives.each_with_index.map do |entry, index|
           key, value = entry_pair(entry, index)
           check_characters!(key, value, index)
           check_key!(key, index)
-          if key == "Environment"
-            check_environment!(value, index, seen_env)
-          else
-            raise Invalid, "directives[#{index}]: #{key} is given more than once" if seen_keys[key]
+          raise Invalid, "directives[#{index}]: #{key} is given more than once" if seen_keys[key]
 
-            seen_keys[key] = true
-            check_value!(key, value, index)
-          end
+          seen_keys[key] = true
+          check_value!(key, value, index)
           [ key, value ]
         end
       end
@@ -142,9 +159,53 @@ module System
         header(name) + pairs.flat_map { |key, value| lines_for(key, value) }.join
       end
 
-      # The same file with every Environment VALUE masked, for the audit row.
-      def masked_render(name, pairs)
-        render(name, pairs.map { |key, value| key == "Environment" ? [ key, "#{value.split('=', 2).first}=#{MASK}" ] : [ key, value ] })
+      # nil when every capability directive in pairs is a subset of resolved,
+      # the unit's resolved capability set (nil when it cannot be resolved,
+      # which admits only the empty list); else the refusal. Pure: the agent's
+      # dropinCapabilitySubsetRefusal answers the same shared cases.
+      def capability_subset_refusal(pairs, resolved)
+        pairs.each do |key, value|
+          next unless CAPABILITY_DIRECTIVES.include?(key)
+          next if value.empty?
+
+          if resolved.nil?
+            return "#{key}: cannot resolve this unit's capability set (a privileged module, or a service " \
+                   "outside its module's ceiling), so only an empty list (zero capabilities) is accepted"
+          end
+          outside = value.split(" ") - resolved
+          next if outside.empty?
+
+          return "#{key}: #{outside.join(', ')} not in this unit's capability set " \
+                 "(#{resolved.empty? ? 'none' : resolved.join(' ')}); a drop-in may only narrow it"
+        end
+        nil
+      end
+
+      # The capability set the agent renders into this unit's capabilities.conf,
+      # resolved from the same inputs and by the same rule (the agent's
+      # buildPolicy + resolveUnitCapabilities): the module's
+      # config.security.capabilities is the ceiling; a service with no
+      # capabilities key inherits it; a declared list replaces it and must sit
+      # inside it; a declared [] means zero only when every row of the module
+      # carries the presence marker (NodeModuleNodeApiSerializer's
+      # service_capabilities_presence), otherwise it inherits. Names normalize
+      # to CAP_* and unknown ones drop, as on the agent. nil when it cannot be
+      # resolved: a privileged module renders no capabilities.conf at all, and
+      # a service outside its ceiling is refused by the agent.
+      def resolved_capabilities(module_service)
+        node_module = module_service.node_module
+        config = node_module.config.is_a?(Hash) ? node_module.config : {}
+        security = config["security"].is_a?(Hash) ? config["security"] : {}
+        return nil if security["privileged"] == true
+
+        ceiling = normalize_capabilities(security["capabilities"].is_a?(Array) ? security["capabilities"].grep(String) : [])
+        own = module_service.capabilities
+        declared = own.is_a?(Array)
+        declared = false if declared && own.empty? && !node_module.module_services.all?(&:capabilities_presence_recorded)
+        return ceiling unless declared
+
+        mine = normalize_capabilities(own.grep(String))
+        (mine - ceiling).empty? ? mine : nil
       end
 
       # The model's re-check (System::Task#unit_dropin_governed): the options a
@@ -180,6 +241,14 @@ module System
 
       private
 
+      def normalize_capabilities(names)
+        names.filter_map do |name|
+          upper = name.strip.upcase
+          upper = "CAP_#{upper}" unless upper.start_with?("CAP_")
+          upper if ::System::ModuleConfigValidator::KNOWN_CAPABILITIES.include?(upper)
+        end.uniq.sort
+      end
+
       def header(name)
         "# Managed by Powernode: operator drop-in \"#{name}\" (system_apply_unit_dropin).\n" \
           "# Runtime only: /run is tmpfs, so a reboot removes this file.\n" \
@@ -187,7 +256,6 @@ module System
       end
 
       def lines_for(key, value)
-        return [ "Environment=\"#{value}\"\n" ] if key == "Environment"
         return [ "#{key}=\n" ] + (value.empty? ? [] : [ "#{key}=#{value}\n" ]) if CAPABILITY_DIRECTIVES.include?(key)
 
         [ "#{key}=#{value}\n" ]
@@ -238,26 +306,12 @@ module System
 
       def check_key!(key, index)
         return if ALLOWED_DIRECTIVES.include?(key)
+        raise Invalid, "directives[#{index}]: #{ENVIRONMENT_REFUSAL}" if key == "Environment"
 
         reason = REFUSAL_REASONS.find { |pattern, _| key.match?(pattern) }&.last
         reason = "is not on the allow-list (#{ALLOWED_DIRECTIVES.join(', ')})" if reason.nil?
         reason = "is refused: it #{reason}" unless reason.start_with?("is not")
         raise Invalid, "directives[#{index}]: #{key.inspect} #{reason}"
-      end
-
-      def check_environment!(value, index, seen)
-        name, separator, rest = value.partition("=")
-        unless separator == "=" && name.match?(ENV_NAME)
-          raise Invalid, "directives[#{index}]: Environment must be NAME=value with NAME matching #{ENV_NAME.source}"
-        end
-        raise Invalid, "directives[#{index}]: Environment #{name} is given more than once" if seen[name]
-
-        seen[name] = true
-        return unless ::System::ShellOutputSanitizer.secret_shaped?(value) ||
-                      ::System::ShellOutputSanitizer.secret_shaped?(rest)
-
-        raise Invalid, "directives[#{index}]: Environment #{name} looks like a secret and is refused " \
-                       "(a drop-in under /run is world-readable, and its value would sit in the task row)"
       end
 
       def check_value!(key, value, index)
@@ -299,7 +353,8 @@ module System
         paths.all? do |path|
           path.match?(PATH_SHAPE) &&
             path.split("/").none? { |segment| %w[. ..].include?(segment) } &&
-            READ_WRITE_ROOTS.any? { |root| path.start_with?("#{root}/") }
+            READ_WRITE_ROOTS.any? { |root| path.start_with?("#{root}/") } &&
+            TRUST_PATHS.none? { |trust| path == trust || path.start_with?("#{trust}/") }
         end
       end
 
@@ -310,7 +365,9 @@ module System
         when "TasksMax" then "a positive count, 1% to 100%, or infinity"
         when "LimitNOFILE" then "N or SOFT:HARD (positive, SOFT <= HARD) or infinity"
         when *CAPABILITY_DIRECTIVES then "space-separated CAP_* names from the known list, each once (empty means none)"
-        when "ReadWritePaths" then "space-separated absolute, clean paths strictly beneath #{READ_WRITE_ROOTS.join(' or ')}"
+        when "ReadWritePaths"
+          "space-separated absolute, clean paths strictly beneath #{READ_WRITE_ROOTS.join(' or ')}, never at or " \
+            "beneath the agent's own #{TRUST_PATHS.join(', ')}"
         end
       end
     end
@@ -319,7 +376,8 @@ module System
     # authored for the caller. Read-only.
     def refusal(instance:, unit:, name:, directives:, revert:)
       self.class.name_refusal(name) || directives_refusal(directives, revert) ||
-        ::System::UnitRestartService.new.target_refusal(instance: instance, unit: unit, act: ACT)
+        ::System::UnitRestartService.new.target_refusal(instance: instance, unit: unit, act: ACT) ||
+        (revert ? nil : capability_refusal(instance, unit.to_s.strip, directives))
     end
 
     # Re-checks, then creates the task and its audit row in ONE transaction: a
@@ -354,6 +412,25 @@ module System
 
     private
 
+    # Only reached once target_refusal passed, so the unit is composed here.
+    # The set is resolved only when a non-empty capability list needs it.
+    def capability_refusal(instance, unit, directives)
+      pairs = self.class.normalize_directives(directives)
+      needs_set = pairs.any? { |key, value| CAPABILITY_DIRECTIVES.include?(key) && !value.empty? }
+      return nil unless needs_set
+
+      self.class.capability_subset_refusal(pairs, resolved_capabilities_for(instance, unit))
+    end
+
+    def resolved_capabilities_for(instance, unit)
+      composed = ::System::UnitRestartService.composed_units(instance).find { |c| c.unit == unit }
+      return nil if composed.nil?
+
+      module_service = ::System::ModuleService.includes(node_module: :module_services)
+                                               .find_by(node_module_id: composed.module_id, name: composed.service)
+      module_service && self.class.resolved_capabilities(module_service)
+    end
+
     def directives_refusal(directives, revert)
       unless [ true, false ].include?(revert)
         return "revert must be true or false"
@@ -371,14 +448,15 @@ module System
     end
 
     # The control plane cannot see the node's current file, so the "before"
-    # side is labelled as untracked rather than guessed at. Environment values
-    # are masked; keys stay readable.
+    # side is labelled as untracked rather than guessed at. Nothing is masked:
+    # with Environment= gone, no value the allow-list admits carries free text
+    # beyond a /persist path.
     def audit_diff(path, name, pairs, revert)
       if revert
         return "--- #{path}\n+++ /dev/null (removed by revert)\n"
       end
 
-      body = self.class.masked_render(name, pairs).lines.map { |line| "+#{line}" }.join
+      body = self.class.render(name, pairs).lines.map { |line| "+#{line}" }.join
       "--- #{path} (before: not tracked by the control plane)\n+++ #{path}\n#{body}"
     end
 

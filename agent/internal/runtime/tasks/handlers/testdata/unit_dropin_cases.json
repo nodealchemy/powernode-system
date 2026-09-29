@@ -1,11 +1,16 @@
 {
- "_comment": "Shared by the Go unit.dropin handler test and the Ruby System::UnitDropinService spec: one table, two implementations of the directive allow-list and the renderer. A value that is a string is literal; an object expands to prefix + repeat*times + suffix (token-shaped values are built at run time, never written out). 'accepted' and 'refused' entries are whole directive lists; 'render' pins the exact file both sides write.",
+ "_comment": "Shared by the Go unit.dropin handler test and the Ruby System::UnitDropinService spec: one table, two implementations of the directive allow-list, the capability-subset rule and the renderer. A value that is a string is literal; an object expands to prefix + repeat*times + suffix (token-shaped values are built at run time, never written out). 'accepted' and 'refused' entries are whole directive lists; 'capability_subset' pairs a list with the unit's resolved capability set (null = unresolvable); 'render' pins the exact file both sides write.",
  "name_ok": [
   "trial",
   "zero-caps",
   "a",
   "0",
-  {"prefix": "", "repeat": "a", "times": 32, "suffix": ""}
+  {
+   "prefix": "",
+   "repeat": "a",
+   "times": 32,
+   "suffix": ""
+  }
  ],
  "name_refused": [
   "",
@@ -17,172 +22,1493 @@
   "a b",
   "x\n",
   "caf\u00e9",
-  {"prefix": "", "repeat": "a", "times": 33, "suffix": ""}
+  {
+   "prefix": "",
+   "repeat": "a",
+   "times": 33,
+   "suffix": ""
+  }
  ],
  "accepted": [
-  [{"key": "MemoryMax", "value": "512M"}],
-  [{"key": "MemoryMax", "value": "1G"}],
-  [{"key": "MemoryMax", "value": "1073741824"}],
-  [{"key": "MemoryMax", "value": "infinity"}],
-  [{"key": "MemoryMax", "value": "50%"}],
-  [{"key": "CPUQuota", "value": "50%"}],
-  [{"key": "CPUQuota", "value": "250%"}],
-  [{"key": "TasksMax", "value": "64"}],
-  [{"key": "TasksMax", "value": "infinity"}],
-  [{"key": "TasksMax", "value": "20%"}],
-  [{"key": "LimitNOFILE", "value": "65536"}],
-  [{"key": "LimitNOFILE", "value": "1024:65536"}],
-  [{"key": "LimitNOFILE", "value": "1024:infinity"}],
-  [{"key": "LimitNOFILE", "value": "infinity"}],
-  [{"key": "Environment", "value": "RUST_LOG=debug"}],
-  [{"key": "Environment", "value": "EMPTY="}],
-  [{"key": "Environment", "value": "SPACES=a b c"}],
-  [{"key": "Environment", "value": "URL=http://example.com/path?x=1&y=2"}],
-  [{"key": "Environment", "value": "A=it's fine"}],
-  [{"key": "Environment", "value": "A=b"}, {"key": "Environment", "value": "B=c"}],
-  [{"key": "AmbientCapabilities", "value": ""}],
-  [{"key": "CapabilityBoundingSet", "value": ""}],
-  [{"key": "CapabilityBoundingSet", "value": "CAP_NET_BIND_SERVICE"}],
-  [{"key": "AmbientCapabilities", "value": "CAP_NET_ADMIN CAP_NET_RAW"}],
-  [{"key": "ReadWritePaths", "value": "/persist/app"}],
-  [{"key": "ReadWritePaths", "value": "/run/powernode/x/y"}],
-  [{"key": "ReadWritePaths", "value": "/persist/a /run/powernode/b"}],
-  [{"key": "ReadWritePaths", "value": "/persist/app-data_1.d"}],
   [
-   {"key": "MemoryMax", "value": "512M"},
-   {"key": "CPUQuota", "value": "50%"},
-   {"key": "TasksMax", "value": "64"},
-   {"key": "LimitNOFILE", "value": "4096"},
-   {"key": "CapabilityBoundingSet", "value": ""},
-   {"key": "AmbientCapabilities", "value": ""},
-   {"key": "ReadWritePaths", "value": "/persist/x"},
-   {"key": "Environment", "value": "A=b"}
+   {
+    "key": "MemoryMax",
+    "value": "512M"
+   }
+  ],
+  [
+   {
+    "key": "MemoryMax",
+    "value": "1G"
+   }
+  ],
+  [
+   {
+    "key": "MemoryMax",
+    "value": "1073741824"
+   }
+  ],
+  [
+   {
+    "key": "MemoryMax",
+    "value": "infinity"
+   }
+  ],
+  [
+   {
+    "key": "MemoryMax",
+    "value": "50%"
+   }
+  ],
+  [
+   {
+    "key": "CPUQuota",
+    "value": "50%"
+   }
+  ],
+  [
+   {
+    "key": "CPUQuota",
+    "value": "250%"
+   }
+  ],
+  [
+   {
+    "key": "TasksMax",
+    "value": "64"
+   }
+  ],
+  [
+   {
+    "key": "TasksMax",
+    "value": "infinity"
+   }
+  ],
+  [
+   {
+    "key": "TasksMax",
+    "value": "20%"
+   }
+  ],
+  [
+   {
+    "key": "LimitNOFILE",
+    "value": "65536"
+   }
+  ],
+  [
+   {
+    "key": "LimitNOFILE",
+    "value": "1024:65536"
+   }
+  ],
+  [
+   {
+    "key": "LimitNOFILE",
+    "value": "1024:infinity"
+   }
+  ],
+  [
+   {
+    "key": "LimitNOFILE",
+    "value": "infinity"
+   }
+  ],
+  [
+   {
+    "key": "AmbientCapabilities",
+    "value": ""
+   }
+  ],
+  [
+   {
+    "key": "CapabilityBoundingSet",
+    "value": ""
+   }
+  ],
+  [
+   {
+    "key": "CapabilityBoundingSet",
+    "value": "CAP_NET_BIND_SERVICE"
+   }
+  ],
+  [
+   {
+    "key": "AmbientCapabilities",
+    "value": "CAP_NET_ADMIN CAP_NET_RAW"
+   }
+  ],
+  [
+   {
+    "key": "ReadWritePaths",
+    "value": "/persist/app"
+   }
+  ],
+  [
+   {
+    "key": "ReadWritePaths",
+    "value": "/persist/app-data_1.d"
+   }
+  ],
+  [
+   {
+    "key": "MemoryMax",
+    "value": "512M"
+   },
+   {
+    "key": "CPUQuota",
+    "value": "50%"
+   },
+   {
+    "key": "TasksMax",
+    "value": "64"
+   },
+   {
+    "key": "LimitNOFILE",
+    "value": "4096"
+   },
+   {
+    "key": "CapabilityBoundingSet",
+    "value": ""
+   },
+   {
+    "key": "AmbientCapabilities",
+    "value": ""
+   },
+   {
+    "key": "ReadWritePaths",
+    "value": "/persist/x"
+   }
+  ],
+  [
+   {
+    "key": "ReadWritePaths",
+    "value": "/persist/var/lib/myapp"
+   }
+  ],
+  [
+   {
+    "key": "ReadWritePaths",
+    "value": "/persist/volumes/pgdata /persist/var/lib/myapp/cache"
+   }
+  ],
+  [
+   {
+    "key": "ReadWritePaths",
+    "value": "/persist/var/lib/powernode-app"
+   }
   ]
  ],
  "refused": [
-  {"why": "empty list", "directives": []},
-  {"why": "ExecStart runs a command", "directives": [{"key": "ExecStart", "value": "/bin/sh"}]},
-  {"why": "ExecStartPre runs a command", "directives": [{"key": "ExecStartPre", "value": "/bin/true"}]},
-  {"why": "ExecStartPost runs a command", "directives": [{"key": "ExecStartPost", "value": "/bin/true"}]},
-  {"why": "ExecStop runs a command", "directives": [{"key": "ExecStop", "value": "/bin/true"}]},
-  {"why": "ExecStopPost runs a command", "directives": [{"key": "ExecStopPost", "value": "/bin/true"}]},
-  {"why": "ExecReload runs a command", "directives": [{"key": "ExecReload", "value": "/bin/true"}]},
-  {"why": "ExecCondition runs a command", "directives": [{"key": "ExecCondition", "value": "/bin/true"}]},
-  {"why": "User changes identity", "directives": [{"key": "User", "value": "root"}]},
-  {"why": "Group changes identity", "directives": [{"key": "Group", "value": "root"}]},
-  {"why": "DynamicUser changes identity", "directives": [{"key": "DynamicUser", "value": "no"}]},
-  {"why": "SupplementaryGroups changes identity", "directives": [{"key": "SupplementaryGroups", "value": "wheel"}]},
-  {"why": "NoNewPrivileges=false relaxes privilege", "directives": [{"key": "NoNewPrivileges", "value": "false"}]},
-  {"why": "NoNewPrivileges is not on the list at all", "directives": [{"key": "NoNewPrivileges", "value": "true"}]},
-  {"why": "PermissionsStartOnly is privilege escalation", "directives": [{"key": "PermissionsStartOnly", "value": "true"}]},
-  {"why": "SecureBits", "directives": [{"key": "SecureBits", "value": "keep-caps"}]},
-  {"why": "EnvironmentFile reads a file", "directives": [{"key": "EnvironmentFile", "value": "/persist/env"}]},
-  {"why": "LoadCredential reads a file", "directives": [{"key": "LoadCredential", "value": "x:/persist/x"}]},
-  {"why": "SetCredential", "directives": [{"key": "SetCredential", "value": "x:y"}]},
-  {"why": "BindPaths", "directives": [{"key": "BindPaths", "value": "/persist/a:/etc"}]},
-  {"why": "RootDirectory", "directives": [{"key": "RootDirectory", "value": "/persist"}]},
-  {"why": "UnsetEnvironment", "directives": [{"key": "UnsetEnvironment", "value": "PATH"}]},
-  {"why": "key is case-sensitive", "directives": [{"key": "memorymax", "value": "512M"}]},
-  {"why": "key with trailing space", "directives": [{"key": "MemoryMax ", "value": "512M"}]},
-  {"why": "empty key", "directives": [{"key": "", "value": "512M"}]},
-  {"why": "section header key", "directives": [{"key": "[Service]", "value": ""}]},
-  {"why": "section header in a key", "directives": [{"key": "[Unit]MemoryMax", "value": "512M"}]},
-  {"why": "newline in key", "directives": [{"key": "MemoryMax\nExecStart", "value": "/bin/sh"}]},
-  {"why": "newline in value", "directives": [{"key": "MemoryMax", "value": "512M\nExecStart=/bin/sh"}]},
-  {"why": "CR in value", "directives": [{"key": "MemoryMax", "value": "512M\r"}]},
-  {"why": "NUL in value", "directives": [{"key": "MemoryMax", "value": "512M\u0000"}]},
-  {"why": "tab in value", "directives": [{"key": "Environment", "value": "A=b\tc"}]},
-  {"why": "DEL in value", "directives": [{"key": "Environment", "value": "A=b\u007f"}]},
-  {"why": "C1 control in value", "directives": [{"key": "Environment", "value": "A=b\u0085c"}]},
-  {"why": "line separator in value", "directives": [{"key": "Environment", "value": "A=b\u2028c"}]},
-  {"why": "non-ASCII in value", "directives": [{"key": "Environment", "value": "A=caf\u00e9"}]},
-  {"why": "trailing backslash continues the line", "directives": [{"key": "Environment", "value": "A=b\\"}]},
-  {"why": "backslash anywhere", "directives": [{"key": "Environment", "value": "A=b\\nExecStart=/bin/sh"}]},
-  {"why": "newline in env value", "directives": [{"key": "Environment", "value": "A=b\nExecStart=/bin/sh"}]},
-  {"why": "section header in env value", "directives": [{"key": "Environment", "value": "A=[Unit]"}]},
-  {"why": "double quote in env value", "directives": [{"key": "Environment", "value": "A=b\" ExecStart=/bin/sh"}]},
-  {"why": "percent specifier in env value", "directives": [{"key": "Environment", "value": "HOME_DIR=%h"}]},
-  {"why": "percent in a path", "directives": [{"key": "ReadWritePaths", "value": "/persist/%u"}]},
-  {"why": "env key lowercase", "directives": [{"key": "Environment", "value": "rust_log=debug"}]},
-  {"why": "env key leading digit", "directives": [{"key": "Environment", "value": "1A=b"}]},
-  {"why": "env key with dash", "directives": [{"key": "Environment", "value": "A-B=c"}]},
-  {"why": "env without =", "directives": [{"key": "Environment", "value": "AB"}]},
-  {"why": "env empty key", "directives": [{"key": "Environment", "value": "=x"}]},
-  {"why": "env duplicate name", "directives": [{"key": "Environment", "value": "A=b"}, {"key": "Environment", "value": "A=c"}]},
-  {"why": "secret-named env", "directives": [{"key": "Environment", "value": {"prefix": "DB_PASSWORD=", "repeat": "q7", "times": 8, "suffix": ""}}]},
-  {"why": "secret-named env (key base)", "directives": [{"key": "Environment", "value": {"prefix": "SECRET_KEY_BASE=", "repeat": "0a", "times": 16, "suffix": ""}}]},
-  {"why": "token-shaped env value", "directives": [{"key": "Environment", "value": {"prefix": "GH=ghp_", "repeat": "Ab1", "times": 13, "suffix": ""}}]},
-  {"why": "jwt-shaped env value", "directives": [{"key": "Environment", "value": {"prefix": "X=eyJ", "repeat": "abcdefghij", "times": 2, "suffix": ".eyJabcdefghijabc.abcdefghijabcdef"}}]},
-  {"why": "url userinfo in env value", "directives": [{"key": "Environment", "value": {"prefix": "REPO=https://ci:", "repeat": "p9", "times": 8, "suffix": "@git.example.com/x"}}]},
-  {"why": "MemoryMax empty", "directives": [{"key": "MemoryMax", "value": ""}]},
-  {"why": "MemoryMax zero", "directives": [{"key": "MemoryMax", "value": "0"}]},
-  {"why": "MemoryMax unit MB", "directives": [{"key": "MemoryMax", "value": "512MB"}]},
-  {"why": "MemoryMax negative", "directives": [{"key": "MemoryMax", "value": "-1"}]},
-  {"why": "MemoryMax exponent", "directives": [{"key": "MemoryMax", "value": "1e9"}]},
-  {"why": "MemoryMax space", "directives": [{"key": "MemoryMax", "value": "512 M"}]},
-  {"why": "MemoryMax over 100%", "directives": [{"key": "MemoryMax", "value": "101%"}]},
-  {"why": "MemoryMax trailing space", "directives": [{"key": "MemoryMax", "value": "infinity "}]},
-  {"why": "MemoryMax duplicate", "directives": [{"key": "MemoryMax", "value": "1G"}, {"key": "MemoryMax", "value": "2G"}]},
-  {"why": "CPUQuota without %", "directives": [{"key": "CPUQuota", "value": "50"}]},
-  {"why": "CPUQuota zero", "directives": [{"key": "CPUQuota", "value": "0%"}]},
-  {"why": "CPUQuota fraction", "directives": [{"key": "CPUQuota", "value": "50.5%"}]},
-  {"why": "CPUQuota specifier", "directives": [{"key": "CPUQuota", "value": "%h"}]},
-  {"why": "TasksMax zero", "directives": [{"key": "TasksMax", "value": "0"}]},
-  {"why": "TasksMax word", "directives": [{"key": "TasksMax", "value": "lots"}]},
-  {"why": "LimitNOFILE zero", "directives": [{"key": "LimitNOFILE", "value": "0"}]},
-  {"why": "LimitNOFILE soft above hard", "directives": [{"key": "LimitNOFILE", "value": "2048:1024"}]},
-  {"why": "LimitNOFILE soft infinity hard finite", "directives": [{"key": "LimitNOFILE", "value": "infinity:1024"}]},
-  {"why": "LimitNOFILE three parts", "directives": [{"key": "LimitNOFILE", "value": "1:2:3"}]},
-  {"why": "unknown capability", "directives": [{"key": "AmbientCapabilities", "value": "CAP_BOGUS"}]},
-  {"why": "lowercase capability", "directives": [{"key": "AmbientCapabilities", "value": "cap_net_raw"}]},
-  {"why": "inverted capability list", "directives": [{"key": "CapabilityBoundingSet", "value": "~CAP_NET_RAW"}]},
-  {"why": "comma-separated capabilities", "directives": [{"key": "CapabilityBoundingSet", "value": "CAP_NET_RAW,CAP_CHOWN"}]},
-  {"why": "duplicate capability", "directives": [{"key": "CapabilityBoundingSet", "value": "CAP_CHOWN CAP_CHOWN"}]},
-  {"why": "double space between capabilities", "directives": [{"key": "CapabilityBoundingSet", "value": "CAP_CHOWN  CAP_KILL"}]},
-  {"why": "capability directive duplicated", "directives": [{"key": "AmbientCapabilities", "value": ""}, {"key": "AmbientCapabilities", "value": "CAP_KILL"}]},
-  {"why": "path outside the roots", "directives": [{"key": "ReadWritePaths", "value": "/etc"}]},
-  {"why": "path is the root itself", "directives": [{"key": "ReadWritePaths", "value": "/persist"}]},
-  {"why": "path is the other root itself", "directives": [{"key": "ReadWritePaths", "value": "/run/powernode"}]},
-  {"why": "path escapes with ..", "directives": [{"key": "ReadWritePaths", "value": "/persist/../etc"}]},
-  {"why": "path nested ..", "directives": [{"key": "ReadWritePaths", "value": "/persist/a/../../etc"}]},
-  {"why": "path with . component", "directives": [{"key": "ReadWritePaths", "value": "/persist/./a"}]},
-  {"why": "path with //", "directives": [{"key": "ReadWritePaths", "value": "/persist//a"}]},
-  {"why": "path trailing slash", "directives": [{"key": "ReadWritePaths", "value": "/persist/a/"}]},
-  {"why": "relative path", "directives": [{"key": "ReadWritePaths", "value": "persist/a"}]},
-  {"why": "ignore-missing prefix", "directives": [{"key": "ReadWritePaths", "value": "-/persist/a"}]},
-  {"why": "plus prefix", "directives": [{"key": "ReadWritePaths", "value": "+/persist/a"}]},
-  {"why": "root-name prefix trick", "directives": [{"key": "ReadWritePaths", "value": "/persistence/a"}]},
-  {"why": "run root-name prefix trick", "directives": [{"key": "ReadWritePaths", "value": "/run/powernode2/a"}]},
-  {"why": "second path relative", "directives": [{"key": "ReadWritePaths", "value": "/persist/a b"}]},
-  {"why": "second path outside", "directives": [{"key": "ReadWritePaths", "value": "/persist/a /etc"}]},
-  {"why": "path with colon", "directives": [{"key": "ReadWritePaths", "value": "/persist/a:/etc"}]},
-  {"why": "path with tilde", "directives": [{"key": "ReadWritePaths", "value": "~/x"}]},
-  {"why": "empty paths", "directives": [{"key": "ReadWritePaths", "value": ""}]},
-  {"why": "value is not a string", "directives": [{"key": "TasksMax", "value": 64}]},
-  {"why": "value missing", "directives": [{"key": "TasksMax"}]},
-  {"why": "extra field on an entry", "directives": [{"key": "TasksMax", "value": "64", "section": "Unit"}]},
-  {"why": "entry is not an object", "directives": ["TasksMax=64"]}
+  {
+   "why": "empty list",
+   "directives": []
+  },
+  {
+   "why": "ExecStart runs a command",
+   "directives": [
+    {
+     "key": "ExecStart",
+     "value": "/bin/sh"
+    }
+   ]
+  },
+  {
+   "why": "ExecStartPre runs a command",
+   "directives": [
+    {
+     "key": "ExecStartPre",
+     "value": "/bin/true"
+    }
+   ]
+  },
+  {
+   "why": "ExecStartPost runs a command",
+   "directives": [
+    {
+     "key": "ExecStartPost",
+     "value": "/bin/true"
+    }
+   ]
+  },
+  {
+   "why": "ExecStop runs a command",
+   "directives": [
+    {
+     "key": "ExecStop",
+     "value": "/bin/true"
+    }
+   ]
+  },
+  {
+   "why": "ExecStopPost runs a command",
+   "directives": [
+    {
+     "key": "ExecStopPost",
+     "value": "/bin/true"
+    }
+   ]
+  },
+  {
+   "why": "ExecReload runs a command",
+   "directives": [
+    {
+     "key": "ExecReload",
+     "value": "/bin/true"
+    }
+   ]
+  },
+  {
+   "why": "ExecCondition runs a command",
+   "directives": [
+    {
+     "key": "ExecCondition",
+     "value": "/bin/true"
+    }
+   ]
+  },
+  {
+   "why": "User changes identity",
+   "directives": [
+    {
+     "key": "User",
+     "value": "root"
+    }
+   ]
+  },
+  {
+   "why": "Group changes identity",
+   "directives": [
+    {
+     "key": "Group",
+     "value": "root"
+    }
+   ]
+  },
+  {
+   "why": "DynamicUser changes identity",
+   "directives": [
+    {
+     "key": "DynamicUser",
+     "value": "no"
+    }
+   ]
+  },
+  {
+   "why": "SupplementaryGroups changes identity",
+   "directives": [
+    {
+     "key": "SupplementaryGroups",
+     "value": "wheel"
+    }
+   ]
+  },
+  {
+   "why": "NoNewPrivileges=false relaxes privilege",
+   "directives": [
+    {
+     "key": "NoNewPrivileges",
+     "value": "false"
+    }
+   ]
+  },
+  {
+   "why": "NoNewPrivileges is not on the list at all",
+   "directives": [
+    {
+     "key": "NoNewPrivileges",
+     "value": "true"
+    }
+   ]
+  },
+  {
+   "why": "PermissionsStartOnly is privilege escalation",
+   "directives": [
+    {
+     "key": "PermissionsStartOnly",
+     "value": "true"
+    }
+   ]
+  },
+  {
+   "why": "SecureBits",
+   "directives": [
+    {
+     "key": "SecureBits",
+     "value": "keep-caps"
+    }
+   ]
+  },
+  {
+   "why": "EnvironmentFile reads a file",
+   "directives": [
+    {
+     "key": "EnvironmentFile",
+     "value": "/persist/env"
+    }
+   ]
+  },
+  {
+   "why": "LoadCredential reads a file",
+   "directives": [
+    {
+     "key": "LoadCredential",
+     "value": "x:/persist/x"
+    }
+   ]
+  },
+  {
+   "why": "SetCredential",
+   "directives": [
+    {
+     "key": "SetCredential",
+     "value": "x:y"
+    }
+   ]
+  },
+  {
+   "why": "BindPaths",
+   "directives": [
+    {
+     "key": "BindPaths",
+     "value": "/persist/a:/etc"
+    }
+   ]
+  },
+  {
+   "why": "RootDirectory",
+   "directives": [
+    {
+     "key": "RootDirectory",
+     "value": "/persist"
+    }
+   ]
+  },
+  {
+   "why": "UnsetEnvironment",
+   "directives": [
+    {
+     "key": "UnsetEnvironment",
+     "value": "PATH"
+    }
+   ]
+  },
+  {
+   "why": "key is case-sensitive",
+   "directives": [
+    {
+     "key": "memorymax",
+     "value": "512M"
+    }
+   ]
+  },
+  {
+   "why": "key with trailing space",
+   "directives": [
+    {
+     "key": "MemoryMax ",
+     "value": "512M"
+    }
+   ]
+  },
+  {
+   "why": "empty key",
+   "directives": [
+    {
+     "key": "",
+     "value": "512M"
+    }
+   ]
+  },
+  {
+   "why": "section header key",
+   "directives": [
+    {
+     "key": "[Service]",
+     "value": ""
+    }
+   ]
+  },
+  {
+   "why": "section header in a key",
+   "directives": [
+    {
+     "key": "[Unit]MemoryMax",
+     "value": "512M"
+    }
+   ]
+  },
+  {
+   "why": "newline in key",
+   "directives": [
+    {
+     "key": "MemoryMax\nExecStart",
+     "value": "/bin/sh"
+    }
+   ]
+  },
+  {
+   "why": "newline in value",
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": "512M\nExecStart=/bin/sh"
+    }
+   ]
+  },
+  {
+   "why": "CR in value",
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": "512M\r"
+    }
+   ]
+  },
+  {
+   "why": "NUL in value",
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": "512M\u0000"
+    }
+   ]
+  },
+  {
+   "why": "tab in value",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "A=b\tc"
+    }
+   ]
+  },
+  {
+   "why": "DEL in value",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "A=b\u007f"
+    }
+   ]
+  },
+  {
+   "why": "C1 control in value",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "A=b\u0085c"
+    }
+   ]
+  },
+  {
+   "why": "line separator in value",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "A=b\u2028c"
+    }
+   ]
+  },
+  {
+   "why": "non-ASCII in value",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "A=caf\u00e9"
+    }
+   ]
+  },
+  {
+   "why": "trailing backslash continues the line",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "A=b\\"
+    }
+   ]
+  },
+  {
+   "why": "backslash anywhere",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "A=b\\nExecStart=/bin/sh"
+    }
+   ]
+  },
+  {
+   "why": "newline in env value",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "A=b\nExecStart=/bin/sh"
+    }
+   ]
+  },
+  {
+   "why": "section header in env value",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "A=[Unit]"
+    }
+   ]
+  },
+  {
+   "why": "double quote in env value",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "A=b\" ExecStart=/bin/sh"
+    }
+   ]
+  },
+  {
+   "why": "percent specifier in env value",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "HOME_DIR=%h"
+    }
+   ]
+  },
+  {
+   "why": "percent in a path",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/%u"
+    }
+   ]
+  },
+  {
+   "why": "env key lowercase",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "rust_log=debug"
+    }
+   ]
+  },
+  {
+   "why": "env key leading digit",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "1A=b"
+    }
+   ]
+  },
+  {
+   "why": "env key with dash",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "A-B=c"
+    }
+   ]
+  },
+  {
+   "why": "env without =",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "AB"
+    }
+   ]
+  },
+  {
+   "why": "env empty key",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "=x"
+    }
+   ]
+  },
+  {
+   "why": "env duplicate name",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "A=b"
+    },
+    {
+     "key": "Environment",
+     "value": "A=c"
+    }
+   ]
+  },
+  {
+   "why": "secret-named env",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": {
+      "prefix": "DB_PASSWORD=",
+      "repeat": "q7",
+      "times": 8,
+      "suffix": ""
+     }
+    }
+   ]
+  },
+  {
+   "why": "secret-named env (key base)",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": {
+      "prefix": "SECRET_KEY_BASE=",
+      "repeat": "0a",
+      "times": 16,
+      "suffix": ""
+     }
+    }
+   ]
+  },
+  {
+   "why": "token-shaped env value",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": {
+      "prefix": "GH=ghp_",
+      "repeat": "Ab1",
+      "times": 13,
+      "suffix": ""
+     }
+    }
+   ]
+  },
+  {
+   "why": "jwt-shaped env value",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": {
+      "prefix": "X=eyJ",
+      "repeat": "abcdefghij",
+      "times": 2,
+      "suffix": ".eyJabcdefghijabc.abcdefghijabcdef"
+     }
+    }
+   ]
+  },
+  {
+   "why": "url userinfo in env value",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": {
+      "prefix": "REPO=https://ci:",
+      "repeat": "p9",
+      "times": 8,
+      "suffix": "@git.example.com/x"
+     }
+    }
+   ]
+  },
+  {
+   "why": "MemoryMax empty",
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": ""
+    }
+   ]
+  },
+  {
+   "why": "MemoryMax zero",
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": "0"
+    }
+   ]
+  },
+  {
+   "why": "MemoryMax unit MB",
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": "512MB"
+    }
+   ]
+  },
+  {
+   "why": "MemoryMax negative",
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": "-1"
+    }
+   ]
+  },
+  {
+   "why": "MemoryMax exponent",
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": "1e9"
+    }
+   ]
+  },
+  {
+   "why": "MemoryMax space",
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": "512 M"
+    }
+   ]
+  },
+  {
+   "why": "MemoryMax over 100%",
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": "101%"
+    }
+   ]
+  },
+  {
+   "why": "MemoryMax trailing space",
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": "infinity "
+    }
+   ]
+  },
+  {
+   "why": "MemoryMax duplicate",
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": "1G"
+    },
+    {
+     "key": "MemoryMax",
+     "value": "2G"
+    }
+   ]
+  },
+  {
+   "why": "CPUQuota without %",
+   "directives": [
+    {
+     "key": "CPUQuota",
+     "value": "50"
+    }
+   ]
+  },
+  {
+   "why": "CPUQuota zero",
+   "directives": [
+    {
+     "key": "CPUQuota",
+     "value": "0%"
+    }
+   ]
+  },
+  {
+   "why": "CPUQuota fraction",
+   "directives": [
+    {
+     "key": "CPUQuota",
+     "value": "50.5%"
+    }
+   ]
+  },
+  {
+   "why": "CPUQuota specifier",
+   "directives": [
+    {
+     "key": "CPUQuota",
+     "value": "%h"
+    }
+   ]
+  },
+  {
+   "why": "TasksMax zero",
+   "directives": [
+    {
+     "key": "TasksMax",
+     "value": "0"
+    }
+   ]
+  },
+  {
+   "why": "TasksMax word",
+   "directives": [
+    {
+     "key": "TasksMax",
+     "value": "lots"
+    }
+   ]
+  },
+  {
+   "why": "LimitNOFILE zero",
+   "directives": [
+    {
+     "key": "LimitNOFILE",
+     "value": "0"
+    }
+   ]
+  },
+  {
+   "why": "LimitNOFILE soft above hard",
+   "directives": [
+    {
+     "key": "LimitNOFILE",
+     "value": "2048:1024"
+    }
+   ]
+  },
+  {
+   "why": "LimitNOFILE soft infinity hard finite",
+   "directives": [
+    {
+     "key": "LimitNOFILE",
+     "value": "infinity:1024"
+    }
+   ]
+  },
+  {
+   "why": "LimitNOFILE three parts",
+   "directives": [
+    {
+     "key": "LimitNOFILE",
+     "value": "1:2:3"
+    }
+   ]
+  },
+  {
+   "why": "unknown capability",
+   "directives": [
+    {
+     "key": "AmbientCapabilities",
+     "value": "CAP_BOGUS"
+    }
+   ]
+  },
+  {
+   "why": "lowercase capability",
+   "directives": [
+    {
+     "key": "AmbientCapabilities",
+     "value": "cap_net_raw"
+    }
+   ]
+  },
+  {
+   "why": "inverted capability list",
+   "directives": [
+    {
+     "key": "CapabilityBoundingSet",
+     "value": "~CAP_NET_RAW"
+    }
+   ]
+  },
+  {
+   "why": "comma-separated capabilities",
+   "directives": [
+    {
+     "key": "CapabilityBoundingSet",
+     "value": "CAP_NET_RAW,CAP_CHOWN"
+    }
+   ]
+  },
+  {
+   "why": "duplicate capability",
+   "directives": [
+    {
+     "key": "CapabilityBoundingSet",
+     "value": "CAP_CHOWN CAP_CHOWN"
+    }
+   ]
+  },
+  {
+   "why": "double space between capabilities",
+   "directives": [
+    {
+     "key": "CapabilityBoundingSet",
+     "value": "CAP_CHOWN  CAP_KILL"
+    }
+   ]
+  },
+  {
+   "why": "capability directive duplicated",
+   "directives": [
+    {
+     "key": "AmbientCapabilities",
+     "value": ""
+    },
+    {
+     "key": "AmbientCapabilities",
+     "value": "CAP_KILL"
+    }
+   ]
+  },
+  {
+   "why": "path outside the roots",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/etc"
+    }
+   ]
+  },
+  {
+   "why": "path is the root itself",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist"
+    }
+   ]
+  },
+  {
+   "why": "path is the other root itself",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/run/powernode"
+    }
+   ]
+  },
+  {
+   "why": "path escapes with ..",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/../etc"
+    }
+   ]
+  },
+  {
+   "why": "path nested ..",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/a/../../etc"
+    }
+   ]
+  },
+  {
+   "why": "path with . component",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/./a"
+    }
+   ]
+  },
+  {
+   "why": "path with //",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist//a"
+    }
+   ]
+  },
+  {
+   "why": "path trailing slash",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/a/"
+    }
+   ]
+  },
+  {
+   "why": "relative path",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "persist/a"
+    }
+   ]
+  },
+  {
+   "why": "ignore-missing prefix",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "-/persist/a"
+    }
+   ]
+  },
+  {
+   "why": "plus prefix",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "+/persist/a"
+    }
+   ]
+  },
+  {
+   "why": "root-name prefix trick",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persistence/a"
+    }
+   ]
+  },
+  {
+   "why": "run root-name prefix trick",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/run/powernode2/a"
+    }
+   ]
+  },
+  {
+   "why": "second path relative",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/a b"
+    }
+   ]
+  },
+  {
+   "why": "second path outside",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/a /etc"
+    }
+   ]
+  },
+  {
+   "why": "path with colon",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/a:/etc"
+    }
+   ]
+  },
+  {
+   "why": "path with tilde",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "~/x"
+    }
+   ]
+  },
+  {
+   "why": "empty paths",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": ""
+    }
+   ]
+  },
+  {
+   "why": "value is not a string",
+   "directives": [
+    {
+     "key": "TasksMax",
+     "value": 64
+    }
+   ]
+  },
+  {
+   "why": "value missing",
+   "directives": [
+    {
+     "key": "TasksMax"
+    }
+   ]
+  },
+  {
+   "why": "extra field on an entry",
+   "directives": [
+    {
+     "key": "TasksMax",
+     "value": "64",
+     "section": "Unit"
+    }
+   ]
+  },
+  {
+   "why": "entry is not an object",
+   "directives": [
+    "TasksMax=64"
+   ]
+  },
+  {
+   "why": "Environment: LD_PRELOAD",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "LD_PRELOAD=/persist/x/evil.so"
+    }
+   ]
+  },
+  {
+   "why": "Environment: NODE_OPTIONS",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "NODE_OPTIONS=--inspect=0.0.0.0:9229"
+    }
+   ]
+  },
+  {
+   "why": "Environment: a benign LOG_LEVEL is refused too",
+   "directives": [
+    {
+     "key": "Environment",
+     "value": "LOG_LEVEL=debug"
+    }
+   ]
+  },
+  {
+   "why": "agent state root",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/var/lib/powernode"
+    }
+   ]
+  },
+  {
+   "why": "agent pki",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/var/lib/powernode/pki"
+    }
+   ]
+  },
+  {
+   "why": "agent module-signing keys",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/var/lib/powernode/module-signing/platform-keys"
+    }
+   ]
+  },
+  {
+   "why": "module blob cache",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/cache/modules"
+    }
+   ]
+  },
+  {
+   "why": "boot image cache",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/cache/boot-image"
+    }
+   ]
+  },
+  {
+   "why": "persistent /etc",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/etc"
+    }
+   ]
+  },
+  {
+   "why": "module-signing conf",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/etc/powernode"
+    }
+   ]
+  },
+  {
+   "why": "lint-discovery workdir",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/lint-discovery/job"
+    }
+   ]
+  },
+  {
+   "why": "ingress certs",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/powernode-traefik/certs"
+    }
+   ]
+  },
+  {
+   "why": "dev toolchain",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/dev/toolchain"
+    }
+   ]
+  },
+  {
+   "why": "trust path as second entry",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/var/lib/myapp /persist/var/lib/powernode/pki"
+    }
+   ]
+  },
+  {
+   "why": "run/powernode identity",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/run/powernode/identity.cfg"
+    }
+   ]
+  },
+  {
+   "why": "run/powernode storage keys",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/run/powernode/storage/keys"
+    }
+   ]
+  },
+  {
+   "why": "run/powernode modules",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/run/powernode/modules"
+    }
+   ]
+  },
+  {
+   "why": "run/powernode overlay upper",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/run/powernode/scratch/upper"
+    }
+   ]
+  },
+  {
+   "why": "run/powernode app path",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/run/powernode/x/y"
+    }
+   ]
+  },
+  {
+   "why": "ignore-missing prefix on a second path",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/a -/persist/b"
+    }
+   ]
+  },
+  {
+   "why": "plus prefix on a second path",
+   "directives": [
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/a +/etc"
+    }
+   ]
+  }
  ],
  "render": [
   {
    "name": "trial",
    "directives": [
-    {"key": "Environment", "value": "LOG_LEVEL=debug"},
-    {"key": "MemoryMax", "value": "512M"},
-    {"key": "CapabilityBoundingSet", "value": "CAP_NET_BIND_SERVICE CAP_CHOWN"},
-    {"key": "AmbientCapabilities", "value": ""},
-    {"key": "ReadWritePaths", "value": "/persist/app/data /run/powernode/app"},
-    {"key": "Environment", "value": "SPACES=a b"}
+    {
+     "key": "MemoryMax",
+     "value": "512M"
+    },
+    {
+     "key": "CapabilityBoundingSet",
+     "value": "CAP_NET_BIND_SERVICE CAP_CHOWN"
+    },
+    {
+     "key": "AmbientCapabilities",
+     "value": ""
+    },
+    {
+     "key": "ReadWritePaths",
+     "value": "/persist/app/data /persist/var/lib/app"
+    },
+    {
+     "key": "LimitNOFILE",
+     "value": "1024:65536"
+    }
    ],
-   "content": "# Managed by Powernode: operator drop-in \"trial\" (system_apply_unit_dropin).\n# Runtime only: /run is tmpfs, so a reboot removes this file.\n[Service]\nEnvironment=\"LOG_LEVEL=debug\"\nMemoryMax=512M\nCapabilityBoundingSet=\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_CHOWN\nAmbientCapabilities=\nReadWritePaths=/persist/app/data /run/powernode/app\nEnvironment=\"SPACES=a b\"\n"
+   "content": "# Managed by Powernode: operator drop-in \"trial\" (system_apply_unit_dropin).\n# Runtime only: /run is tmpfs, so a reboot removes this file.\n[Service]\nMemoryMax=512M\nCapabilityBoundingSet=\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_CHOWN\nAmbientCapabilities=\nReadWritePaths=/persist/app/data /persist/var/lib/app\nLimitNOFILE=1024:65536\n"
   },
   {
    "name": "zero-caps",
    "directives": [
-    {"key": "CapabilityBoundingSet", "value": ""},
-    {"key": "AmbientCapabilities", "value": ""}
+    {
+     "key": "CapabilityBoundingSet",
+     "value": ""
+    },
+    {
+     "key": "AmbientCapabilities",
+     "value": ""
+    }
    ],
    "content": "# Managed by Powernode: operator drop-in \"zero-caps\" (system_apply_unit_dropin).\n# Runtime only: /run is tmpfs, so a reboot removes this file.\n[Service]\nCapabilityBoundingSet=\nAmbientCapabilities=\n"
+  }
+ ],
+ "capability_subset": [
+  {
+   "why": "CAP_SYS_ADMIN outside the unit's set",
+   "resolved": [
+    "CAP_NET_BIND_SERVICE"
+   ],
+   "directives": [
+    {
+     "key": "AmbientCapabilities",
+     "value": "CAP_SYS_ADMIN"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "why": "bounding set wider than the unit's",
+   "resolved": [
+    "CAP_NET_BIND_SERVICE"
+   ],
+   "directives": [
+    {
+     "key": "CapabilityBoundingSet",
+     "value": "CAP_NET_BIND_SERVICE CAP_NET_RAW"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "why": "strict subset",
+   "resolved": [
+    "CAP_CHOWN",
+    "CAP_NET_BIND_SERVICE"
+   ],
+   "directives": [
+    {
+     "key": "CapabilityBoundingSet",
+     "value": "CAP_NET_BIND_SERVICE"
+    },
+    {
+     "key": "AmbientCapabilities",
+     "value": "CAP_NET_BIND_SERVICE"
+    }
+   ],
+   "ok": true
+  },
+  {
+   "why": "the whole set",
+   "resolved": [
+    "CAP_CHOWN",
+    "CAP_NET_BIND_SERVICE"
+   ],
+   "directives": [
+    {
+     "key": "CapabilityBoundingSet",
+     "value": "CAP_CHOWN CAP_NET_BIND_SERVICE"
+    }
+   ],
+   "ok": true
+  },
+  {
+   "why": "empty (zero caps) on a unit with caps",
+   "resolved": [
+    "CAP_NET_BIND_SERVICE"
+   ],
+   "directives": [
+    {
+     "key": "CapabilityBoundingSet",
+     "value": ""
+    },
+    {
+     "key": "AmbientCapabilities",
+     "value": ""
+    }
+   ],
+   "ok": true
+  },
+  {
+   "why": "empty on a zero-cap unit",
+   "resolved": [],
+   "directives": [
+    {
+     "key": "AmbientCapabilities",
+     "value": ""
+    }
+   ],
+   "ok": true
+  },
+  {
+   "why": "anything on a zero-cap unit",
+   "resolved": [],
+   "directives": [
+    {
+     "key": "AmbientCapabilities",
+     "value": "CAP_CHOWN"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "why": "empty when the set cannot be resolved",
+   "resolved": null,
+   "directives": [
+    {
+     "key": "CapabilityBoundingSet",
+     "value": ""
+    }
+   ],
+   "ok": true
+  },
+  {
+   "why": "non-empty when the set cannot be resolved",
+   "resolved": null,
+   "directives": [
+    {
+     "key": "CapabilityBoundingSet",
+     "value": "CAP_CHOWN"
+    }
+   ],
+   "ok": false
+  },
+  {
+   "why": "no capability directive at all",
+   "resolved": null,
+   "directives": [
+    {
+     "key": "MemoryMax",
+     "value": "1G"
+    }
+   ],
+   "ok": true
   }
  ]
 }

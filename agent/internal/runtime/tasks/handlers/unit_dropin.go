@@ -2,9 +2,13 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -37,6 +41,11 @@ import (
 //     bracket, a double quote or a %-specifier: one newline in a value would
 //     otherwise add an ExecStartPre= line. The file is rendered here from the
 //     validated pairs under a single [Service] header;
+//   - every allowed directive only LIMITS the unit: no Environment= (a name
+//     denylist is incomplete by construction: LD_PRELOAD, NODE_OPTIONS,
+//     BASH_ENV, PATH), capability lists must be a subset of the set this agent
+//     rendered into the unit's capabilities.conf, and ReadWritePaths never
+//     names this agent's own state or trust material;
 //   - the write goes through an O_NOFOLLOW directory fd and a temp file in the
 //     same directory, fsynced and renamed into place, so a symlink planted at
 //     <unit>.d or at the target cannot redirect it and an error never leaves a
@@ -100,7 +109,6 @@ func dropinCheckFault(stage string) error {
 
 var (
 	dropinNameShape = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
-	dropinEnvName   = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
 	dropinLimitPart = regexp.MustCompile(`^(?:infinity|[1-9][0-9]{0,9})$`)
 	dropinPathShape = regexp.MustCompile(`^(?:/[A-Za-z0-9._-]+)+$`)
 
@@ -112,7 +120,7 @@ var (
 
 	// The allow-list. MUST mirror System::UnitDropinService::ALLOWED_DIRECTIVES.
 	dropinAllowed = map[string]bool{
-		"Environment": true, "MemoryMax": true, "CPUQuota": true, "TasksMax": true, "LimitNOFILE": true,
+		"MemoryMax": true, "CPUQuota": true, "TasksMax": true, "LimitNOFILE": true,
 		"AmbientCapabilities": true, "CapabilityBoundingSet": true, "ReadWritePaths": true,
 	}
 	// Rendered as a reset line then the list: a drop-in's capability line is
@@ -120,9 +128,19 @@ var (
 	dropinCapabilityKeys = map[string]bool{"AmbientCapabilities": true, "CapabilityBoundingSet": true}
 	// The only directives whose grammar admits a trailing "%".
 	dropinPercentKeys = map[string]bool{"MemoryMax": true, "CPUQuota": true, "TasksMax": true}
-	// ReadWritePaths may name a path strictly beneath one of these.
-	dropinReadWriteRoots = []string{"/persist", "/run/powernode"}
+	// ReadWritePaths may name a path strictly beneath one of these. Not
+	// /run/powernode: every entry this agent keeps there is its own (identity,
+	// storage keys, modules, exec, the overlay and its scratch upper).
+	dropinReadWriteRoots = []string{"/persist"}
+	// ...and never at or beneath this agent's own state and trust material.
+	// MUST mirror System::UnitDropinService::TRUST_PATHS.
+	dropinTrustPaths = []string{
+		"/persist/var/lib/powernode", "/persist/cache", "/persist/etc", "/persist/lint-discovery",
+		"/persist/powernode-traefik", "/persist/dev",
+	}
 )
+
+const dropinEnvironmentRefusal = "Environment= is not settable through this verb; env tuning needs manifest-declared tunables"
 
 type dropinPair struct{ Key, Value string }
 
@@ -193,13 +211,61 @@ func parseUnitDropinOptions(task *tasks.Task) (unitDropinRequest, error) {
 	if err != nil {
 		return req, err
 	}
+	resolved, known, err := renderedUnitCapabilities(unit)
+	if err != nil {
+		return req, err
+	}
+	if err := dropinCapabilitySubsetRefusal(pairs, resolved, known); err != nil {
+		return req, err
+	}
 	req.Directives = pairs
 	return req, nil
 }
 
+// renderedUnitCapabilities reads back the capability set this agent rendered
+// into the unit's capabilities.conf (security.RenderCapabilityDropInBody:
+// CapabilityBoundingSet= reset, then the list). known is false when there is
+// no such file — a privileged unit, or one never confined — so the set cannot
+// be resolved and only an empty list will pass.
+func renderedUnitCapabilities(unit string) (set []string, known bool, err error) {
+	path := filepath.Join(security.SystemdDropInRoot(), unit+".d", "capabilities.conf")
+	body, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s: %w", path, err)
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "CapabilityBoundingSet="); ok {
+			set = strings.Fields(v) // the last assignment wins, as in systemd after a reset
+		}
+	}
+	return set, true, nil
+}
+
+// dropinCapabilitySubsetRefusal refuses any non-empty capability list that is
+// not a subset of resolved (known false: unresolvable, so nothing but the
+// empty list). Mirrors System::UnitDropinService.capability_subset_refusal.
+func dropinCapabilitySubsetRefusal(pairs []dropinPair, resolved []string, known bool) error {
+	for _, p := range pairs {
+		if !dropinCapabilityKeys[p.Key] || p.Value == "" {
+			continue
+		}
+		if !known {
+			return taskguard.Refused(p.Key, "this unit has no rendered capability set, so only an empty list (zero capabilities) is accepted", p.Value)
+		}
+		for _, name := range strings.Split(p.Value, " ") {
+			if !slices.Contains(resolved, name) {
+				return taskguard.Refused(p.Key, name+" is not in this unit's capability set; a drop-in may only narrow it", p.Value)
+			}
+		}
+	}
+	return nil
+}
+
 // normalizeDropinDirectives validates a decoded directives list. Mirrors
-// System::UnitDropinService.normalize_directives; an Environment value is
-// never echoed in a refusal.
+// System::UnitDropinService.normalize_directives.
 func normalizeDropinDirectives(raw any) ([]dropinPair, error) {
 	list, ok := raw.([]any)
 	if !ok {
@@ -213,7 +279,6 @@ func normalizeDropinDirectives(raw any) ([]dropinPair, error) {
 	}
 
 	seenKeys := map[string]bool{}
-	seenEnv := map[string]bool{}
 	pairs := make([]dropinPair, 0, len(list))
 	for i, item := range list {
 		field := fmt.Sprintf("directives[%d]", i)
@@ -243,30 +308,18 @@ func normalizeDropinDirectives(raw any) ([]dropinPair, error) {
 		if strings.Contains(value, "%") && !dropinPercentKeys[key] {
 			return nil, taskguard.Refused(field+".value", "contains '%': systemd expands %-specifiers in "+key, "")
 		}
+		if key == "Environment" {
+			return nil, taskguard.Refused(field+".key", dropinEnvironmentRefusal, "")
+		}
 		if !dropinAllowed[key] {
 			return nil, taskguard.Refused(field+".key", "is not on the directive allow-list", key)
 		}
-
-		if key == "Environment" {
-			envName, rest, found := strings.Cut(value, "=")
-			if !found || !dropinEnvName.MatchString(envName) {
-				return nil, taskguard.Refused(field, "Environment must be NAME=value with NAME matching ^[A-Z][A-Z0-9_]*$", "")
-			}
-			if seenEnv[envName] {
-				return nil, taskguard.Refused(field, "Environment "+envName+" is given more than once", "")
-			}
-			seenEnv[envName] = true
-			if len(inspectSecretValues(value)) > 0 || len(inspectSecretValues(rest)) > 0 {
-				return nil, taskguard.Refused(field, "Environment "+envName+" looks like a secret", "")
-			}
-		} else {
-			if seenKeys[key] {
-				return nil, taskguard.Refused(field, key+" is given more than once", "")
-			}
-			seenKeys[key] = true
-			if !dropinValueOK(key, value) {
-				return nil, taskguard.Refused(field, key+" value does not match its grammar", value)
-			}
+		if seenKeys[key] {
+			return nil, taskguard.Refused(field, key+" is given more than once", "")
+		}
+		seenKeys[key] = true
+		if !dropinValueOK(key, value) {
+			return nil, taskguard.Refused(field, key+" value does not match its grammar", value)
 		}
 		pairs = append(pairs, dropinPair{Key: key, Value: value})
 	}
@@ -371,6 +424,11 @@ func dropinPathsOK(value string) bool {
 		if !beneath {
 			return false
 		}
+		for _, trust := range dropinTrustPaths {
+			if p == trust || strings.HasPrefix(p, trust+"/") {
+				return false
+			}
+		}
 	}
 	return true
 }
@@ -384,8 +442,6 @@ func renderDropin(name string, pairs []dropinPair) string {
 	b.WriteString("[Service]\n")
 	for _, p := range pairs {
 		switch {
-		case p.Key == "Environment":
-			b.WriteString("Environment=\"" + p.Value + "\"\n")
 		case dropinCapabilityKeys[p.Key]:
 			b.WriteString(p.Key + "=\n")
 			if p.Value != "" {

@@ -14,19 +14,22 @@ import (
 
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 	"github.com/nodealchemy/powernode-system/agent/internal/runtime/tasks"
+	"github.com/nodealchemy/powernode-system/agent/internal/security"
 	"github.com/nodealchemy/powernode-system/agent/internal/taskguard"
 )
 
 // unit.dropin writes ONE runtime drop-in as root. Every test here runs against
 // a sandbox directory standing in for /run/systemd/system, a sandbox lifecycle
-// unit directory, and an injected mount.RecorderRunner: none of them writes
-// under the real /run or runs systemctl.
+// unit directory, a sandbox /etc/systemd/system for the capabilities.conf the
+// agent renders, and an injected mount.RecorderRunner: none of them reads or
+// writes the real /run or /etc, or runs systemctl.
 
 const dropinTestUnit = "powernode-019f7cb5-3858-7caa-aa9f-51629dc8e573-sidekiq.service"
 
 type dropinSandbox struct {
 	root   string // stands in for /run/systemd/system
 	units  string // lifecycle.UnitDir()
+	etc    string // stands in for /etc/systemd/system (capabilities.conf)
 	runner *mount.RecorderRunner
 	h      *UnitDropinHandler
 }
@@ -40,9 +43,10 @@ func newDropinSandbox(t *testing.T) *dropinSandbox {
 	sb := &dropinSandbox{
 		root:   filepath.Join(base, "run-systemd-system"),
 		units:  filepath.Join(base, "units"),
+		etc:    filepath.Join(base, "etc-systemd-system"),
 		runner: &mount.RecorderRunner{},
 	}
-	for _, d := range []string{sb.root, sb.units, filepath.Join(base, "outside")} {
+	for _, d := range []string{sb.root, sb.units, sb.etc, filepath.Join(base, "outside")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -50,6 +54,7 @@ func newDropinSandbox(t *testing.T) *dropinSandbox {
 	t.Setenv("POWERNODE_LIFECYCLE_UNIT_DIR", sb.units)
 	writeUnitFile(t, sb.units, dropinTestUnit)
 	t.Cleanup(SetDropinRootForTest(sb.root))
+	t.Cleanup(security.SetSystemdDropInRootForTest(sb.etc))
 	sb.h = &UnitDropinHandler{deps: tasks.Dependencies{MountRunner: sb.runner}}
 	return sb
 }
@@ -57,6 +62,23 @@ func newDropinSandbox(t *testing.T) *dropinSandbox {
 func (sb *dropinSandbox) outside() string { return filepath.Join(filepath.Dir(sb.root), "outside") }
 
 func (sb *dropinSandbox) dir() string { return filepath.Join(sb.root, dropinTestUnit+".d") }
+
+// renderCaps writes the capabilities.conf the agent's own attach path renders
+// for the unit, through the same renderer.
+func (sb *dropinSandbox) renderCaps(t *testing.T, allow ...string) {
+	t.Helper()
+	body, err := security.RenderCapabilityDropInBody(allow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(sb.etc, dropinTestUnit+".d")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "capabilities.conf"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func (sb *dropinSandbox) run(options map[string]any) (tasks.Result, error) {
 	return sb.h.Execute(context.Background(), &tasks.Task{ID: "t1", Command: "unit.dropin", Options: options})
@@ -101,10 +123,16 @@ func directive(key, value string) map[string]any { return map[string]any{"key": 
 // unit_dropin_cases.json is read by the Ruby System::UnitDropinService spec as
 // well: one table, two allow-lists, two renderers.
 type dropinCases struct {
-	NameOK      []string `json:"name_ok"`
-	NameRefused []string `json:"name_refused"`
-	Accepted    [][]any  `json:"accepted"`
-	Refused     []struct {
+	NameOK           []string `json:"name_ok"`
+	NameRefused      []string `json:"name_refused"`
+	Accepted         [][]any  `json:"accepted"`
+	CapabilitySubset []struct {
+		Why        string    `json:"why"`
+		Resolved   *[]string `json:"resolved"`
+		Directives []any     `json:"directives"`
+		OK         bool      `json:"ok"`
+	} `json:"capability_subset"`
+	Refused []struct {
 		Why        string `json:"why"`
 		Directives []any  `json:"directives"`
 	} `json:"refused"`
@@ -160,7 +188,7 @@ func loadDropinCases(t *testing.T) dropinCases {
 	if err := json.Unmarshal(expanded, &c); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.NameOK) == 0 || len(c.NameRefused) == 0 || len(c.Accepted) == 0 || len(c.Refused) == 0 || len(c.Render) == 0 {
+	if len(c.NameOK) == 0 || len(c.NameRefused) == 0 || len(c.Accepted) == 0 || len(c.Refused) == 0 || len(c.Render) == 0 || len(c.CapabilitySubset) == 0 {
 		t.Fatal("a section of unit_dropin_cases.json is empty")
 	}
 	return c
@@ -203,6 +231,23 @@ func TestUnitDropinSharedCases(t *testing.T) {
 			t.Errorf("refused fixture %q accepted (err=%v)", entry.Why, err)
 		}
 	}
+	for _, entry := range c.CapabilitySubset {
+		pairs, err := normalizeDropinDirectives(asTaskValue(t, entry.Directives))
+		if err != nil {
+			t.Fatalf("capability_subset fixture %q: %v", entry.Why, err)
+		}
+		var resolved []string
+		if entry.Resolved != nil {
+			resolved = *entry.Resolved
+		}
+		err = dropinCapabilitySubsetRefusal(pairs, resolved, entry.Resolved != nil)
+		if entry.OK && err != nil {
+			t.Errorf("capability_subset %q refused: %v", entry.Why, err)
+		}
+		if !entry.OK && !errors.Is(err, taskguard.ErrRefused) {
+			t.Errorf("capability_subset %q accepted (err=%v)", entry.Why, err)
+		}
+	}
 	for _, entry := range c.Render {
 		pairs, err := normalizeDropinDirectives(asTaskValue(t, entry.Directives))
 		if err != nil {
@@ -217,9 +262,9 @@ func TestUnitDropinSharedCases(t *testing.T) {
 func TestUnitDropinRefusesTooManyDirectives(t *testing.T) {
 	list := make([]any, 0, dropinMaxDirectives+1)
 	for i := 0; i <= dropinMaxDirectives; i++ {
-		list = append(list, map[string]any{"key": "Environment", "value": "V" + strings.Repeat("A", i+1) + "=x"})
+		list = append(list, map[string]any{"key": "MemoryMax", "value": "1G"})
 	}
-	if _, err := normalizeDropinDirectives(list); !errors.Is(err, taskguard.ErrRefused) {
+	if _, err := normalizeDropinDirectives(list); !errors.Is(err, taskguard.ErrRefused) || !strings.Contains(err.Error(), "at most") {
 		t.Fatalf("%d directives accepted (err=%v)", len(list), err)
 	}
 }
@@ -499,14 +544,48 @@ func TestUnitDropinRefusesMalformedOptions(t *testing.T) {
 	}
 }
 
-func TestUnitDropinRefusalNeverEchoesAnEnvironmentValue(t *testing.T) {
-	value := "DB_PASSWORD=" + strings.Repeat("q7", 8)
-	_, err := normalizeDropinDirectives([]any{map[string]any{"key": "Environment", "value": value}})
-	if !errors.Is(err, taskguard.ErrRefused) {
-		t.Fatalf("secret-shaped value accepted (err=%v)", err)
+// F1: Environment= is off the allow-list, benign or not.
+func TestUnitDropinRefusesEnvironment(t *testing.T) {
+	for _, value := range []string{"LOG_LEVEL=debug", "LD_PRELOAD=/persist/x/evil.so", "NODE_OPTIONS=--inspect"} {
+		_, err := normalizeDropinDirectives([]any{map[string]any{"key": "Environment", "value": value}})
+		if !errors.Is(err, taskguard.ErrRefused) || !strings.Contains(err.Error(), "Environment= is not settable through this verb; env tuning needs manifest-declared tunables") {
+			t.Errorf("Environment %q: err = %v", value, err)
+		}
 	}
-	if strings.Contains(err.Error(), "q7q7") {
-		t.Fatalf("refusal echoes the value: %v", err)
+}
+
+// F2: a capability directive may only narrow the set the agent rendered into
+// the unit's capabilities.conf; with no such file only the empty list passes.
+func TestUnitDropinCapabilitiesMustNarrowTheRenderedSet(t *testing.T) {
+	sb := newDropinSandbox(t)
+
+	caps := func(key, value string) map[string]any { return applyOptions("caps", directive(key, value)) }
+
+	// No capabilities.conf: the set cannot be resolved.
+	if _, err := sb.run(caps("AmbientCapabilities", "CAP_CHOWN")); !errors.Is(err, taskguard.ErrRefused) {
+		t.Fatalf("non-empty caps accepted with no rendered set (err=%v)", err)
+	}
+	if _, err := sb.run(caps("AmbientCapabilities", "")); err != nil {
+		t.Fatalf("empty caps refused with no rendered set: %v", err)
+	}
+
+	sb.renderCaps(t, "CAP_NET_BIND_SERVICE", "CAP_CHOWN")
+	if _, err := sb.run(caps("AmbientCapabilities", "CAP_SYS_ADMIN")); !errors.Is(err, taskguard.ErrRefused) {
+		t.Fatalf("CAP_SYS_ADMIN accepted on a unit rendered without it (err=%v)", err)
+	}
+	if _, err := sb.run(caps("CapabilityBoundingSet", "CAP_NET_BIND_SERVICE CAP_NET_RAW")); !errors.Is(err, taskguard.ErrRefused) {
+		t.Fatalf("a wider bounding set was accepted (err=%v)", err)
+	}
+	if _, err := sb.run(caps("CapabilityBoundingSet", "CAP_NET_BIND_SERVICE")); err != nil {
+		t.Fatalf("a strict subset was refused: %v", err)
+	}
+	if _, err := sb.run(caps("CapabilityBoundingSet", "")); err != nil {
+		t.Fatalf("the empty list was refused: %v", err)
+	}
+
+	sb.renderCaps(t) // a zero-capability unit
+	if _, err := sb.run(caps("AmbientCapabilities", "CAP_CHOWN")); !errors.Is(err, taskguard.ErrRefused) {
+		t.Fatalf("a capability was accepted on a zero-capability unit (err=%v)", err)
 	}
 }
 
