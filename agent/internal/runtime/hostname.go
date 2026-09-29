@@ -14,7 +14,11 @@ import (
 // fallback source: it carries the (long) instance name, and a bare-provisioned
 // node never receives it — so the authoritative source is the mTLS-delivered
 // node name (see assignedHostnamePath).
-const instanceNameFwCfgPath = "/sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/instance_name/raw"
+//
+// A var (not const), like assignedHostnamePath, so TestMain can point it away
+// from the host's own fw-cfg: on a QEMU node that blob is present, and a test
+// that read it would drive the live-root hostname writers with the host's name.
+var instanceNameFwCfgPath = "/sys/firmware/qemu_fw_cfg/by_name/opt/com.powernode/instance_name/raw"
 
 // assignedHostnamePath is where the agent persists the platform-assigned
 // hostname — node.name, the operator-facing short name (e.g. "ops-hub") —

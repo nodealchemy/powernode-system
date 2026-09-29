@@ -16,7 +16,6 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/a2a"
 	"github.com/nodealchemy/powernode-system/agent/internal/dockerd"
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
-	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 	"github.com/nodealchemy/powernode-system/agent/internal/k3sd"
@@ -164,7 +163,7 @@ func (s *Service) Run(ctx context.Context) error {
 	// (POWERNODE_OPERATOR_BREAK_GLASS=1) so production deployments leave
 	// it off and rely on module-declared SudoersGrant rows instead.
 	// Idempotent: re-running with the same on-disk state is a no-op.
-	if err := etcsudoers.ApplyOperatorBreakGlass(etcsudoers.OperatorBreakGlassEnabledFromEnv()); err != nil {
+	if err := applyBreakGlass(etcsudoers.OperatorBreakGlassEnabledFromEnv()); err != nil {
 		s.cfg.OnError("operator_break_glass", err)
 	}
 
@@ -992,7 +991,7 @@ func (s *Service) applyHostnameFromFwCfg() error {
 	if name == "" {
 		return nil
 	}
-	if _, err := etcidentity.ApplyHostname("", name, true); err != nil {
+	if _, err := applyHostname("", name, true); err != nil {
 		return err
 	}
 	return nil

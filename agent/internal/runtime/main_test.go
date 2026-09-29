@@ -10,6 +10,7 @@ import (
 	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 	"github.com/nodealchemy/powernode-system/agent/internal/security"
+	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
 )
 
 // TestMain sandboxes every /persist-backed path in this package BEFORE any test
@@ -29,6 +30,10 @@ import (
 // it did not expect" instead of "a future test deletes live boot state". Tests
 // that need their own paths still override them locally; this is the floor, not
 // a replacement for the per-test seams.
+// hostnameTestRoot is the sandbox root the live-root hostname writers are
+// redirected to; tests read the result back from it.
+var hostnameTestRoot string
+
 func TestMain(m *testing.M) {
 	sandbox, err := os.MkdirTemp("", "powernode-runtime-test-*")
 	if err != nil {
@@ -100,7 +105,33 @@ func TestMain(m *testing.M) {
 	applySudoers = func([]etcsudoers.Grant) error { return nil }
 	reconcileHomeOwnership = func(*etcidentity.Set, string, func(string, error)) {}
 
-	code := m.Run()
+	// The write guard is the floor UNDER the redirects above: whatever host-
+	// global writer a test reaches that nobody redirected (an ApplyAt call with
+	// an empty sysroot, a new /etc path) is refused on its resolved path and
+	// fails the binary — unprivileged too, where the real write would only
+	// EACCES and look harmless. Its recorded violations force a non-zero exit.
+	// The live-root hostname + break-glass writers (reconcile.go, service.go).
+	// The two hostname SOURCES are redirected too: a persisted or fw-cfg name
+	// on the host running the suite would otherwise drive the writers below,
+	// and modules_client's persistAssignedHostname would write the real
+	// /persist as root. The writers land in the sandbox with applyLive off, so
+	// sethostname(2) is never called.
+	hostnameTestRoot = filepath.Join(sandbox, "hostname-root")
+	if merr := os.MkdirAll(filepath.Join(hostnameTestRoot, "etc"), 0o755); merr != nil {
+		fmt.Fprintln(os.Stderr, "TestMain: cannot create hostname root:", merr)
+		os.Exit(1)
+	}
+	sudoersTestDir := filepath.Join(sandbox, "sudoers.d")
+	assignedHostnamePath = filepath.Join(sandbox, "assigned-hostname")
+	instanceNameFwCfgPath = filepath.Join(sandbox, "fw-cfg-instance-name-absent")
+	applyHostname = func(_, name string, _ bool) (bool, error) {
+		return etcidentity.ApplyHostname(hostnameTestRoot, name, false)
+	}
+	applyBreakGlass = func(enabled bool) error {
+		return etcsudoers.ApplyOperatorBreakGlassAt(enabled, sudoersTestDir)
+	}
+
+	code := writeguard.Run(m.Run)
 	_ = os.RemoveAll(sandbox)
 	os.Exit(code)
 }

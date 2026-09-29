@@ -56,6 +56,15 @@ var applyIdentity = etcidentity.Apply
 var applySudoers = etcsudoers.Apply
 var reconcileHomeOwnership = etcidentity.ReconcileHomeOwnership
 
+// applyHostname and applyBreakGlass are the same indirection for the two
+// remaining live-root writers: the hostname reassert (/etc/hostname, the
+// networkd drop-in, sethostname(2)) that reconcile.go and service.go reach via
+// desiredHostname(), and the operator break-glass drop-in under
+// /etc/sudoers.d that Service.Run applies (or REMOVES, when the env flag is
+// off) before bootstrap. TestMain redirects both into its sandbox.
+var applyHostname = etcidentity.ApplyHostname
+var applyBreakGlass = etcsudoers.ApplyOperatorBreakGlass
+
 // PullerAPI is the subset of *oci.Puller the reconciler depends on.
 // Defined as an interface so tests can stub without standing up an
 // httptest server for the blob download path.
@@ -1542,7 +1551,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// present this boot (e.g. a non-QEMU/cloud node with no instance_name
 	// fw-cfg, where the hostname is set by cloud-init and left untouched here).
 	if name := desiredHostname(); name != "" {
-		changed, err := etcidentity.ApplyHostname("", name, true)
+		changed, err := applyHostname("", name, true)
 		switch {
 		case err != nil:
 			r.cfg.OnError("reconciler:hostname_write", err)
