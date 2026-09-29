@@ -46,6 +46,16 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 
 	for _, g := range grants {
 		body := Render(g, now())
+		path := filepath.Join(dir, g.Filename())
+		// The directory check above is not enough: Filename() embeds the
+		// module name and grant id, so a ".." in either would put the file
+		// outside dir. Judge the path actually written.
+		if err := writeguard.Check(path); err != nil {
+			if firstWriteErr == nil {
+				firstWriteErr = err
+			}
+			continue
+		}
 		if err := Validate(body); err != nil {
 			// Skip this grant but keep going — one bad file shouldn't
 			// invalidate every other module's sudo grants. The orphan
@@ -55,7 +65,6 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 			}
 			continue
 		}
-		path := filepath.Join(dir, g.Filename())
 		if err := fsutil.AtomicWrite(path, body, 0440); err != nil {
 			if firstWriteErr == nil {
 				firstWriteErr = fmt.Errorf("write %s: %w", path, err)
@@ -110,6 +119,9 @@ func sweep(dir string, kept map[string]struct{}) error {
 		path := filepath.Join(dir, name)
 		if _, want := kept[path]; want {
 			continue
+		}
+		if err := writeguard.Check(path); err != nil {
+			return err
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("sweep %s: %w", path, err)

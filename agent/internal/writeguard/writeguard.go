@@ -13,34 +13,55 @@
 // the outcome would only ever fire for root.
 //
 // Production behaviour is unchanged: the guard is disabled unless a test
-// binary's TestMain calls Run, and a disabled Check is a no-op.
+// binary's TestMain calls Run, a disabled Check is a no-op, and Enable/Run
+// panic outside a test binary so production code can never arm it (an armed
+// guard would refuse the real /etc/passwd render).
+//
+// Specs that provoke a violation on purpose consume it with Capture, which
+// removes only the violations recorded inside its own call. There is no way to
+// clear the whole record: a global reset would let a later spec erase an
+// earlier test's swallowed violation and turn the binary green.
 package writeguard
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"testing"
 )
 
 var (
 	mu         sync.Mutex
 	root       string // resolved sandbox root; "" means disabled
 	violations []string
+
+	// testingFn is a var so a spec can prove the production-arming refusal.
+	testingFn = testing.Testing
 )
 
 // Run enables the guard rooted at os.TempDir(), runs the test binary via fn
-// (normally m.Run), reports every recorded violation to stderr, and returns
+// (normally m.Run), reports every surviving violation to stderr, and returns
 // the exit code — non-zero when a violation was recorded even if every test
 // passed, because a swallowed guard error would otherwise pass silently.
 func Run(fn func() int) int {
+	return run(fn, os.Stderr)
+}
+
+func run(fn func() int, stderr io.Writer) int {
 	Enable(os.TempDir())
+	defer Disable()
 	code := fn()
-	if v := Reset(); len(v) > 0 {
-		fmt.Fprintf(os.Stderr, "writeguard: %d write(s) resolved outside the test sandbox:\n", len(v))
+	mu.Lock()
+	v := violations
+	violations = nil
+	mu.Unlock()
+	if len(v) > 0 {
+		fmt.Fprintf(stderr, "writeguard: %d write(s) resolved outside the test sandbox:\n", len(v))
 		for _, s := range v {
-			fmt.Fprintln(os.Stderr, "  "+s)
+			fmt.Fprintln(stderr, "  "+s)
 		}
 		if code == 0 {
 			code = 1
@@ -49,12 +70,20 @@ func Run(fn func() int) int {
 	return code
 }
 
-// Enable activates the guard with dir as the only writable root. It is
-// test-only by convention (see the package comment).
+// Enable activates the guard with dir as the only writable root. It panics
+// outside a test binary, and when dir is empty, relative, or resolves to "/" — a
+// filesystem-wide sandbox would make the guard inert while looking armed.
 func Enable(dir string) {
+	if !testingFn() {
+		panic("writeguard: Enable called outside a test binary")
+	}
+	r := resolve(dir)
+	if dir == "" || !filepath.IsAbs(dir) || r == string(filepath.Separator) {
+		panic(fmt.Sprintf("writeguard: sandbox root %q resolves to %q, which would allow every write", dir, r))
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	root = resolve(dir)
+	root = r
 }
 
 // Disable deactivates the guard.
@@ -64,20 +93,30 @@ func Disable() {
 	root = ""
 }
 
-// Reset returns and clears the recorded violations. The guard's own specs use
-// it to consume the violations they provoke on purpose.
-func Reset() []string {
+// Capture runs fn and returns, AND CONSUMES, the violations recorded while it
+// ran; violations recorded before the call are untouched and still fail the
+// binary. Specs use it to provoke a violation on purpose. Not for use from
+// parallel tests: a violation another goroutine records inside the window is
+// consumed too.
+func Capture(fn func()) []string {
+	mu.Lock()
+	start := len(violations)
+	mu.Unlock()
+	fn()
 	mu.Lock()
 	defer mu.Unlock()
-	v := violations
-	violations = nil
-	return v
+	if start > len(violations) {
+		start = len(violations)
+	}
+	got := append([]string(nil), violations[start:]...)
+	violations = violations[:start]
+	return got
 }
 
 // Check reports whether a write to path may proceed. Disabled: always nil.
-// Enabled: a relative path, or one that resolves (through symlinks on its
-// deepest existing ancestor) outside the sandbox root, is recorded and
-// returned as an error.
+// Enabled: a relative path, or one that resolves (following every symlink,
+// including a dangling final one, before any ".." is applied) outside the
+// sandbox root, is recorded and returned as an error.
 func Check(path string) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -116,19 +155,49 @@ func within(dir, path string) bool {
 	return path == dir || strings.HasPrefix(path, dir+string(filepath.Separator))
 }
 
-// resolve cleans path and resolves symlinks on its deepest existing ancestor,
-// so a path that does not exist yet (the write is about to create it) is still
-// judged by where its parent really lives.
+// maxLinks bounds symlink expansion (Linux's own limit is 40) so a loop fails
+// closed rather than hanging the test binary.
+const maxLinks = 40
+
+// resolve returns where an ABSOLUTE path really points, walking it component by
+// component so every symlink is followed BEFORE the next ".." is applied
+// (lexically cleaning first would judge <sandbox>/link/../x by the sandbox, not
+// by the link's target). A component that does not exist yet is taken as-is —
+// the write is about to create it — and a dangling symlink is judged by its
+// target, not by the directory it sits in. A loop or unreadable link resolves
+// to "/", which is outside every valid sandbox.
 func resolve(path string) string {
-	path = filepath.Clean(path)
-	rest := ""
-	for p := path; ; p = filepath.Dir(p) {
-		if real, err := filepath.EvalSymlinks(p); err == nil {
-			return filepath.Join(real, rest)
+	sep := string(filepath.Separator)
+	cur := sep
+	work := strings.Split(path, sep)
+	links := 0
+	for len(work) > 0 {
+		c := work[0]
+		work = work[1:]
+		switch c {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
 		}
-		if p == filepath.Dir(p) {
-			return path
+		next := filepath.Join(cur, c)
+		fi, err := os.Lstat(next)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			cur = next
+			continue
 		}
-		rest = filepath.Join(filepath.Base(p), rest)
+		if links++; links > maxLinks {
+			return sep
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return sep
+		}
+		if filepath.IsAbs(target) {
+			cur = sep
+		}
+		work = append(strings.Split(target, sep), work...)
 	}
+	return cur
 }

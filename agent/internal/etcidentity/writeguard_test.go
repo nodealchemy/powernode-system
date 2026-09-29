@@ -13,9 +13,6 @@ import (
 // unprivileged, and would be equally safe as root. The sandboxed arm of each
 // is already covered by the package's own tests, which all pass a tempdir.
 func TestDefaultTargetsAreRefusedUnderTheGuard(t *testing.T) {
-	t.Cleanup(func() { writeguard.Reset() })
-	writeguard.Reset()
-
 	calls := map[string]func() error{
 		"Apply":         func() error { return Apply(&Set{}) },
 		"ApplyHostname": func() error { _, err := ApplyHostname("", "guard-probe", false); return err },
@@ -34,13 +31,10 @@ func TestDefaultTargetsAreRefusedUnderTheGuard(t *testing.T) {
 		"EnsureOwnedDir":       func() error { return EnsureOwnedDir("/home/guard-probe", 0, 0, 0o700) },
 	}
 	for name, call := range calls {
-		if err := call(); err == nil {
-			t.Errorf("%s: default/out-of-sandbox target was not refused", name)
+		var err error
+		rec := writeguard.Capture(func() { err = call() })
+		if err == nil || len(rec) != 1 {
+			t.Errorf("%s: default/out-of-sandbox target was not refused (err=%v, recorded=%d)", name, err, len(rec))
 		}
-	}
-	// One violation per call, and the live case must have been refused by the
-	// guard itself, not by an unrelated failure: nothing here writes the host.
-	if got := len(writeguard.Reset()); got != len(calls) {
-		t.Errorf("recorded %d violations, want %d", got, len(calls))
 	}
 }
