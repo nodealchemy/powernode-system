@@ -1115,7 +1115,7 @@ module Ai
                      gate_context: :restart_unit_gate_context,
                      on_proceed: :deferred_tool_call_result,
                      returns: "task_id, instance_id, unit and status of the queued restart task",
-                     refuses: "the reason is blank or too long, the unit is not composed on the instance, is the agent's own or outside powernode-*, is the control plane's own rails or postgres, or the instance is not running"
+                     refuses: "the reason is blank or too long, the unit is not composed on the instance, is the agent's own or outside powernode-*, is on the node hosting this control plane (or is one of its critical services while that node is unconfigured), or the instance is not running or its agent is silent"
       declare_action "system_replenish_instance_pool", mutating: true, returns: "pool summary and the replenish result"
       declare_action "system_report_storage_migration_progress", mutating: true, returns: "storage_migration, full record", refuses: "the status change is not a legal transition"
       declare_action "system_return_pooled_instance", mutating: true
@@ -1604,7 +1604,7 @@ module Ai
           },
           # IMP-88e82d59b7f2 — see the declare_action for the gate and the replay.
           "system_restart_unit" => {
-            description: "Restart ONE systemd unit that a module composed on an instance (powernode-<module-id>-<service>.service), through the node's own agent, with no shell access. The unit must be one of the services of the modules attached to that instance's node; anything else is refused, as is the node agent's own unit (agent restarts stay out-of-band), any unit outside the powernode-* namespace, and the rails and postgres units of the node that hosts this control plane. The instance must be running. reason is required (1 to 500 characters) and is recorded in the audit log. " \
+            description: "Restart ONE systemd unit that a module composed on an instance (powernode-<module-id>-<service>.service), through the node's own agent, with no shell access. The unit must be one of the services of the modules attached to that instance's node; anything else is refused, as is the node agent's own unit (agent restarts stay out-of-band), any unit outside the powernode-* namespace, and every unit on the node that hosts this control plane (while that node is unconfigured, its critical services: rails, postgres, pg-replica, redis, vault, traefik, restore-dynamic, sidekiq, worker-web, caddy). The instance must be running with a reporting agent. reason is required (1 to 500 characters) and is recorded in the audit log. " \
                          "APPROVAL-GATED (system.task.restart): when policy requires approval this returns " \
                          "{pending: true} with an approval_request_id and NOTHING is restarted until an operator " \
                          "approves — do not report a restart on that response. The checks run again when the approval lands; " \
