@@ -178,6 +178,49 @@ RSpec.describe System::NodeInspection do
     end
   end
 
+  # ONE table, two implementations. agent/internal/taskguard/testdata/
+  # inspect_cases.json is read by the Go taskguard test as well, so a rule stated
+  # differently on the two sides (a character set, a length counted in characters
+  # rather than bytes) fails one of them. The Go-source parity below covers the
+  # LISTS; this covers the CHARSET and LENGTH rules the lists do not.
+  describe "shared charset and length cases with the agent" do
+    let(:cases) do
+      raw = JSON.parse(Rails.root.join("..", "extensions", "system", "agent", "internal", "taskguard", "testdata", "inspect_cases.json").read)
+      raw.reject { |k, _| k.start_with?("_") }.transform_values do |list|
+        list.map { |e| e.is_a?(Hash) ? "#{e['prefix']}#{e['repeat'] * e['times']}#{e['suffix']}" : e }
+      end
+    end
+
+    def accepts?(collector, key, value)
+      options_for(collector, key => value)
+      true
+    rescue described_class::Invalid
+      false
+    end
+
+    it "carries every case group, non-empty" do
+      expect(cases.keys).to match_array(%w[path_ok path_refused interface_ok interface_refused unit_ok unit_refused])
+      expect(cases.values).to all(be_present)
+    end
+
+    it "agrees on file_stat paths" do
+      wrong_ok = cases["path_ok"].reject { |v| accepts?("file_stat", :path, v) }
+      wrong_refused = cases["path_refused"].select { |v| accepts?("file_stat", :path, v) }
+      expect(wrong_ok).to eq([]), "server refuses what the agent accepts: #{wrong_ok.map { |v| v[0, 60] }.inspect}"
+      expect(wrong_refused).to eq([]), "server accepts what the agent refuses: #{wrong_refused.map { |v| v[0, 60] }.inspect}"
+    end
+
+    it "agrees on interface names" do
+      expect(cases["interface_ok"].reject { |v| accepts?("wg_status", :interface, v) }).to eq([])
+      expect(cases["interface_refused"].select { |v| accepts?("wg_status", :interface, v) }).to eq([])
+    end
+
+    it "agrees on unit names" do
+      expect(cases["unit_ok"].reject { |v| accepts?("unit", :unit, v) }).to eq([])
+      expect(cases["unit_refused"].select { |v| accepts?("unit", :unit, v) }).to eq([])
+    end
+  end
+
   # The agent is authoritative and this class mirrors it. Reading the Go source
   # here means the two lists cannot drift apart silently: editing either side
   # alone reds this example. (The same parity technique

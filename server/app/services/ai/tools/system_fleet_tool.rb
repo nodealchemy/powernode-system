@@ -85,6 +85,13 @@ module Ai
         [ max_threads.to_i / 4, 1 ].max
       end
 
+      # The operator-tunable policy row for system_inspect_node: the SAME category
+      # the task-creation gate (TasksController#create) resolves for the
+      # probe.node_inspect command, so ONE row governs the verb whichever door a
+      # caller comes through (System::Governance::PolicyDeclarations, auto_approve
+      # by default). Tightening it to require_approval or block applies here.
+      INSPECT_NODE_CATEGORY = "system.task.probe.node_inspect"
+
       WAIT_CONCURRENCY = wait_concurrency_for(ENV.fetch("RAILS_MAX_THREADS", 16))
       WAIT_PERMITS = ::Concurrent::Semaphore.new(WAIT_CONCURRENCY)
 
@@ -937,7 +944,22 @@ module Ai
       declare_action "system_grant_instance_mcp_tools", mutating: true
       declare_action "system_grant_instance_peer_skills", mutating: true
       declare_action "system_inspect_correlation", mutating: false, returns: "correlation_id, events in emission order, count and duration_seconds", refuses: "correlation_id is blank"
-      declare_action "system_inspect_node", mutating: false, returns: "task_id, instance_id, collector, status, finished and, once the agent has answered, result: the collector's redacted output (timed_out and wait_seconds when it waited)", refuses: "the collector or an argument is outside the fixed allow-list, the instance is not in this account, an instance principal names any instance but its own, or the instance is not running"
+      # IMP-52762a704a3d — read-only node inspection. `mutating: true` although it
+      # never changes the node: it inserts a System::Task and returns root-level
+      # diagnostics, so it must NOT be on the read-only allowlist an exported
+      # agent gets (Ai::ClaudeExport::ToolAllowlist#read_action_names). Not
+      # destructive, and governance is auto_approve by default, so it runs
+      # inline; the gate is what lets an operator tighten it. The generic replay
+      # executor re-invokes THIS action on approval as the original principal, so
+      # #inspect_node stays the single author of the task.
+      declare_action "system_inspect_node",
+                     mutating: true,
+                     action_category: INSPECT_NODE_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :inspect_node_gate_context,
+                     on_proceed: :deferred_tool_call_result,
+                     returns: "task_id, instance_id, collector, status, finished and, once the agent has answered, result: the collector's redacted output (timed_out and wait_seconds when it waited)",
+                     refuses: "the collector or an argument is outside the fixed allow-list, the instance is not in this account, an instance principal names any instance but its own, or the instance is not running"
       declare_action "system_instance_hold", mutating: true, destructive: true
       declare_action "system_instance_hold_status", mutating: false, returns: "the recorded hold (held, expired, reason, held_by, held_at, expires_at), provider_enforced, provider_state, a summary and drift"
       declare_action "system_instance_release_hold", mutating: true, destructive: true, returns: "instance_id, name and a message"
@@ -2505,7 +2527,7 @@ module Ai
           # IMP-52762a704a3d — read-only node inspection, the routine sibling of
           # system_out_of_band_exec (which stays human-only and approval-gated).
           "system_inspect_node" => {
-            description: "Read-only inspection of ONE node, through its own on-node agent, with no shell access. Queues a probe.node_inspect task running one of seven FIXED collectors and long-polls for the result: wg_status (`wg show <interface>` only, key material stripped), routes (ip vrf show, ip route and ip rule for IPv4 and IPv6, all tables including VRFs), nft (nft list ruleset or nft list chains), journal (journalctl for a unit, newest lines, capped at #{::System::NodeInspection::JOURNAL_MAX_LINES}), unit (systemctl cat: the unit file and its drop-ins), caps (the Cap* sets of the unit's main PID, decoded to names) and file_stat (a file's type, size, mode, owner, mtime and sha256, NEVER its contents). There is no free-form command, flag or path: every argument is validated here and again on the node, the unit must exist on the node, file_stat is limited to an allow-list of trees (#{::System::NodeInspection::ALLOWED_PATH_PREFIXES.join(', ')}) with secret locations (shadow files, private keys, pki, credentials, tokens) refused even inside them, a symlink is never followed out of that allow-list, and every collector's output is bounded and scrubbed of secrets on the node and redacted again here. SELF-ONLY for an instance principal: it may inspect only the node it authenticated as (instance_id may be omitted, meaning itself) and any other instance is refused; a user principal may inspect any instance of its account. Requires system.infra_tasks.create; auto_approve, never parked. WAITING: wait_seconds defaults to and is clamped at the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s; the reply carries the collector's result once the agent has answered. 0 returns the task_id at once; on expiry the reply is still a success with timed_out: true and the task_id, and system_get_task (wait_seconds, include_events) reads it later. A collector whose tool fails on the node (nft not installed) is a completed result with ok: false and the reason. Refused by the agent (a unit that does not exist) is an error carrying the reason and the task_id. The instance must be running.",
+            description: "Read-only inspection of ONE node, through its own on-node agent, with no shell access. Queues a probe.node_inspect task running one of seven FIXED collectors and long-polls for the result: wg_status (`wg show <interface>` only, key material stripped), routes (ip vrf show, ip route and ip rule for IPv4 and IPv6, all tables including VRFs), nft (nft list ruleset or nft list chains), journal (journalctl for a unit, newest lines, capped at #{::System::NodeInspection::JOURNAL_MAX_LINES}), unit (systemctl cat: the unit file and its drop-ins), caps (the Cap* sets of the unit's main PID, decoded to names) and file_stat (a file's type, size, mode, owner, mtime and sha256, NEVER its contents). There is no free-form command, flag or path: every argument is validated here and again on the node, the unit must exist on the node, file_stat is limited to an allow-list of trees (#{::System::NodeInspection::ALLOWED_PATH_PREFIXES.join(', ')}) with secret locations (shadow files, private keys, pki, credentials, tokens) refused even inside them, a symlink is never followed out of that allow-list, and every collector's output is bounded and scrubbed of secrets on the node and redacted again here. SELF-ONLY for an instance principal: it may inspect only the node it authenticated as (instance_id may be omitted, meaning itself) and any other instance is refused; a user principal may inspect any instance of its account. Requires system.infra_tasks.create. Governed under #{INSPECT_NODE_CATEGORY}, auto_approve by default so it runs inline; an operator who tightens that policy to require_approval gets the pending envelope (pending: true, nothing queued until approved) and block refuses it. WAITING: wait_seconds defaults to and is clamped at the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s; the reply carries the collector's result once the agent has answered. 0 returns the task_id at once; on expiry the reply is still a success with timed_out: true and the task_id, and system_get_task (wait_seconds, include_events) reads it later. A collector whose tool fails on the node (nft not installed) is a completed result with ok: false and the reason. Refused by the agent (a unit that does not exist) is an error carrying the reason and the task_id. The instance must be running.",
             parameters: {
               instance_id: { type: "string", required: false, description: "System::NodeInstance id to inspect (account-scoped). Required for a user principal; an instance principal may omit it (meaning itself) and may pass only its own id." },
               collector: { type: "string", required: true, enum: ::System::NodeInspection::COLLECTORS.keys,
@@ -5877,13 +5899,7 @@ module Ai
         wait = wait_seconds_param(params, default: WAIT_MAX_SECONDS)
         return wait_seconds_error unless wait
 
-        instance = inspect_node_target(params)
-        options = ::System::NodeInspection.options_from(params)
-        # The status arm only: a node whose agent is merely silent may be coming
-        # back, and the task waits for it. A node with no agent process at all
-        # (stopped, terminated) would never pull it.
-        refusal = instance.offline_dispatch_refusal
-        raise CallerFacingError, refusal if refusal
+        instance, options = inspect_node_resolve(params)
 
         task = ::System::Task.create!(
           account: @account, operable: instance,
@@ -5903,6 +5919,49 @@ module Ai
         reply.merge!({ timed_out: timed_out, wait_seconds: wait }.merge(wait_degraded_marker(degraded))) unless wait.zero?
         reply[:result] = inspect_node_result(task) if task.status == "complete"
         success_result(reply)
+      end
+
+      # The policy gate's context, built BEFORE anything is parked or queued, so a
+      # call that could only ever be refused (an unknown instance, another
+      # instance's id, a bad argument, a node that is not running) keeps its inline
+      # error instead of parking an approval an operator must then dispose of.
+      # #inspect_node re-runs the same resolution on replay.
+      def inspect_node_gate_context(params)
+        raise CallerFacingError, wait_seconds_error[:error] unless wait_seconds_param(params, default: WAIT_MAX_SECONDS)
+
+        instance, options = inspect_node_resolve(params)
+        deferred_tool_call_context(params).merge(
+          description: "Inspect node #{instance.name} (#{options['collector']}), read-only",
+          source_type: "System::NodeInstance",
+          source_id: instance.id
+        )
+      end
+
+      # Target, options and liveness, in that order. Every refusal is a literal
+      # CallerFacingError, so no Rails/SQL text (which names the account id and the
+      # predicate) reaches the caller.
+      def inspect_node_resolve(params)
+        instance = inspect_node_target(params)
+        # Invalid is an ArgumentError, which the gate context would swallow into a
+        # generic message; its text is authored for the caller, so forward it.
+        options =
+          begin
+            ::System::NodeInspection.options_from(params)
+          rescue ::System::NodeInspection::Invalid => e
+            raise CallerFacingError, e.message
+          end
+        # A task addressed to a stopped, stopping, pending, provisioning or
+        # rebooting node is not refused by the dispatch arm and would run whenever
+        # the box next boots, long after the question was asked. The node must be
+        # in a status where its agent is expected to be reporting.
+        unless ::System::NodeInstance::HEARTBEAT_EXPECTED_STATUSES.include?(instance.status)
+          raise CallerFacingError, "instance is #{instance.status}: a node inspection needs a running agent"
+        end
+
+        refusal = instance.offline_dispatch_refusal
+        raise CallerFacingError, refusal if refusal
+
+        [ instance, options ]
       end
 
       # THE SELF-ONLY RULE, keyed on the PRINCIPAL and not on the verb name. An
@@ -5936,7 +5995,10 @@ module Ai
 
         raise CallerFacingError, "instance_id is required" if requested.blank?
 
-        account_instances.find(requested)
+        # find_by, not find: RecordNotFound's message carries the SQL predicate and
+        # the account id, and this refusal is forwarded to the caller.
+        account_instances.find_by(id: requested) ||
+          raise(CallerFacingError, "Couldn't find System::NodeInstance with 'id'=#{requested.inspect}")
       end
 
       # LOUD, never raise: a refused cross-instance inspection is exactly the

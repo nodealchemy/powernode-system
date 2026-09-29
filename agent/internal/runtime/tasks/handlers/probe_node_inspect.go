@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -67,12 +68,17 @@ const (
 	inspectDefaultJournalLines = 100
 	inspectMaxJournalLines     = 500
 
-	// inspectCommandTimeout bounds each command: a wedged nft or journalctl must
-	// not hold the agent's task loop.
-	inspectCommandTimeout = 20 * time.Second
-
 	// inspectStatusReadBytes bounds a /proc/<pid>/status read (it is ~1.5 KiB).
 	inspectStatusReadBytes = 64 * 1024
+
+	// inspectReadCapBytes is how much of a command's stdout is ever read. It is
+	// four times the result budget so that scrubbing, which needs the whole text
+	// a secret could straddle, has room to work before the result is bounded; the
+	// command is killed once it is exceeded (mount.BoundedRunner).
+	inspectReadCapBytes = 4 * inspectMaxOutputBytes
+
+	// inspectProbeReadBytes bounds the one-word answers (LoadState, MainPID).
+	inspectProbeReadBytes = 4096
 )
 
 // The host locations file_stat and caps read directly rather than through a
@@ -88,6 +94,52 @@ var (
 	// image can be gigabytes, and hashing it would stall the task loop.
 	inspectHashMaxBytes int64 = 256 << 20
 )
+
+// inspectCommandTimeout bounds each command, and the whole of a file_stat: a
+// wedged nft or journalctl, or a file on an unreachable mount, must not hold the
+// agent's only task slot (the runtime runs Concurrency 1 with no per-handler
+// deadline). A var so a test can shorten it.
+var inspectCommandTimeout = 20 * time.Second
+
+// SetInspectDeadlineForTest shortens the per-command and file_stat deadline.
+func SetInspectDeadlineForTest(d time.Duration) (restore func()) {
+	prev := inspectCommandTimeout
+	inspectCommandTimeout = d
+	return func() { inspectCommandTimeout = prev }
+}
+
+// inspectFileStatFn is the seam the deadline wrapper calls, so a test can
+// install one that never returns (a read stuck in D-state on a dead export).
+var inspectFileStatFn = inspectFileStat
+
+// SetInspectFileStatForTest replaces the file_stat implementation.
+func SetInspectFileStatForTest(fn func(string) (tasks.Result, error)) (restore func()) {
+	prev := inspectFileStatFn
+	inspectFileStatFn = fn
+	return func() { inspectFileStatFn = prev }
+}
+
+// inspectBeforeOpenHook runs between the path being resolved and judged and the
+// open, the window a swap would exploit. Nil in production.
+var inspectBeforeOpenHook func()
+
+// SetInspectBeforeOpenHookForTest installs a function that runs in that window,
+// so a test can swap a path component there deterministically.
+func SetInspectBeforeOpenHookForTest(fn func()) (restore func()) {
+	prev := inspectBeforeOpenHook
+	inspectBeforeOpenHook = fn
+	return func() { inspectBeforeOpenHook = prev }
+}
+
+// inspectMaxWedged bounds the goroutines file_stat may leak. A read stuck in
+// D-state cannot be interrupted, so the deadline abandons it rather than stops
+// it; past this many still-blocked ones a new call is refused at once instead of
+// adding another.
+const inspectMaxWedged = 4
+
+var inspectWedged int32
+
+func inspectWedgedCount() int { return int(atomic.LoadInt32(&inspectWedged)) }
 
 // SetInspectRootsForTest points the handler's filesystem and /proc roots at
 // sandbox directories, returning a restore func.
@@ -287,9 +339,12 @@ func (h *ProbeNodeInspectHandler) Execute(ctx context.Context, task *tasks.Task)
 		}
 		lines := req.Lines
 		res = inspectSections(ctx, runner, req.Collector, []inspectStep{{
-			argv:     []string{"journalctl", "-u", req.Unit, "-n", strconv.Itoa(lines), "--no-pager", "-o", "short-iso"},
-			maxLines: lines,
-			fromEnd:  true,
+			// -r prints the newest line first, so the bounded read below keeps the
+			// newest lines and the cut loses the oldest.
+			argv:        []string{"journalctl", "-u", req.Unit, "-n", strconv.Itoa(lines), "-r", "--no-pager", "-o", "short-iso"},
+			maxLines:    lines,
+			fromEnd:     true,
+			newestFirst: true,
 		}})
 		res["unit"] = req.Unit
 	case "unit":
@@ -306,7 +361,7 @@ func (h *ProbeNodeInspectHandler) Execute(ctx context.Context, task *tasks.Task)
 		}
 		res = inspectCaps(ctx, runner, req.Unit)
 	case "file_stat":
-		res, err = inspectFileStat(req.Path)
+		res, err = inspectFileStatBounded(req.Path)
 		if err != nil {
 			return nil, fmt.Errorf("probe.node_inspect: %w", err)
 		}
@@ -318,9 +373,11 @@ func (h *ProbeNodeInspectHandler) Execute(ctx context.Context, task *tasks.Task)
 // node. `systemctl show -p LoadState` answers "not-found" for one and does not
 // glob or expand shorthand, and the name has already passed SystemdUnit.
 func requireUnitExists(ctx context.Context, runner mount.Runner, unit string) error {
-	out, err := inspectRun(ctx, runner, "systemctl", "show", "-p", "LoadState", "--value", unit)
+	out, _, err := inspectRun(ctx, runner, inspectProbeReadBytes, "systemctl", "show", "-p", "LoadState", "--value", unit)
 	if err != nil {
-		return fmt.Errorf("probe.node_inspect: cannot confirm unit %q exists: %w", unit, err)
+		// The runner error echoes the tool's stderr, which can echo a secret.
+		msg, _ := inspectBound(inspectScrub(err.Error()), 2048, false)
+		return fmt.Errorf("probe.node_inspect: cannot confirm unit %q exists: %s", unit, msg)
 	}
 	state := strings.TrimSpace(string(out))
 	if state == "" || state == "not-found" {
@@ -329,10 +386,24 @@ func requireUnitExists(ctx context.Context, runner mount.Runner, unit string) er
 	return nil
 }
 
-func inspectRun(ctx context.Context, runner mount.Runner, name string, args ...string) ([]byte, error) {
+// inspectRun runs one command through the runner's BOUNDED read when it has
+// one (mount.ExecRunner does), and reports whether the output was cut at max.
+// A runner without it falls back to Output, whose result is cut after the fact,
+// so the result stays bounded either way.
+func inspectRun(ctx context.Context, runner mount.Runner, max int, name string, args ...string) ([]byte, bool, error) {
 	cctx, cancel := context.WithTimeout(ctx, inspectCommandTimeout)
 	defer cancel()
-	return runner.Output(cctx, name, args...)
+	if bounded, ok := runner.(mount.BoundedRunner); ok {
+		return bounded.OutputBounded(cctx, max, name, args...)
+	}
+	out, err := runner.Output(cctx, name, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(out) > max {
+		return out[:max], true, nil
+	}
+	return out, false, nil
 }
 
 // === command collectors ===
@@ -347,6 +418,10 @@ type inspectStep struct {
 	// fromEnd keeps the newest text when a bound cuts: a log's tail is what an
 	// operator wants, a static dump's head is.
 	fromEnd bool
+	// newestFirst says the command prints newest first (journalctl -r), so a
+	// read cut at the cap loses the OLDEST lines; the text is put back into
+	// chronological order before it is returned.
+	newestFirst bool
 }
 
 type inspectSection struct {
@@ -375,13 +450,20 @@ func inspectSections(ctx context.Context, runner mount.Runner, collector string,
 func inspectStepResult(ctx context.Context, runner mount.Runner, step inspectStep, budget int) inspectSection {
 	command := strings.Join(step.argv, " ")
 	sec := inspectSection{Name: command, Command: command}
-	raw, err := inspectRun(ctx, runner, step.argv[0], step.argv[1:]...)
+	raw, cutRead, err := inspectRun(ctx, runner, inspectReadCapBytes, step.argv[0], step.argv[1:]...)
 	if err != nil {
 		// Runner errors echo the tool's stderr, which can echo a secret.
 		sec.Error, _ = inspectBound(inspectScrub(err.Error()), 2048, false)
 		return sec
 	}
 	text := string(raw)
+	if cutRead {
+		// The cut can land mid-line, and a partial line is worse than none: it
+		// can hold half a secret the patterns no longer see whole.
+		if i := strings.LastIndexByte(text, '\n'); i >= 0 {
+			text = text[:i+1]
+		}
+	}
 	var extra []string
 	if step.post != nil {
 		text, extra = step.post(text)
@@ -389,12 +471,48 @@ func inspectStepResult(ctx context.Context, runner mount.Runner, step inspectSte
 	// Scrub the WHOLE text, then bound it, so a secret that straddles the cut
 	// cannot leave a fragment behind.
 	text = inspectScrub(text, extra...)
-	if step.maxLines > 0 {
+	if step.newestFirst {
+		// Newest first: the first maxLines lines ARE the newest.
+		if step.maxLines > 0 {
+			text = firstLines(text, step.maxLines)
+		}
+		text = reverseLines(text)
+	} else if step.maxLines > 0 {
 		text = lastLines(text, step.maxLines)
 	}
-	sec.Output, sec.Truncated = inspectBound(text, budget, step.fromEnd)
+	bounded, cutText := inspectBound(text, budget, step.fromEnd)
+	sec.Output, sec.Truncated = bounded, cutText
+	if cutRead && !cutText {
+		sec.Truncated = true
+		if step.fromEnd {
+			sec.Output = "[truncated: older output omitted]\n" + bounded
+		} else {
+			sec.Output = bounded + "\n[truncated]"
+		}
+	}
 	sec.OK = true
 	return sec
+}
+
+// reverseLines reverses the line order of text (a trailing newline is kept).
+func reverseLines(text string) string {
+	if text == "" {
+		return text
+	}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
+		lines[i], lines[j] = lines[j], lines[i]
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// firstLines keeps the first n lines.
+func firstLines(text string, n int) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) <= n {
+		return text
+	}
+	return strings.Join(lines[:n], "\n") + "\n"
 }
 
 // lastLines keeps the final n lines. The cap holds on what comes BACK, so a
@@ -427,6 +545,9 @@ func inspectBound(text string, max int, fromEnd bool) (string, bool) {
 	for len(cut) > 0 && !utf8.ValidString(cut) {
 		cut = cut[:len(cut)-1]
 	}
+	if i := strings.LastIndexByte(cut, '\n'); i > 0 {
+		cut = cut[:i+1] // end on a whole line
+	}
 	return cut + "\n[truncated]", true
 }
 
@@ -450,27 +571,90 @@ func dropWgKeyLines(text string) (string, []string) {
 	return wgKeyLine.ReplaceAllString(text, ""), values
 }
 
-var (
-	// name-then-value: DB_PASSWORD=x, client_secret: x, "api_key": "x".
-	secretAssignment = regexp.MustCompile(`(?i)[\w.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|credential|private[_-]?key)[\w.-]*["']?[ \t]*[:=][ \t]*("[^"\n]*"|'[^'\n]*'|[^\s"',;]+)`)
-	pemPrivateBlock  = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)`)
-)
+// inspectSecretPattern finds secret VALUES in text: the value is capture group 1,
+// or the whole match when the pattern has no group. minLen drops short matches
+// that are more likely words than secrets (scrubSecrets itself ignores values
+// under four bytes).
+type inspectSecretPattern struct {
+	re     *regexp.Regexp
+	minLen int
+	// skipIf drops a match whose text contains it (case-insensitive): a public
+	// key is not a secret.
+	skipIf string
+}
+
+// nameValue is a name-then-value tail: an optionally quoted delimiter, then a
+// quoted string or a bare run.
+const nameValue = `["']?[ \t]*[:=][ \t]*("[^"\n]*"|'[^'\n]*'|[^\s"',;]+)`
+
+// inspectSecretPatterns MIRRORS the credential shapes of the server's
+// System::ShellOutputSanitizer (server/app/services/system/
+// shell_output_sanitizer.rb), so the node and the control plane agree on what a
+// secret looks like. The agent must scrub BEFORE sending, because the raw result
+// is stored in the task's completed event; a shape only the server catches is a
+// shape stored in the clear. What differs from the server is only that these
+// yield the VALUES for scrubSecrets, the scrubber this node already has, rather
+// than replacing text themselves. Keep the two in step.
+//
+// Two of the server's patterns have no counterpart here on purpose: the
+// x-vault-token header and aws_secret_access_key are both name-then-value, which
+// the first pattern already matches, so a separate arm could never fire.
+var inspectSecretPatterns = []inspectSecretPattern{
+	// name=value where the NAME says secret: DB_PASSWORD=x, client_secret: x, "api_key": "x".
+	{re: regexp.MustCompile(`(?i)[\w.-]*(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|access[_-]?key|private[_-]?key)[\w.-]*` + nameValue)},
+	// any *_key / *-key name: RAILS_MASTER_KEY, JWT_SIGNING_KEY, ENCRYPTION_KEY.
+	// The delimiter in front of "key" is what keeps "public key: <wg key>" out.
+	{re: regexp.MustCompile(`(?i)[\w.]*[_-]key` + nameValue), minLen: 8, skipIf: "public"},
+	// UPPER_SNAKE env names whose keyword is not adjacent to the "=": SECRET_KEY_BASE.
+	{re: regexp.MustCompile(`\b[A-Z][A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)[A-Z0-9_]*[ \t]*=[ \t]*("[^"\n]*"|'[^'\n]*'|\S+)`)},
+	// {"auth": "..."} — a docker config or registry 401 body.
+	{re: regexp.MustCompile(`(?i)\bauth` + nameValue), minLen: 8},
+	// Credentials embedded in a URL's userinfo (scheme://user:pass@host).
+	{re: regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:@/]+:([^\s@/]+)@`)},
+	// HTTP Authorization headers — Bearer / Basic / Token.
+	{re: regexp.MustCompile(`(?i)\b(?:Authorization|Bearer|Basic|Token)\s+([A-Za-z0-9\-._~+/=]{16,})`)},
+	// A credential passed as a SPACE-separated flag: --password v, --token v.
+	{re: regexp.MustCompile(`(?i)--(?:password|passwd|token|secret|api[_-]?key|access[_-]?key)[=\s]+(\S+)`)},
+	// -p on a login invocation (never a bare -p, which is mkdir -p and cp -p).
+	{re: regexp.MustCompile(`(?i)\blogin\b[^\n]{0,120}?\s-p\s+(\S+)`)},
+	// curl -u user:token — the colon separates it from sort -u file.
+	{re: regexp.MustCompile(`\s-u\s+[^\s:]+:(\S+)`)},
+	// .netrc line.
+	{re: regexp.MustCompile(`(?i)\bmachine\s+\S+\s+login\s+\S+\s+password\s+(\S+)`)},
+	// Bare JWTs.
+	{re: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`)},
+	// Provider tokens: AWS key ids, GitHub PATs, sk-* keys, Vault hvs.* tokens.
+	{re: regexp.MustCompile(`\b(?:AKIA|ASIA|AROA|AIDA|AGPA)[0-9A-Z]{16}\b`)},
+	{re: regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b`)},
+	{re: regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{82}\b`)},
+	{re: regexp.MustCompile(`\bsk-(?:ant-)?[A-Za-z0-9\-_]{32,}\b`)},
+	{re: regexp.MustCompile(`\bhvs\.[A-Za-z0-9_-]{20,}\b`)},
+	// PEM private keys, whole or clipped (the END footer never arrived).
+	{re: regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)`)},
+}
 
 // inspectSecretValues finds the secret VALUES in text: scrubSecrets replaces
 // values it is given, it does not recognise them, and this handler has no
-// task-supplied secret list the way ci.module_build does. What a node's
-// diagnostic output holds are values a name gives away: an Environment= line,
-// a logged credential, a PEM private key.
+// task-supplied secret list the way ci.module_build does.
 func inspectSecretValues(text string) []string {
 	var values []string
-	for _, m := range secretAssignment.FindAllStringSubmatch(text, -1) {
-		v := strings.Trim(m[1], `"'`)
-		v = strings.TrimRight(v, ")]}>.")
-		if v != "" {
+	for _, p := range inspectSecretPatterns {
+		for _, m := range p.re.FindAllStringSubmatch(text, -1) {
+			v := m[0]
+			if p.re.NumSubexp() > 0 {
+				v = m[1]
+			}
+			v = strings.Trim(v, `"'`)
+			v = strings.TrimRight(v, ")]}>.")
+			if v == "" || len(v) < p.minLen {
+				continue
+			}
+			if p.skipIf != "" && strings.Contains(strings.ToLower(m[0]), p.skipIf) {
+				continue
+			}
 			values = append(values, v)
 		}
 	}
-	values = append(values, pemPrivateBlock.FindAllString(text, -1)...)
 	return values
 }
 
@@ -534,7 +718,7 @@ func inspectCaps(ctx context.Context, runner mount.Runner, unit string) tasks.Re
 		res["error"], _ = inspectBound(inspectScrub(msg), 2048, false)
 		return res
 	}
-	out, err := inspectRun(ctx, runner, "systemctl", "show", "-p", "MainPID", "--value", unit)
+	out, _, err := inspectRun(ctx, runner, inspectProbeReadBytes, "systemctl", "show", "-p", "MainPID", "--value", unit)
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -580,14 +764,150 @@ func inspectCaps(ctx context.Context, runner mount.Runner, unit string) tasks.Re
 
 // === file_stat ===
 
+// inspectFileStatBounded runs file_stat under a DEADLINE. The agent runs one
+// task at a time with no per-handler deadline, and file_stat's allow-list
+// includes /var/lib/powernode, which hosts NFS storage mounts: a read on an
+// unreachable export blocks in D-state, and every later task for the node
+// (deploys included) would queue behind it forever. The call therefore runs in
+// a goroutine and is abandoned at the deadline. A D-state read cannot be
+// interrupted, so the goroutine leaks until the mount answers; that is
+// accepted, and bounded by inspectMaxWedged.
+func inspectFileStatBounded(path string) (tasks.Result, error) {
+	if atomic.AddInt32(&inspectWedged, 1) > inspectMaxWedged {
+		atomic.AddInt32(&inspectWedged, -1)
+		return nil, taskguard.Refused("path",
+			fmt.Sprintf("cannot be inspected: %d earlier file_stat calls are still blocked on unresponsive paths", inspectMaxWedged), path)
+	}
+	type outcome struct {
+		res tasks.Result
+		err error
+	}
+	done := make(chan outcome, 1)
+	fn := inspectFileStatFn
+	go func() {
+		defer atomic.AddInt32(&inspectWedged, -1)
+		res, err := fn(path)
+		done <- outcome{res, err}
+	}()
+
+	timer := time.NewTimer(inspectCommandTimeout)
+	defer timer.Stop()
+	select {
+	case o := <-done:
+		return o.res, o.err
+	case <-timer.C:
+		return nil, taskguard.Refused("path",
+			fmt.Sprintf("did not answer within %s (a stalled or network filesystem?); refusing to wait", inspectCommandTimeout), path)
+	}
+}
+
+// inspectNetworkFS reports whether a filesystem type is a network or FUSE one:
+// nfs*, cifs, smb*, fuse* (fuse.sshfs, fuse.glusterfs, fuseblk...), 9p, ceph,
+// glusterfs, sshfs. A stat or read on one can block indefinitely when the
+// remote end is gone.
+func inspectNetworkFS(fstype string) bool {
+	t := strings.ToLower(fstype)
+	for _, prefix := range []string{"nfs", "smb", "fuse"} {
+		if strings.HasPrefix(t, prefix) {
+			return true
+		}
+	}
+	switch t {
+	case "cifs", "9p", "ceph", "glusterfs", "sshfs":
+		return true
+	}
+	return false
+}
+
+// inspectMountEntry is one line of /proc/self/mountinfo, reduced to what the
+// network check needs.
+type inspectMountEntry struct{ point, fstype string }
+
+// inspectReadMounts parses the mount table through the /proc seam.
+func inspectReadMounts() ([]inspectMountEntry, error) {
+	f, err := os.Open(filepath.Join(inspectProcRoot, "self", "mountinfo"))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var entries []inspectMountEntry
+	scanner := bufio.NewScanner(io.LimitReader(f, 8<<20))
+	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// id parent maj:min root mountpoint options [optional...] - fstype source superopts
+		sep := strings.Index(line, " - ")
+		if sep < 0 {
+			continue
+		}
+		pre := strings.Fields(line[:sep])
+		post := strings.Fields(line[sep+3:])
+		if len(pre) < 5 || len(post) < 1 {
+			continue
+		}
+		entries = append(entries, inspectMountEntry{point: unescapeMountinfo(pre[4]), fstype: post[0]})
+	}
+	return entries, scanner.Err()
+}
+
+// unescapeMountinfo decodes the \NNN octal escapes the kernel writes for a
+// space, tab, newline or backslash in a mountpoint.
+func unescapeMountinfo(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if n, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(n))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// inspectRefuseNetworkMount refuses a path held by a network or FUSE mount. The
+// DEEPEST mount containing the path decides, and for equal mountpoints the LAST
+// line does (an overmount hides what is beneath it). If the mount table cannot
+// be read, whether the path is on such a mount is unknown, and unknown is a
+// refusal.
+func inspectRefuseNetworkMount(field, logical string) error {
+	mounts, err := inspectReadMounts()
+	if err != nil {
+		return taskguard.Refused(field, "cannot be checked against the mount table ("+err.Error()+"); refusing", logical)
+	}
+	best := -1
+	fstype := ""
+	for _, m := range mounts {
+		if m.point == "/" || logical == m.point || strings.HasPrefix(logical, strings.TrimSuffix(m.point, "/")+"/") {
+			if len(m.point) >= best {
+				best, fstype = len(m.point), m.fstype
+			}
+		}
+	}
+	if best >= 0 && inspectNetworkFS(fstype) {
+		return taskguard.Refused(field, "is on a "+fstype+" mount, a network or FUSE filesystem file_stat will not touch (it can block indefinitely)", logical)
+	}
+	return nil
+}
+
 // inspectFileStat returns a file's stat, sha256 and mtime. NEVER its contents.
 //
-// The requested path has passed taskguard.InspectFilePath textually. Here the
-// path is resolved through symlinks and the RESOLVED path is judged again by
-// the same rule, and must still lie under the node root: a link inside an
-// allowed tree points anywhere, and a textual rule alone follows it out (a
-// link from /etc to /proc/1/environ, or to another tree entirely).
+// The requested path has passed taskguard.InspectFilePath textually. It is then
+// checked against the mount table BEFORE anything touches it (so resolving a
+// component of a dead export is never attempted), resolved through symlinks, and
+// the RESOLVED path is judged again by the same rule and the mount check, and
+// must still lie under the node root: a link inside an allowed tree points
+// anywhere, and a textual rule alone follows it out (a link from /etc to
+// /proc/1/environ, or into an NFS mount).
 func inspectFileStat(path string) (tasks.Result, error) {
+	if err := inspectRefuseNetworkMount("path", path); err != nil {
+		return nil, err
+	}
 	realRoot, err := filepath.EvalSymlinks(inspectFSRoot)
 	if err != nil {
 		return nil, fmt.Errorf("cannot resolve the node root: %w", err)
@@ -610,6 +930,9 @@ func inspectFileStat(path string) (tasks.Result, error) {
 	if err := taskguard.InspectFilePath("path (symlink target)", logical); err != nil {
 		return nil, err
 	}
+	if err := inspectRefuseNetworkMount("path (symlink target)", logical); err != nil {
+		return nil, err
+	}
 
 	// Lstat first: opening a FIFO or device to hash it can block or have side
 	// effects, so only a regular file is ever opened.
@@ -630,7 +953,7 @@ func inspectFileStat(path string) (tasks.Result, error) {
 		res["type"] = "other"
 	}
 	if st.Mode().IsRegular() {
-		st, err = inspectHashFile(res, resolved)
+		st, err = inspectHashFile(res, realRoot, rel, logical)
 		if err != nil {
 			return nil, err
 		}
@@ -661,18 +984,25 @@ func inspectMode(m os.FileMode) uint32 {
 }
 
 // inspectHashFile records the sha256 of a regular file into res and returns the
-// descriptor's own stat (the file the hash is of, not the one Lstat saw). O_NOFOLLOW
-// refuses a link swapped in after the resolution above; O_NONBLOCK keeps a
-// path swapped to a FIFO from blocking the open.
-func inspectHashFile(res tasks.Result, path string) (os.FileInfo, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+// descriptor's own stat (the file the hash is of, not the one Lstat saw). The
+// open is inspectOpenBeneath (openat2, RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS), so a
+// symlink swapped in for ANY component after the resolution above is refused by
+// the kernel instead of followed.
+func inspectHashFile(res tasks.Result, root, rel, logical string) (os.FileInfo, error) {
+	if hook := inspectBeforeOpenHook; hook != nil {
+		hook()
+	}
+	f, err := inspectOpenBeneath(root, rel)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
+		if inspectOpenRaced(err) {
+			return nil, taskguard.Refused("path", "changed while it was being opened (a symlink or a moved component); refusing to follow it", logical)
+		}
+		return nil, fmt.Errorf("open %s: %w", logical, err)
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("stat %s: %w", path, err)
+		return nil, fmt.Errorf("stat %s: %w", logical, err)
 	}
 	if !st.Mode().IsRegular() {
 		res["type"] = "other"
@@ -684,7 +1014,7 @@ func inspectHashFile(res tasks.Result, path string) (os.FileInfo, error) {
 	}
 	h := sha256.New()
 	if _, err := io.Copy(h, io.LimitReader(f, inspectHashMaxBytes)); err != nil {
-		return nil, fmt.Errorf("hash %s: %w", path, err)
+		return nil, fmt.Errorf("hash %s: %w", logical, err)
 	}
 	res["sha256"] = hex.EncodeToString(h.Sum(nil))
 	return st, nil

@@ -1,6 +1,8 @@
 package taskguard
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -167,4 +169,78 @@ func TestInspectFilePathRefusesSecretLocations(t *testing.T) {
 	}
 	// Public halves stay inspectable.
 	mustAccept(t, "ssh host public key", InspectFilePath("path", "/etc/ssh/ssh_host_ed25519_key.pub"))
+}
+
+// inspect_cases.json is shared with the Ruby spec for System::NodeInspection
+// (spec/services/system/node_inspection_spec.rb): one table, two
+// implementations, so a rule stated differently on the two sides (a character
+// set, a length measured in characters rather than bytes) fails one of them.
+func loadInspectCases(t *testing.T) map[string][]string {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/inspect_cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string][]json.RawMessage
+	var full map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &full); err != nil {
+		t.Fatal(err)
+	}
+	doc = map[string][]json.RawMessage{}
+	for k, v := range full {
+		if strings.HasPrefix(k, "_") {
+			continue
+		}
+		var list []json.RawMessage
+		if err := json.Unmarshal(v, &list); err != nil {
+			t.Fatal(err)
+		}
+		doc[k] = list
+	}
+	out := map[string][]string{}
+	for k, list := range doc {
+		for _, item := range list {
+			var s string
+			if json.Unmarshal(item, &s) == nil {
+				out[k] = append(out[k], s)
+				continue
+			}
+			var x struct {
+				Prefix, Repeat, Suffix string
+				Times                  int
+			}
+			if err := json.Unmarshal(item, &x); err != nil {
+				t.Fatalf("bad fixture %s: %v", item, err)
+			}
+			out[k] = append(out[k], x.Prefix+strings.Repeat(x.Repeat, x.Times)+x.Suffix)
+		}
+	}
+	return out
+}
+
+func TestSharedInspectCases(t *testing.T) {
+	c := loadInspectCases(t)
+	for _, k := range []string{"path_ok", "path_refused", "interface_ok", "interface_refused", "unit_ok", "unit_refused"} {
+		if len(c[k]) == 0 {
+			t.Fatalf("fixture %s is empty", k)
+		}
+	}
+	for _, v := range c["path_ok"] {
+		mustAccept(t, "path "+v, InspectFilePath("path", v))
+	}
+	for _, v := range c["path_refused"] {
+		mustRefuse(t, "path "+v, InspectFilePath("path", v))
+	}
+	for _, v := range c["interface_ok"] {
+		mustAccept(t, "interface "+v, InterfaceName("interface", v))
+	}
+	for _, v := range c["interface_refused"] {
+		mustRefuse(t, "interface "+v, InterfaceName("interface", v))
+	}
+	for _, v := range c["unit_ok"] {
+		mustAccept(t, "unit "+v, SystemdUnit("unit", v))
+	}
+	for _, v := range c["unit_refused"] {
+		mustRefuse(t, "unit "+v, SystemdUnit("unit", v))
+	}
 }

@@ -21,7 +21,11 @@ func TestMain(m *testing.M) {
 	// probe.node_inspect reads /proc and the filesystem directly. Its tests point
 	// both at their own sandbox; this default means one that forgets to can only
 	// ever see an empty directory, never the live host.
-	restoreInspect := SetInspectRootsForTest(filepath.Join(sandbox, "inspect-fs"), filepath.Join(sandbox, "inspect-proc"))
+	inspectProc := filepath.Join(sandbox, "inspect-proc")
+	if err := os.MkdirAll(filepath.Join(inspectProc, "self"), 0o755); err == nil {
+		_ = os.WriteFile(filepath.Join(inspectProc, "self", "mountinfo"), nil, 0o644)
+	}
+	restoreInspect := SetInspectRootsForTest(filepath.Join(sandbox, "inspect-fs"), inspectProc)
 	code := m.Run()
 	restoreInspect()
 	restore()

@@ -21,9 +21,16 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_inspect_node" do
   include ActiveSupport::Testing::TimeHelpers
 
   let(:account)  { create(:account) }
-  let(:user)     { create(:user, account: account, permissions: %w[system.infra_tasks.create]) }
+  # system.nodes.read is the tool floor Ai::Executors::DeferredToolCall re-asks
+  # for when it replays the call through the gate.
+  let(:user)     { create(:user, account: account, permissions: %w[system.infra_tasks.create system.nodes.read]) }
   let(:instance) { create(:system_node_instance, :running, account: account) }
   let(:other)    { create(:system_node_instance, :running, account: account) }
+
+  # The shipped default: system.task.probe.node_inspect is declared auto_approve
+  # and the reconciler mints that row, so the verb runs inline. With NO row the
+  # gate's unmatched default is require_approval, which is not what ships.
+  before { System::Governance::PolicyReconciler.new(account: account).reconcile! }
 
   def user_tool(u = user, acct = account)
     described_class.new(account: acct, user: u)
@@ -32,10 +39,23 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_inspect_node" do
   # A call arriving exactly as the MCP layer builds it for an mTLS node cert:
   # no User, instance_authorized set by the registrar, own node_instance carried.
   def instance_tool(own, acct = account)
+    grant_inspect!(own)
     described_class.new(account: acct, user: nil).tap do |t|
       t.instance_authorized = true
       t.node_instance = own
     end
+  end
+
+  # An instance principal is authorized by tool NAME. The generic replay executor
+  # re-asks that grant when it rebuilds the caller, so the fixture carries it.
+  def grant_inspect!(inst)
+    return if System::NodeInstancePeer.exists?(node_instance_id: inst.id)
+
+    System::NodeInstancePeer.create!(
+      node_instance: inst, account: inst.node.account, handle: "p-#{SecureRandom.hex(3)}",
+      status: "active", enabled: true, trust_score: 0.5, daily_decision_budget: 10,
+      granted_mcp_tools: %w[platform.system_inspect_node], granted_peer_skills: []
+    )
   end
 
   def inspect_call(tool, **rest)
@@ -55,11 +75,29 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_inspect_node" do
   describe "the declaration" do
     let(:declaration) { described_class.declared_action("system_inspect_node") }
 
-    it "is read-only and not destroy-shaped" do
-      expect(declaration[:mutating]).to be false
+    # mutating: true although it never changes the node: it inserts a Task and
+    # returns root diagnostics, so it must NOT land on the read-only allowlist an
+    # exported agent gets (Ai::ClaudeExport::ToolAllowlist#read_action_names).
+    it "is mutating (never on a read-only allowlist) but not destroy-shaped or human-only" do
+      expect(declaration[:mutating]).to be true
       expect(declaration[:destructive]).to be false
       expect(declaration[:human_only]).to be false
-      expect(declaration[:action_category]).to be_nil
+    end
+
+    it "is gated under the probe.node_inspect policy category on the generic replay executor" do
+      expect(declaration[:action_category]).to eq("system.task.probe.node_inspect")
+      expect(declaration[:action_category]).to eq("system.task.#{System::NodeInspection::COMMAND}")
+      expect(declaration[:executor_class]).to eq("Ai::Executors::DeferredToolCall")
+      expect(declaration[:gate_context]).to be_present
+      expect(declaration[:on_proceed]).to be_present
+    end
+
+    it "is not on the read-only exported-agent allowlist" do
+      registry = Ai::ClaudeExport::ToolAllowlist::Registry.snapshot
+      expect(registry.registered?("system_inspect_node")).to be true
+      expect(registry.read_action_names).not_to include("system_inspect_node")
+      # ...while a genuine read verb still is, so the assertion above is not vacuous.
+      expect(registry.read_action_names).to include("system_get_task")
     end
 
     it "is not among the verbs the deny overlay treats as destructive" do
@@ -80,7 +118,7 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_inspect_node" do
       expect(params.keys).not_to include(:command, :argv, :args, :sudo)
     end
 
-    it "is governed auto_approve at the task-creation gate, and is NOT the approval-gated exec's category" do
+    it "is governed auto_approve by default, and is NOT the approval-gated exec's category" do
       expect(System::Governance::PolicyDeclarations::MANUAL_OPERATION_DEFAULT_VERBS["probe.node_inspect"]).to eq("auto_approve")
       expect(System::Governance::PolicyDeclarations::MANUAL_OPERATION_DEFAULT_VERBS["ssh_command"]).to eq("require_approval")
     end
@@ -268,9 +306,11 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_inspect_node" do
     before { travel_to(Time.current.change(usec: 0)) }
     after { travel_back }
 
-    def stub_sleep(tool, &on_tick)
+    # any_instance: through the gate the wait runs on the tool the generic replay
+    # executor REBUILDS, not the one the test holds.
+    def stub_sleep(_tool = nil, &on_tick)
       @sleeps = []
-      allow(tool).to receive(:sleep) do |seconds|
+      allow_any_instance_of(described_class).to receive(:sleep) do |_inst, seconds|
         @sleeps << seconds
         travel(seconds.seconds)
         on_tick&.call(@sleeps.size)
@@ -393,6 +433,155 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_inspect_node" do
 
       out = r[:data][:result]["sections"].first["output"]
       expect(out).to include("listening port: 51820", "endpoint: 192.0.2.10:51820", pub)
+    end
+  end
+
+  # IMP-52762a704a3d review round: the MCP door goes through the SAME policy row
+  # the REST task-creation gate reads. Before, this verb inserted the Task
+  # directly, so an operator tightening system.task.probe.node_inspect changed
+  # nothing for an agent calling it over MCP.
+  describe "governance on the MCP path" do
+    def put_policy!(verb)
+      Ai::InterventionPolicy.where(account: account, action_category: "system.task.probe.node_inspect").delete_all
+      Ai::InterventionPolicy.create!(
+        account: account, action_category: "system.task.probe.node_inspect",
+        scope: "global", ai_agent_id: nil, user_id: nil, policy: verb, priority: 5,
+        is_active: true, conditions: {}, preferred_channels: %w[notification]
+      )
+    end
+
+    def deferred
+      ::Ai::DeferredOperation.where(account_id: account.id).order(created_at: :desc)
+    end
+
+    it "runs inline under the shipped auto_approve row, and parks nothing pending" do
+      row = Ai::InterventionPolicy.find_by(account: account, action_category: "system.task.probe.node_inspect", scope: "global", ai_agent_id: nil)
+      expect(row&.policy).to eq("auto_approve")
+
+      r = inspect_call(user_tool, instance_id: instance.id, collector: "routes")
+
+      expect(r[:success]).to be true
+      expect(r[:data]).not_to have_key(:pending)
+      expect(inspect_tasks.count).to eq(1)
+      expect(deferred.pluck(:status)).not_to include("pending")
+    end
+
+    it "REFUSES under a block row, and queues nothing" do
+      put_policy!("block")
+
+      r = inspect_call(user_tool, instance_id: instance.id, collector: "routes")
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to be_present
+      expect(inspect_tasks.count).to eq(0)
+    end
+
+    it "returns the pending envelope under require_approval, queueing nothing until approved" do
+      put_policy!("require_approval")
+
+      r = nil
+      expect { r = inspect_call(user_tool, instance_id: instance.id, collector: "wg_status", interface: "wg0") }
+        .to change(::Ai::DeferredOperation, :count).by(1)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:pending]).to be true
+      expect(r[:data][:action_category]).to eq("system.task.probe.node_inspect")
+      expect(r[:data][:deferred_operation_id]).to eq(deferred.first.id)
+      expect(inspect_tasks.count).to eq(0)
+      expect(deferred.first.source_id).to eq(instance.id)
+    end
+
+    it "really inspects when the parked operation is approved (the verb still works)" do
+      put_policy!("require_approval")
+      inspect_call(user_tool, instance_id: instance.id, collector: "wg_status", interface: "wg0", wait_seconds: 0)
+
+      deferred.first.execute_now!
+
+      task = inspect_tasks.sole
+      expect(task.operable).to eq(instance)
+      expect(task.options).to eq("collector" => "wg_status", "interface" => "wg0")
+    end
+
+    it "gates an instance principal too, and it still inspects only itself when approved" do
+      put_policy!("require_approval")
+
+      r = inspect_call(instance_tool(instance), collector: "routes")
+      expect(r[:data][:pending]).to be true
+      expect(inspect_tasks.count).to eq(0)
+
+      deferred.first.execute_now!
+      expect(inspect_tasks.sole.operable).to eq(instance)
+    end
+
+    it "blocks an instance principal under a block row" do
+      put_policy!("block")
+
+      r = inspect_call(instance_tool(instance), collector: "routes")
+
+      expect(r[:success]).to be false
+      expect(inspect_tasks.count).to eq(0)
+    end
+
+    # A call that could only ever be refused must keep its inline error, not park
+    # an approval an operator then has to dispose of.
+    it "parks nothing for a call it would refuse anyway" do
+      put_policy!("require_approval")
+      stopped = create(:system_node_instance, account: account, status: "stopped")
+
+      [ { instance_id: other.id, collector: "ssh" },
+        { instance_id: instance.id, collector: "file_stat", path: "/etc/shadow" },
+        { instance_id: instance.id, collector: "wg_status", interface: "all" },
+        { instance_id: stopped.id, collector: "routes" },
+        { instance_id: SecureRandom.uuid, collector: "routes" },
+        { collector: "routes" } ].each do |args|
+        r = inspect_call(user_tool, **args)
+        expect(r[:success]).to be(false), args.inspect
+      end
+      r = inspect_call(instance_tool(instance), instance_id: other.id, collector: "routes")
+      expect(r[:success]).to be false
+      expect(deferred.count).to eq(0)
+      expect(inspect_tasks.count).to eq(0)
+    end
+  end
+
+  describe "refusal text" do
+    it "answers an unknown instance with a literal message that carries no account id and no SQL" do
+      r = inspect_call(user_tool, instance_id: SecureRandom.uuid, collector: "routes")
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to match(/Couldn't find System::NodeInstance/)
+      expect(r[:error]).not_to include(account.id)
+      expect(r[:error]).not_to match(/WHERE|SELECT|account_id|"system_node_instances"/i)
+    end
+
+    it "answers a foreign account's instance identically to an unknown one" do
+      foreign = create(:system_node_instance, :running, account: create(:account))
+
+      r = inspect_call(user_tool, instance_id: foreign.id, collector: "routes")
+
+      expect(r[:error]).to match(/Couldn't find System::NodeInstance/)
+      expect(r[:error]).not_to include(account.id)
+    end
+  end
+
+  describe "the node must be running" do
+    %w[stopped stopping pending provisioning rebooting terminated].each do |status|
+      it "refuses a #{status} instance, which would otherwise take the task whenever it next boots" do
+        inst = create(:system_node_instance, account: account, status: status)
+
+        r = inspect_call(user_tool, instance_id: inst.id, collector: "routes")
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(/#{status}/)
+        expect(inspect_tasks.count).to eq(0)
+      end
+    end
+
+    it "accepts running and starting" do
+      %w[running starting].each do |status|
+        inst = create(:system_node_instance, account: account, status: status)
+        expect(inspect_call(user_tool, instance_id: inst.id, collector: "routes")[:success]).to be(true), status
+      end
     end
   end
 end

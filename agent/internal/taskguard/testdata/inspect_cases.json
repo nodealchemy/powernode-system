@@ -1,0 +1,129 @@
+{
+ "_comment": "Shared by the Go taskguard test and the Ruby System::NodeInspection spec: one table, two implementations. A string is literal; an object expands to prefix + repeat*times + suffix.",
+ "path_ok": [
+  "/etc/hostname",
+  "/etc/",
+  "/etc",
+  "/usr/sbin/powernode-agent",
+  "/persist/var/lib/powernode/state.json",
+  "/etc/café.conf",
+  "/etc/a'b.conf",
+  "/etc/a;b.conf",
+  "/etc/a*b.conf",
+  "/etc/a\\b.conf",
+  "/etc/a%b.conf",
+  "/etc/a b.conf",
+  {
+   "prefix": "/etc/",
+   "repeat": "a",
+   "times": 4091,
+   "suffix": ""
+  }
+ ],
+ "path_refused": [
+  "",
+  "/",
+  "//",
+  "etc/hostname",
+  "/etc/../etc/hostname",
+  "/etc/./hostname",
+  "/etc//hostname",
+  "/etc/host name",
+  "/etc/host\tname",
+  "/etc/host\nname",
+  "/etc/hostname",
+  "/etc/host\u0000name",
+  "/etc/host\rname",
+  {
+   "prefix": "/etc/",
+   "repeat": "a",
+   "times": 4092,
+   "suffix": ""
+  },
+  {
+   "prefix": "/etc/",
+   "repeat": "é",
+   "times": 2100,
+   "suffix": ""
+  },
+  "/proc/1/environ",
+  "/etc/shadow",
+  "/etc/SHADOW",
+  "/etc/app/Server.KEY",
+  "/etc/app/PKI/x",
+  "/etc/ssh/ssh_host_ed25519_key"
+ ],
+ "interface_ok": [
+  "wg0",
+  "a",
+  "wg-sdwan",
+  "vrf_mgmt",
+  "eth0.100",
+  {
+   "prefix": "",
+   "repeat": "a",
+   "times": 15,
+   "suffix": ""
+  }
+ ],
+ "interface_refused": [
+  "",
+  "all",
+  "ALL",
+  "All",
+  "interfaces",
+  "Interfaces",
+  "-x",
+  ".wg0",
+  "wg 0",
+  "wg\n0",
+  "wgé0",
+  "wg$0",
+  "wg0/x",
+  {
+   "prefix": "",
+   "repeat": "a",
+   "times": 16,
+   "suffix": ""
+  },
+  "wg0\u0000"
+ ],
+ "unit_ok": [
+  "sshd.service",
+  "getty@tty1.service",
+  "persist-volumes-pg:main.mount",
+  "multi-user.target",
+  "fstrim.timer",
+  "dbus.socket",
+  "system.slice",
+  "a.b.service",
+  {
+   "prefix": "",
+   "repeat": "a",
+   "times": 247,
+   "suffix": ".service"
+  }
+ ],
+ "unit_refused": [
+  "",
+  "sshd",
+  ".service",
+  "-x.service",
+  ".x.service",
+  "a b.service",
+  "a.service\n",
+  "ssh*.service",
+  "ssh?.service",
+  "sshd.conf",
+  "é.service",
+  "a\\x2db.service",
+  {
+   "prefix": "",
+   "repeat": "a",
+   "times": 248,
+   "suffix": ".service"
+  },
+  "a/b.service",
+  "../a.service"
+ ]
+}

@@ -179,7 +179,7 @@ module System
 
       def check_interface!(name)
         raise Invalid, "interface is required and must be a string" unless name.is_a?(String) && !name.empty?
-        raise Invalid, "interface is longer than #{INTERFACE_MAX_LENGTH} characters" if name.length > INTERFACE_MAX_LENGTH
+        raise Invalid, "interface is longer than #{INTERFACE_MAX_LENGTH} characters" if name.bytesize > INTERFACE_MAX_LENGTH
         raise Invalid, "interface must not begin with a dash or dot" if name.start_with?("-", ".")
         raise Invalid, "interface may contain only letters, digits, '-', '_' and '.'" unless name.match?(/\A[A-Za-z0-9_.-]+\z/)
         raise Invalid, "interface #{name.inspect} is a reserved word, not an interface name" if RESERVED_INTERFACES.include?(name.downcase)
@@ -187,7 +187,7 @@ module System
 
       def check_unit!(name)
         raise Invalid, "unit is required and must be a string" unless name.is_a?(String) && !name.empty?
-        raise Invalid, "unit is longer than #{UNIT_MAX_LENGTH} characters" if name.length > UNIT_MAX_LENGTH
+        raise Invalid, "unit is longer than #{UNIT_MAX_LENGTH} characters" if name.bytesize > UNIT_MAX_LENGTH
         raise Invalid, "unit must not begin with a dot or dash" if name.start_with?(".", "-")
         raise Invalid, "unit contains a character not allowed in a unit name" unless name.match?(/\A[A-Za-z0-9_.@:-]+\z/)
         return if UNIT_SUFFIXES.any? { |suffix| name.end_with?(suffix) && name.length > suffix.length }
@@ -197,7 +197,8 @@ module System
 
       def check_path!(path)
         raise Invalid, "path is required and must be a string" unless path.is_a?(String) && !path.empty?
-        raise Invalid, "path exceeds the maximum length" if path.length > PATH_MAX_LENGTH
+        # Bytes, as the agent counts them: a multibyte path is longer than it reads.
+        raise Invalid, "path exceeds the maximum length" if path.bytesize > PATH_MAX_LENGTH
         raise Invalid, "path must not contain control characters" if path.match?(/[\u0000-\u001f\u007f]/)
         raise Invalid, "path must not contain a space" if path.include?(" ")
         raise Invalid, "path must be absolute" unless path.start_with?("/")

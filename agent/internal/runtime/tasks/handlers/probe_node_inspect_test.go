@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -49,10 +51,14 @@ func newInspectSandbox(t *testing.T) inspectSandbox {
 		root = real
 	}
 	sb := inspectSandbox{fs: filepath.Join(root, "fs"), proc: filepath.Join(root, "proc")}
-	for _, d := range []string{sb.fs, sb.proc, filepath.Join(root, "outside")} {
+	for _, d := range []string{sb.fs, filepath.Join(sb.proc, "self"), filepath.Join(root, "outside")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// The fake node has no mounts of its own until a test writes some.
+	if err := os.WriteFile(filepath.Join(sb.proc, "self", "mountinfo"), nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
 	restore := SetInspectRootsForTest(sb.fs, sb.proc)
 	t.Cleanup(restore)
@@ -334,11 +340,11 @@ func loadedRunner(unit, state string) *mount.RecorderRunner {
 
 func TestNodeInspectJournalRunsCappedJournalctl(t *testing.T) {
 	rec := loadedRunner("sshd.service", "loaded")
-	rec.StubOutput["journalctl -u sshd.service -n 100 --no-pager -o short-iso"] = []byte("Sep 28 sshd[1]: Server listening\n")
+	rec.StubOutput["journalctl -u sshd.service -n 100 -r --no-pager -o short-iso"] = []byte("Sep 28 sshd[1]: Server listening\n")
 
 	res := mustRunInspect(t, rec, inspectTask("journal", "unit", "sshd.service"))
 
-	assertArgv(t, rec, loadedKey, "journalctl -u sshd.service -n 100 --no-pager -o short-iso")
+	assertArgv(t, rec, loadedKey, "journalctl -u sshd.service -n 100 -r --no-pager -o short-iso")
 	if !strings.Contains(resultText(t, res), "Server listening") {
 		t.Fatalf("journal text missing: %+v", res)
 	}
@@ -347,7 +353,7 @@ func TestNodeInspectJournalRunsCappedJournalctl(t *testing.T) {
 func TestNodeInspectJournalHonoursTheLineArgument(t *testing.T) {
 	rec := loadedRunner("sshd.service", "loaded")
 	res := mustRunInspect(t, rec, inspectTask("journal", "unit", "sshd.service", "lines", float64(5)))
-	assertArgv(t, rec, loadedKey, "journalctl -u sshd.service -n 5 --no-pager -o short-iso")
+	assertArgv(t, rec, loadedKey, "journalctl -u sshd.service -n 5 -r --no-pager -o short-iso")
 	_ = res
 }
 
@@ -372,12 +378,13 @@ func TestNodeInspectJournalRefusesBadLineCounts(t *testing.T) {
 // The cap is enforced on what comes back, not only on what was asked for, so a
 // journalctl that ignored -n cannot widen the result.
 func TestNodeInspectJournalCapsTheLinesReturned(t *testing.T) {
+	// journalctl -r prints the NEWEST line first.
 	var b strings.Builder
-	for i := 1; i <= 1000; i++ {
+	for i := 1000; i >= 1; i-- {
 		fmt.Fprintf(&b, "line-%04d\n", i)
 	}
 	rec := loadedRunner("sshd.service", "loaded")
-	rec.StubOutput["journalctl -u sshd.service -n 5 --no-pager -o short-iso"] = []byte(b.String())
+	rec.StubOutput["journalctl -u sshd.service -n 5 -r --no-pager -o short-iso"] = []byte(b.String())
 
 	res := mustRunInspect(t, rec, inspectTask("journal", "unit", "sshd.service", "lines", float64(5)))
 
@@ -453,7 +460,7 @@ func TestNodeInspectScrubsSecretsFromUnitAndJournalText(t *testing.T) {
 	rec := loadedRunner("app.service", "loaded")
 	rec.StubOutput["systemctl --no-pager cat app.service"] = []byte(
 		"[Service]\nEnvironment=\"DB_PASSWORD=hunter2hunter2\"\nEnvironment=API_TOKEN=tok-abcdef123456\nExecStart=/usr/bin/app\n" + pem + "\n")
-	rec.StubOutput["journalctl -u app.service -n 100 --no-pager -o short-iso"] = []byte(
+	rec.StubOutput["journalctl -u app.service -n 100 -r --no-pager -o short-iso"] = []byte(
 		"Sep 28 app[1]: connecting with password=hunter2hunter2\nSep 28 app[1]: client_secret: s3cr3t-value-9\nSep 28 app[1]: ready\n")
 
 	unit := mustRunInspect(t, rec, inspectTask("unit", "unit", "app.service"))
@@ -801,13 +808,13 @@ func TestNodeInspectBoundsEachCollectorsOutput(t *testing.T) {
 }
 
 func TestNodeInspectBoundsTheJournalFromTheEnd(t *testing.T) {
+	// journalctl -r prints the NEWEST entry first; entry-000001 is the newest.
 	var b strings.Builder
 	for i := 1; b.Len() < 400_000; i++ {
 		fmt.Fprintf(&b, "entry-%06d %s\n", i, strings.Repeat("y", 200))
 	}
-	last := strings.Split(strings.TrimSpace(b.String()), "\n")
 	rec := loadedRunner("sshd.service", "loaded")
-	rec.StubOutput["journalctl -u sshd.service -n 500 --no-pager -o short-iso"] = []byte(b.String())
+	rec.StubOutput["journalctl -u sshd.service -n 500 -r --no-pager -o short-iso"] = []byte(b.String())
 
 	res := mustRunInspect(t, rec, inspectTask("journal", "unit", "sshd.service", "lines", float64(500)))
 
@@ -815,11 +822,14 @@ func TestNodeInspectBoundsTheJournalFromTheEnd(t *testing.T) {
 	if len(out) > inspectMaxOutputBytes+256 {
 		t.Fatalf("journal output must be bounded, got %d", len(out))
 	}
-	if !strings.Contains(out, last[len(last)-1]) {
+	if !strings.Contains(out, "entry-000001 ") {
 		t.Fatalf("a journal keeps its NEWEST lines when bounded")
 	}
-	if strings.Contains(out, "entry-000001 ") {
-		t.Fatalf("the oldest line should have been cut")
+	if strings.Contains(out, "entry-000450 ") {
+		t.Fatalf("the oldest lines should have been cut")
+	}
+	if strings.Index(out, "entry-000005 ") > strings.Index(out, "entry-000001 ") {
+		t.Fatalf("lines must be returned oldest-first (chronological), got newest-first")
 	}
 }
 
@@ -865,5 +875,502 @@ func TestNodeInspectCollectorSetIsFixed(t *testing.T) {
 	got := nodeInspectCollectorNames()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("collector set changed: got %v want %v", got, want)
+	}
+}
+
+// === IMP-52762a704a3d review round: scrub shapes, bounded reads, wedge-proof file_stat ===
+
+// The token-shaped fixtures below are ASSEMBLED AT RUNTIME, so no complete
+// token-shaped literal exists in this file: a literal would trip the repo's
+// gitleaks gate and, once mirrored, GitHub push protection and secret scanning.
+// Every one is fake (each carries a FAKE marker where the shape allows) and the
+// scrubber patterns see exactly the same text as before.
+var (
+	fixtureJWT      = "ey" + "J" + "FAKEheader0123" + "." + "ey" + "J" + "FAKEpayload012" + "." + "FAKEsignature0123"
+	fixtureGHPat    = "gh" + "p_" + "FAKE" + strings.Repeat("A", 32)
+	fixtureGHFine   = "github_" + "pat_" + strings.Repeat("A1b2C3d4E5", 8) + "AB"
+	fixtureAWSKeyID = "AK" + "IA" + "FAKE" + strings.Repeat("A", 12)
+	fixtureAWSSec   = strings.Repeat("A", 36) + "FAKE"
+	fixtureSK       = "sk" + "-ant-" + "FAKE" + strings.Repeat("a", 28)
+	fixtureHVS      = "hv" + "s." + "FAKE" + strings.Repeat("a", 20)
+	fixtureCurlUser = "curl " + "-u deploy:"
+)
+
+// secretShapes are the credential shapes ShellOutputSanitizer (the server-side
+// redactor) recognises. The agent scrubs BEFORE sending because the raw result
+// is stored in the task's completed event; a shape only the server catches is a
+// shape stored in the clear. Every case names the text that must SURVIVE too,
+// so an over-eager scrub cannot pass by deleting the line.
+var secretShapes = []struct{ name, line, secret, keep string }{
+	{"env RAILS_MASTER_KEY", "Environment=RAILS_MASTER_KEY=0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef", "RAILS_MASTER_KEY"},
+	{"env JWT_SIGNING_KEY", "JWT_SIGNING_KEY=s1gn1ng-k3y-value-xyz", "s1gn1ng-k3y-value-xyz", "JWT_SIGNING_KEY"},
+	{"env ENCRYPTION_KEY colon", "ENCRYPTION_KEY: enc-k3y-abcdef-1234", "enc-k3y-abcdef-1234", "ENCRYPTION_KEY"},
+	{"env SECRET_KEY_BASE", "SECRET_KEY_BASE=sekret-base-abcdef123456", "sekret-base-abcdef123456", "SECRET_KEY_BASE"},
+	{"env lowercase _key", "export signing_key=lower-signing-k3y-99", "lower-signing-k3y-99", "signing_key"},
+	{"url userinfo", "fatal: unable to access https://ci-user:gh-pass-abc123xyz@git.example.com/org/repo.git", "gh-pass-abc123xyz", "git.example.com/org/repo.git"},
+	{"authorization bearer", "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345", "abcdefghijklmnopqrstuvwxyz012345", "Authorization"},
+	{"authorization basic", "Authorization: Basic dXNlcjpzdXBlcnNlY3JldHBhc3M=", "dXNlcjpzdXBlcnNlY3JldHBhc3M=", "Authorization"},
+	{"long flag --password", "ExecStart=/usr/bin/tool --password hunter2-flag-secret run", "hunter2-flag-secret", "ExecStart=/usr/bin/tool"},
+	{"long flag --token", "app --token tok-flag-abcdef123456 --verbose", "tok-flag-abcdef123456", "--verbose"},
+	{"long flag --api-key=", "app --api-key=ak-flag-abcdef123456 --verbose", "ak-flag-abcdef123456", "--verbose"},
+	{"login -p", "docker login registry.example.com -u ci -p s3cret-login-pass", "s3cret-login-pass", "registry.example.com"},
+	{"curl -u user:pass", fixtureCurlUser + "curl-pass-12345 https://example.com/x", "curl-pass-12345", "https://example.com/x"},
+	{"bare jwt", "session " + fixtureJWT + " ok", fixtureJWT, "session"},
+	{"github pat", "remote: " + fixtureGHPat + " denied", fixtureGHPat, "denied"},
+	{"aws access key id", "key id " + fixtureAWSKeyID + " in use", fixtureAWSKeyID, "in use"},
+	{"anthropic-style sk key", "using " + fixtureSK + " now", fixtureSK, "now"},
+	{"vault token", "vault issued " + fixtureHVS + " to app", fixtureHVS, "to app"},
+	{"x-vault-token header", "x-vault-token: vault-hdr-value-12345", "vault-hdr-value-12345", "x-vault-token"},
+	{"aws secret access key", "aws_secret_" + "access_key = " + fixtureAWSSec, fixtureAWSSec, "aws_secret_"},
+	{"github fine-grained pat", "auth failed " + fixtureGHFine + " done", fixtureGHFine, "done"},
+	{"env KEY mid-name", "SIGNING_KEY_MATERIAL=km-abcdefgh12345", "km-abcdefgh12345", "SIGNING_KEY_MATERIAL"},
+	{"netrc line", "machine git.example.com login ci password netrc-pass-12345", "netrc-pass-12345", "machine git.example.com"},
+	{"json auth", `{"auth": "am9objpqb2huc3NlY3JldDEyMw==", "server": "reg.example.com"}`, "am9objpqb2huc3NlY3JldDEyMw==", "reg.example.com"},
+}
+
+func TestNodeInspectScrubsEverySecretShapeInUnitAndJournalText(t *testing.T) {
+	for _, shape := range secretShapes {
+		rec := loadedRunner("app.service", "loaded")
+		rec.StubOutput["systemctl --no-pager cat app.service"] = []byte("[Service]\n" + shape.line + "\nRestart=always\n")
+		rec.StubOutput["journalctl -u app.service -n 100 -r --no-pager -o short-iso"] = []byte("Sep 28 app[1]: " + shape.line + "\nSep 28 app[1]: started\n")
+
+		unit := resultText(t, mustRunInspect(t, rec, inspectTask("unit", "unit", "app.service")))
+		journal := resultText(t, mustRunInspect(t, rec, inspectTask("journal", "unit", "app.service")))
+
+		for where, text := range map[string]string{"unit": unit, "journal": journal} {
+			if strings.Contains(text, shape.secret) {
+				t.Errorf("%s: secret shape %q survived in the %s result: %s", shape.name, shape.secret, where, text)
+			}
+			if !strings.Contains(text, shape.keep) {
+				t.Errorf("%s: scrubbing removed %q from the %s result (over-redaction): %s", shape.name, shape.keep, where, text)
+			}
+		}
+	}
+}
+
+// The scrub must not eat ordinary diagnostics: a redactor that guts prose teaches
+// operators to distrust it.
+func TestNodeInspectLeavesOrdinaryDiagnosticsAlone(t *testing.T) {
+	lines := []string{
+		"Started Session 3 of User root.",
+		"mkdir -p /run/powernode/x",
+		"sort -u /etc/hosts.list",
+		"password authentication failed for user app",
+		"sshd[123]: Accepted publickey for root from 192.0.2.1",
+		"Failed to connect to https://example.com/health: connection refused",
+		"Authorization required for this endpoint",
+	}
+	rec := loadedRunner("app.service", "loaded")
+	rec.StubOutput["journalctl -u app.service -n 100 -r --no-pager -o short-iso"] = []byte(strings.Join(lines, "\n") + "\n")
+
+	text := resultText(t, mustRunInspect(t, rec, inspectTask("journal", "unit", "app.service")))
+
+	for _, l := range lines {
+		if !strings.Contains(text, l) {
+			t.Errorf("an ordinary line was altered: %q in %s", l, text)
+		}
+	}
+}
+
+func TestNodeInspectScrubsTheUnitExistenceErrorToo(t *testing.T) {
+	rec := &mount.RecorderRunner{StubErr: map[string]error{
+		"systemctl show -p LoadState --value app.service": errors.New("systemctl [show]: exit status 1 (stderr: Failed to connect; token=leaky-token-abc123)"),
+	}}
+	_, err := runInspect(t, rec, inspectTask("journal", "unit", "app.service"))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), "leaky-token-abc123") {
+		t.Fatalf("the unit-existence error echoed a secret: %v", err)
+	}
+}
+
+// === bounded reads ===
+
+func TestNodeInspectReadsEveryCommandThroughTheBoundedRunner(t *testing.T) {
+	sb := newInspectSandbox(t)
+	writeProcStatus(t, sb, "7", "CapEff:\t0000000000000000\n")
+	for name, task := range map[string]*tasks.Task{
+		"wg":      inspectTask("wg_status", "interface", "wg0"),
+		"routes":  inspectTask("routes"),
+		"nft":     inspectTask("nft"),
+		"journal": inspectTask("journal", "unit", "a.service"),
+		"unit":    inspectTask("unit", "unit", "a.service"),
+	} {
+		rec := loadedRunner("a.service", "loaded")
+		mustRunInspect(t, rec, task)
+		if len(rec.Invocations) == 0 {
+			t.Fatalf("%s: nothing ran", name)
+		}
+		for _, inv := range rec.Invocations {
+			if inv.Op != "OutputBounded" {
+				t.Errorf("%s: %s ran unbounded (Op %s): a collector must read through the bounded runner", name, inv.Name, inv.Op)
+			}
+			if inv.Max <= 0 || inv.Max > inspectReadCapBytes {
+				t.Errorf("%s: %s read cap %d is outside 1..%d", name, inv.Name, inv.Max, inspectReadCapBytes)
+			}
+		}
+	}
+}
+
+// A runner that does not implement BoundedRunner still works; the bound then
+// applies after the read, as before.
+func TestNodeInspectFallsBackToOutputWhenTheRunnerIsNotBounded(t *testing.T) {
+	inner := &mount.RecorderRunner{StubOutput: map[string][]byte{"nft list ruleset": []byte(strings.Repeat("r\n", 100_000))}}
+	h := &ProbeNodeInspectHandler{deps: tasks.Dependencies{MountRunner: struct{ mount.Runner }{inner}}}
+
+	res, err := h.Execute(context.Background(), inspectTask("nft"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(res)
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	sec := sections(t, m)[0]
+	if sec["truncated"] != true || len(sec["output"].(string)) > inspectMaxOutputBytes+256 {
+		t.Fatalf("the fallback must still bound the result: %+v", sec["truncated"])
+	}
+	if inner.Invocations[0].Op != "Output" {
+		t.Fatalf("expected the unbounded fallback path, got %s", inner.Invocations[0].Op)
+	}
+}
+
+func TestNodeInspectMarksATruncatedReadAndDropsItsPartialLine(t *testing.T) {
+	var b strings.Builder
+	for i := 0; b.Len() < 2*inspectReadCapBytes; i++ {
+		fmt.Fprintf(&b, "%06d %s\n", i, strings.Repeat("z", 100))
+	}
+	rec := &mount.RecorderRunner{StubOutput: map[string][]byte{"nft list ruleset": []byte(b.String())}}
+
+	res := mustRunInspect(t, rec, inspectTask("nft"))
+
+	sec := sections(t, res)[0]
+	if sec["truncated"] != true {
+		t.Fatalf("a read that hit the cap must be marked truncated: %+v", sec)
+	}
+	out := sec["output"].(string)
+	body := strings.TrimSuffix(out, "\n[truncated]")
+	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+		if len(line) != 6+1+100 {
+			t.Fatalf("a partial line survived the cut: %q", line)
+		}
+	}
+	if rec.Invocations[0].Max > inspectReadCapBytes {
+		t.Fatalf("read cap %d exceeds %d", rec.Invocations[0].Max, inspectReadCapBytes)
+	}
+}
+
+// journalctl -r prints the newest line first, so a read cut at the cap loses the
+// OLDEST lines, and the result is turned back into chronological order.
+func TestNodeInspectJournalReadsNewestFirstAndReturnsChronologically(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 8; i++ {
+		fmt.Fprintf(&b, "entry-%02d\n", 9-i) // entry-08 first (newest) ... entry-01 last
+	}
+	rec := loadedRunner("sshd.service", "loaded")
+	rec.StubOutput["journalctl -u sshd.service -n 8 -r --no-pager -o short-iso"] = []byte(b.String())
+
+	res := mustRunInspect(t, rec, inspectTask("journal", "unit", "sshd.service", "lines", float64(8)))
+
+	out := sections(t, res)[0]["output"].(string)
+	if out != "entry-01\nentry-02\nentry-03\nentry-04\nentry-05\nentry-06\nentry-07\nentry-08\n" {
+		t.Fatalf("expected chronological order, got %q", out)
+	}
+}
+
+func TestNodeInspectJournalMarksOlderOutputOmittedWhenTheReadIsCut(t *testing.T) {
+	var b strings.Builder
+	for i := 1; b.Len() < 2*inspectReadCapBytes; i++ {
+		fmt.Fprintf(&b, "entry-%07d %s\n", i, strings.Repeat("q", 100))
+	}
+	rec := loadedRunner("sshd.service", "loaded")
+	rec.StubOutput["journalctl -u sshd.service -n 500 -r --no-pager -o short-iso"] = []byte(b.String())
+
+	res := mustRunInspect(t, rec, inspectTask("journal", "unit", "sshd.service", "lines", float64(500)))
+
+	sec := sections(t, res)[0]
+	out := sec["output"].(string)
+	head := out
+	if len(head) > 40 {
+		head = head[:40]
+	}
+	if sec["truncated"] != true || !strings.HasPrefix(out, "[truncated: older output omitted]\n") {
+		t.Fatalf("a cut journal says its OLDER lines were omitted: truncated=%v head=%q", sec["truncated"], head)
+	}
+	if !strings.Contains(out, "entry-0000001 ") {
+		t.Fatalf("the newest line must survive")
+	}
+}
+
+// === file_stat cannot wedge the agent's task slot ===
+
+func writeMountInfo(t *testing.T, sb inspectSandbox, lines ...string) {
+	t.Helper()
+	body := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(sb.proc, "self", "mountinfo"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mountLine(mountpoint, fstype string) string {
+	return fmt.Sprintf("36 25 0:32 / %s rw,relatime shared:1 - %s src rw", mountpoint, fstype)
+}
+
+func TestNodeInspectRefusesFilesOnNetworkAndFuseMounts(t *testing.T) {
+	for _, fstype := range []string{"nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse", "fuse.sshfs", "fuse.glusterfs", "fuseblk", "9p", "ceph", "glusterfs", "sshfs"} {
+		sb := newInspectSandbox(t)
+		sb.write(t, "var/lib/powernode/storage/vol/data.bin", "payload")
+		writeMountInfo(t, sb, mountLine("/", "ext4"), mountLine("/var/lib/powernode/storage/vol", fstype))
+
+		res, err := runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/var/lib/powernode/storage/vol/data.bin"))
+		if err == nil {
+			t.Fatalf("%s: a file on a %s mount must be refused, got %+v", fstype, fstype, res)
+		}
+		assertRefused(t, err)
+		if !strings.Contains(err.Error(), fstype) {
+			t.Fatalf("%s: the refusal should name the filesystem type: %v", fstype, err)
+		}
+	}
+}
+
+func TestNodeInspectStillStatsFilesOnLocalMounts(t *testing.T) {
+	for _, fstype := range []string{"ext4", "xfs", "btrfs", "overlay", "tmpfs", "erofs", "vfat", "squashfs"} {
+		sb := newInspectSandbox(t)
+		sb.write(t, "etc/hostname", "node\n")
+		writeMountInfo(t, sb, mountLine("/", fstype), mountLine("/etc", fstype))
+
+		res := mustRunInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/etc/hostname"))
+		if res["exists"] != true || res["sha256"] == nil {
+			t.Fatalf("%s: a local mount must stay inspectable: %+v", fstype, res)
+		}
+	}
+}
+
+// The DEEPEST mount holding the path decides, in both directions.
+func TestNodeInspectJudgesTheDeepestMountAndTheLastOvermount(t *testing.T) {
+	sb := newInspectSandbox(t)
+	sb.write(t, "var/lib/powernode/local.json", "{}")
+	sb.write(t, "var/lib/powernode/storage/vol/f", "x")
+	sb.write(t, "var/lib/powernode/storage/vol/deep/f", "x")
+	writeMountInfo(t, sb,
+		mountLine("/", "ext4"),
+		mountLine("/var/lib/powernode/storage/vol", "nfs4"),
+		mountLine("/var/lib/powernode/storage/vol/deep", "ext4"), // a local mount inside the nfs one
+	)
+
+	// A sibling of the nfs mount is on the local root.
+	if res := mustRunInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/var/lib/powernode/local.json")); res["exists"] != true {
+		t.Fatalf("a path beside a network mount is local: %+v", res)
+	}
+	// The mountpoint itself is on the network filesystem.
+	_, err := runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/var/lib/powernode/storage/vol"))
+	assertRefused(t, err)
+	// Under it, refused; under a deeper LOCAL mount, allowed.
+	_, err = runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/var/lib/powernode/storage/vol/f"))
+	assertRefused(t, err)
+	if res := mustRunInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/var/lib/powernode/storage/vol/deep/f")); res["exists"] != true {
+		t.Fatalf("the deepest mount decides: %+v", res)
+	}
+	// An overmount: the LAST line for a mountpoint is what is visible.
+	writeMountInfo(t, sb, mountLine("/", "ext4"), mountLine("/etc", "ext4"), mountLine("/etc", "nfs"))
+	sb.write(t, "etc/hostname", "n")
+	_, err = runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/etc/hostname"))
+	assertRefused(t, err)
+	// A prefix that is not a path boundary does not match.
+	writeMountInfo(t, sb, mountLine("/", "ext4"), mountLine("/etc/ho", "nfs"))
+	if res := mustRunInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/etc/hostname")); res["exists"] != true {
+		t.Fatalf("/etc/ho is not an ancestor of /etc/hostname: %+v", res)
+	}
+}
+
+func TestNodeInspectDecodesEscapedMountpoints(t *testing.T) {
+	sb := newInspectSandbox(t)
+	sb.write(t, "var/lib/powernode/my_share/f", "x")
+	writeMountInfo(t, sb, mountLine("/", "ext4"), mountLine(`/var/lib/powernode/my\137share`, "nfs4"))
+	_, err := runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/var/lib/powernode/my_share/f"))
+	assertRefused(t, err)
+}
+
+// A symlink into a network mount is refused on its RESOLVED path.
+func TestNodeInspectRefusesASymlinkIntoANetworkMount(t *testing.T) {
+	sb := newInspectSandbox(t)
+	sb.write(t, "var/lib/powernode/storage/vol/f", "x")
+	if err := os.Symlink("../var/lib/powernode/storage/vol/f", filepath.Join(sb.fs, "etc", "lk")); err != nil {
+		_ = os.MkdirAll(filepath.Join(sb.fs, "etc"), 0o755)
+		if err := os.Symlink("../var/lib/powernode/storage/vol/f", filepath.Join(sb.fs, "etc", "lk")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeMountInfo(t, sb, mountLine("/", "ext4"), mountLine("/var/lib/powernode/storage/vol", "nfs4"))
+	_, err := runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/etc/lk"))
+	assertRefused(t, err)
+}
+
+// If the mount table cannot be read, the answer to "is this on a network mount"
+// is unknown, and unknown is a refusal.
+func TestNodeInspectFailsClosedWhenTheMountTableIsUnreadable(t *testing.T) {
+	sb := newInspectSandbox(t)
+	sb.write(t, "etc/hostname", "n")
+	if err := os.Remove(filepath.Join(sb.proc, "self", "mountinfo")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/etc/hostname"))
+	assertRefused(t, err)
+}
+
+// The mount check runs BEFORE any filesystem access to the path, so resolving a
+// component of a hung export is never attempted. The path does not exist in the
+// sandbox at all: had it been resolved first the answer would be exists:false,
+// not a refusal.
+func TestNodeInspectChecksMountsBeforeTouchingThePath(t *testing.T) {
+	sb := newInspectSandbox(t)
+	writeMountInfo(t, sb, mountLine("/", "ext4"), mountLine("/var/lib/powernode/storage/gone", "nfs4"))
+
+	res, err := runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/var/lib/powernode/storage/gone/x"))
+
+	if err == nil {
+		t.Fatalf("expected a refusal without the path being resolved, got %+v", res)
+	}
+	assertRefused(t, err)
+}
+
+// blockedFileStat installs a file_stat that never returns until released.
+func blockedFileStat(t *testing.T) (calls *int32, release func()) {
+	t.Helper()
+	gate := make(chan struct{})
+	var n int32
+	restore := SetInspectFileStatForTest(func(string) (tasks.Result, error) {
+		atomic.AddInt32(&n, 1)
+		<-gate
+		return tasks.Result{"collector": "file_stat", "ok": true}, nil
+	})
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(func() { release(); restore() })
+	return &n, release
+}
+
+func TestNodeInspectFileStatHasADeadline(t *testing.T) {
+	newInspectSandbox(t)
+	blockedFileStat(t)
+	restore := SetInspectDeadlineForTest(150 * time.Millisecond)
+	defer restore()
+
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		_, err := runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/etc/hostname"))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		assertRefused(t, err)
+		if !strings.Contains(err.Error(), "did not answer") {
+			t.Fatalf("the refusal should say the path did not answer: %v", err)
+		}
+		if time.Since(start) > 3*time.Second {
+			t.Fatalf("the deadline did not bound the call: %s", time.Since(start))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("file_stat blocked past its deadline: one wedged path would hold the agent's only task slot")
+	}
+}
+
+// The wedged goroutine leaks by design (a D-state read cannot be interrupted),
+// so the number of leaked ones is capped: past it new file_stat calls are
+// refused at once, without spawning another.
+func TestNodeInspectRefusesFileStatWhenTooManyAreStillWedged(t *testing.T) {
+	newInspectSandbox(t)
+	calls, release := blockedFileStat(t)
+	restore := SetInspectDeadlineForTest(30 * time.Millisecond)
+	defer restore()
+
+	for i := 0; i < inspectMaxWedged; i++ {
+		_, err := runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/etc/hostname"))
+		assertRefused(t, err)
+	}
+	if got := atomic.LoadInt32(calls); got != int32(inspectMaxWedged) {
+		t.Fatalf("expected %d wedged calls so far, got %d", inspectMaxWedged, got)
+	}
+
+	_, err := runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/etc/hostname"))
+	assertRefused(t, err)
+	if !strings.Contains(err.Error(), "still blocked") {
+		t.Fatalf("expected the wedged-cap refusal: %v", err)
+	}
+	if got := atomic.LoadInt32(calls); got != int32(inspectMaxWedged) {
+		t.Fatalf("a refused call must not spawn another goroutine (calls=%d)", got)
+	}
+
+	// Once the blocked reads return, the slot count drains and file_stat works again.
+	release()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && inspectWedgedCount() > 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if inspectWedgedCount() != 0 {
+		t.Fatalf("wedged count did not drain: %d", inspectWedgedCount())
+	}
+}
+
+// === the open cannot be steered by a swap after the check (openat2) ===
+
+func TestNodeInspectRefusesAnIntermediateDirectorySwappedForASymlinkAfterTheCheck(t *testing.T) {
+	sb := newInspectSandbox(t)
+	sb.write(t, "etc/sub/app.conf", "legit\n")
+	outside := filepath.Join(sb.outside(), "dir2")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "app.conf"), []byte("outside-secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Between the path being resolved and judged and the open, a component is
+	// replaced with a symlink out of the tree. O_NOFOLLOW guards only the last
+	// component, so this is what openat2 RESOLVE_BENEATH|NO_SYMLINKS is for.
+	restore := SetInspectBeforeOpenHookForTest(func() {
+		sub := filepath.Join(sb.fs, "etc", "sub")
+		_ = os.RemoveAll(sub)
+		_ = os.Symlink(outside, sub)
+	})
+	defer restore()
+
+	res, err := runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/etc/sub/app.conf"))
+
+	if err == nil {
+		t.Fatalf("a component swapped for a symlink after the check must be refused, got %+v", res)
+	}
+	assertRefused(t, err)
+	if strings.Contains(fmt.Sprint(res), "sha256") {
+		t.Fatalf("the outside file was hashed: %+v", res)
+	}
+}
+
+func TestNodeInspectRefusesTheFinalComponentSwappedForASymlinkAfterTheCheck(t *testing.T) {
+	sb := newInspectSandbox(t)
+	sb.write(t, "etc/app.conf", "legit\n")
+	outsideFile := filepath.Join(sb.outside(), "secret")
+	if err := os.WriteFile(outsideFile, []byte("outside-secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restore := SetInspectBeforeOpenHookForTest(func() {
+		f := filepath.Join(sb.fs, "etc", "app.conf")
+		_ = os.Remove(f)
+		_ = os.Symlink(outsideFile, f)
+	})
+	defer restore()
+
+	_, err := runInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/etc/app.conf"))
+	assertRefused(t, err)
+}
+
+func TestNodeInspectHookIsInertWhenNothingIsSwapped(t *testing.T) {
+	sb := newInspectSandbox(t)
+	sb.write(t, "etc/sub/app.conf", "legit\n")
+	restore := SetInspectBeforeOpenHookForTest(func() {})
+	defer restore()
+	res := mustRunInspect(t, &mount.RecorderRunner{}, inspectTask("file_stat", "path", "/etc/sub/app.conf"))
+	if res["sha256"] == nil {
+		t.Fatalf("an unswapped path is hashed: %+v", res)
 	}
 }
