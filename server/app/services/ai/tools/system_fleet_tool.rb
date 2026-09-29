@@ -218,6 +218,9 @@ module Ai
         # IMP-88e82d59b7f2 — restart ONE composed unit on a node; a control-plane
         # act on an existing instance, the same family as its lifecycle siblings.
         "system_restart_unit"           => "system.instances.control",
+        # IMP-9951cbf20bb0 — a runtime drop-in on ONE composed unit; the same
+        # family and level as system_restart_unit.
+        "system_apply_unit_dropin"      => "system.instances.control",
         "system_reap_instance"          => "system.instances.control",
         # F4-08 — lifecycle control (start/stop/reboot): same level as
         # terminate, wraps InstanceControlService.
@@ -1116,6 +1119,35 @@ module Ai
                      on_proceed: :deferred_tool_call_result,
                      returns: "task_id, instance_id, unit and status of the queued restart task",
                      refuses: "the reason is blank or too long, the unit is not composed on the instance, is the agent's own or outside powernode-*, is on the node hosting this control plane (or is one of its critical services while that node is unconfigured), or the instance is not running or its agent is silent"
+      # IMP-9951cbf20bb0 — write (or revert) ONE runtime systemd drop-in,
+      # /run/systemd/system/<unit>.d/zz-operator-<name>.conf, through the node's
+      # own agent, instead of a root QGA printf. Its own category, declared the
+      # way system_out_of_band_exec's is (PolicyDeclarations::
+      # UNIT_DROPIN_POLICIES, require_approval, agent-less, scope global), and
+      # human_only for the same reason: a drop-in changes how a unit runs as
+      # root (capabilities, writable paths, limits), which is a person's
+      # decision, so no policy row and no tool door can approve it. The replay
+      # is the generic DeferredToolCall, as the approving person, so
+      # #apply_unit_dropin stays the single author of the task and every check
+      # in System::UnitDropinService#refusal runs again when the approval lands.
+      #
+      # The unit checks are System::UnitRestartService's (#target_refusal), so
+      # this verb and system_restart_unit refuse the same units. It never
+      # restarts: that is system_restart_unit, a separate governed act.
+      #
+      # destructive: rewrites a unit's privileges on a running node; the
+      # overlay entry (core, *unit_dropin*) is required regardless and
+      # destructive_declaration_matches_deny_overlay_spec holds the two in step.
+      declare_action "system_apply_unit_dropin",
+                     mutating: true,
+                     destructive: true,
+                     human_only: true,
+                     action_category: "system.instance.unit_dropin",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :apply_unit_dropin_gate_context,
+                     on_proceed: :deferred_tool_call_result,
+                     returns: "task_id, instance_id, unit, name, path, revert and status of the queued unit.dropin task",
+                     refuses: "the name or a directive is outside the allow-list, a revert carries directives, or the unit is one system_restart_unit refuses (not composed on the instance, the agent's own, outside powernode-*, on the node hosting this control plane) or the instance is not running or its agent is silent"
       declare_action "system_replenish_instance_pool", mutating: true, returns: "pool summary and the replenish result"
       declare_action "system_report_storage_migration_progress", mutating: true, returns: "storage_migration, full record", refuses: "the status change is not a legal transition"
       declare_action "system_return_pooled_instance", mutating: true
@@ -1613,6 +1645,21 @@ module Ai
               instance_id: { type: "string", required: true, description: "UUID of the NodeInstance whose unit to restart (account-scoped; must be running)" },
               unit: { type: "string", required: true, description: "The FULL unit name with its .service suffix, as composed on that instance: powernode-<module-id>-<service>.service" },
               reason: { type: "string", required: true, description: "Why the unit is being restarted, 1 to #{::System::UnitRestartService::REASON_MAX_LENGTH} characters; recorded in the audit log" }
+            }
+          },
+          # IMP-9951cbf20bb0 — see the declare_action for the gate and the replay.
+          "system_apply_unit_dropin" => {
+            description: "Write, or with revert: true remove, ONE runtime systemd drop-in for a unit a module composed on an instance: /run/systemd/system/<unit>.d/zz-operator-<name>.conf, through the node's own agent, followed by systemctl daemon-reload. /run is tmpfs, so a reboot reverts it; a revert removes only zz-operator-<name>.conf. It does NOT restart the unit: to make the change live, restart it afterwards with system_restart_unit (separately governed). " \
+                         "The unit checks are system_restart_unit's: a composed powernode-* unit on that instance, never the agent's own, never any unit on the node hosting this control plane (while that node is unconfigured, its critical services), and a running instance with a reporting agent. " \
+                         "directives is a list of {key, value}; only these keys are accepted, each with a strict grammar: Environment (NAME=value, NAME matching ^[A-Z][A-Z0-9_]*$, a secret-shaped value refused), MemoryMax, CPUQuota, TasksMax, LimitNOFILE, AmbientCapabilities and CapabilityBoundingSet (space-separated CAP_* names; the unit's set is REPLACED, and an empty value means none), ReadWritePaths (absolute clean paths strictly beneath /persist or /run/powernode). Everything else is refused (Exec*, User, Group, DynamicUser, NoNewPrivileges, EnvironmentFile and any directive that names a file), as is any control character, backslash, bracket, double quote or %-specifier in a key or value. " \
+                         "HUMAN-ONLY and APPROVAL-GATED (system.instance.unit_dropin): this returns {pending: true, requires_human_session: true} with an approval_request_id and NOTHING is written until a person approves in their own session; do not report a change on that response. The checks run again when the approval lands. Audited with Environment values masked. Refused for an instance principal.",
+            parameters: {
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance whose unit gets the drop-in (account-scoped; must be running)" },
+              unit: { type: "string", required: true, description: "The FULL unit name with its .service suffix, as composed on that instance: powernode-<module-id>-<service>.service" },
+              name: { type: "string", required: true, description: "The drop-in's name, 1 to 32 of a-z, 0-9 and '-'; the file is zz-operator-<name>.conf" },
+              directives: { type: "array", required: false, items: { type: "object", properties: { key: { type: "string" }, value: { type: "string" } } },
+                            description: "The directives to write, in order, as {key, value} (required unless revert is true, and empty on a revert). At most #{::System::UnitDropinService::MAX_DIRECTIVES}" },
+              revert: { type: "boolean", required: false, default: false, description: "true removes zz-operator-<name>.conf (and only it) instead of writing it" }
             }
           },
           # IMP-4e49eb79c5e0 — the disaster-recovery lane, on demand.
@@ -2865,6 +2912,9 @@ module Ai
         # hands DeferredToolCall on :proceed too. A bare #call would otherwise
         # restart a unit with no policy evaluation at all.
         when "system_restart_unit"             then approved_replay? ? restart_unit(params) : gate_routed_only("system_restart_unit")
+        # Gate-routed (IMP-9951cbf20bb0) and human-only: BaseTool#execute reaches
+        # #call for it only on a person's own-session approved replay.
+        when "system_apply_unit_dropin"        then approved_replay? ? apply_unit_dropin(params) : gate_routed_only("system_apply_unit_dropin")
         when "system_reap_instance"            then gate_routed_only("system_reap_instance")
         when "system_start_instance"           then control_instance(params, "start")
         when "system_stop_instance"            then control_instance(params, "stop")
@@ -4992,6 +5042,73 @@ module Ai
       def restart_unit_instance(params)
         account_instances.find_by(id: params[:instance_id].to_s) ||
           raise(CallerFacingError, "Couldn't find System::NodeInstance with 'id'=#{params[:instance_id].to_s.inspect}")
+      end
+
+      # === Approval-gated runtime unit drop-in (IMP-9951cbf20bb0) ===
+
+      # Built BEFORE anything is parked, so a request that could only ever be
+      # refused (a directive off the allow-list, a unit system_restart_unit
+      # refuses, a bad name) keeps its inline error instead of becoming an
+      # approval a person must dispose of. #apply_unit_dropin re-runs the same
+      # check on the replay.
+      def apply_unit_dropin_gate_context(params)
+        apply_unit_dropin_refuse_instance_principal!
+        instance = apply_unit_dropin_instance(params)
+        message = ::System::UnitDropinService.new.refusal(
+          instance: instance, unit: params[:unit], name: params[:name],
+          directives: params[:directives], revert: apply_unit_dropin_revert?(params)
+        )
+        raise CallerFacingError, message if message
+
+        verb = apply_unit_dropin_revert?(params) ? "Revert" : "Apply"
+        deferred_tool_call_context(params).merge(
+          # Only validated values: the unit (composed on the instance) and the
+          # name (^[a-z0-9-]{1,32}$). The directives reach the approver through
+          # request_data (params, filtered), never this line.
+          description: "#{verb} runtime drop-in zz-operator-#{params[:name]}.conf on #{params[:unit].to_s.strip} " \
+                       "on '#{instance.name}'",
+          source_type: "System::NodeInstance",
+          source_id: instance.id
+        )
+      end
+
+      # The single author of the drop-in task, reached only on a person's
+      # approved replay. Refusals return the error envelope and create nothing.
+      def apply_unit_dropin(params)
+        apply_unit_dropin_refuse_instance_principal!
+        instance = apply_unit_dropin_instance(params)
+        task = ::System::UnitDropinService.new.apply!(
+          instance: instance, unit: params[:unit], name: params[:name], directives: params[:directives],
+          revert: apply_unit_dropin_revert?(params), initiated_by: user, agent_id: agent&.id,
+          deferred_operation_id: @replaying_operation&.id, call_origin: call_origin
+        )
+        success_result(task_id: task.id, instance_id: instance.id, unit: task.options["unit"], name: task.options["name"],
+                       path: ::System::UnitDropinService.dropin_path(task.options["unit"], task.options["name"]),
+                       revert: task.options["revert"], status: task.status,
+                       note: "The unit is NOT restarted; use system_restart_unit to make the change live.")
+      rescue ::System::UnitDropinService::Refused, CallerFacingError => e
+        error_result(e.message)
+      end
+
+      # Defense in depth beyond Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS'
+      # *unit_dropin* entry, as #restart_unit_refuse_instance_principal! is.
+      def apply_unit_dropin_refuse_instance_principal!
+        return unless instance_authorized?
+
+        raise CallerFacingError,
+              "system_apply_unit_dropin is refused for an instance principal: a drop-in must be " \
+              "requested by an operator or an agent acting for one, never by a node it could target"
+      end
+
+      def apply_unit_dropin_instance(params)
+        account_instances.find_by(id: params[:instance_id].to_s) ||
+          raise(CallerFacingError, "Couldn't find System::NodeInstance with 'id'=#{params[:instance_id].to_s.inspect}")
+      end
+
+      # Strict: only a real boolean true (or "true" from a string transport)
+      # reverts. Anything else is an apply, which then needs directives.
+      def apply_unit_dropin_revert?(params)
+        ::ActiveModel::Type::Boolean.new.cast(params[:revert]) == true
       end
 
       # === The DR lane's gate contexts (IMP-4e49eb79c5e0) ===
