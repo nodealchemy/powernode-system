@@ -323,9 +323,15 @@ func TestReconcilerPreservesRetainedModuleIdentityWhenAssignedListOmitsIt(t *tes
 
 	client := &stubModulesClient{
 		responses: map[string]string{
-			// Degraded-but-200 list: entirely omits "rails", the module
-			// that is actually running this node's own control plane.
-			"/api/v1/system/node_api/modules": `{"success": true, "data": {"modules": []}}`,
+			// Degraded-but-200 list: omits "rails", the module that is
+			// actually running this node's own control plane, but still names
+			// a data module — a non-empty list, so the detach is kept by
+			// filterUnsafeDetaches (the guard this test documents), not by
+			// the empty-assignment guard (IMP-1023e79cc82d).
+			"/api/v1/system/node_api/modules": `{"success": true, "data": {"modules": [
+				{"id":"other", "name":"other", "priority":100, "effective_priority":100, "has_data_file":true}
+			]}}`,
+			"/api/v1/system/node_api/modules/other": `{"success": true, "data": {"id":"other","name":"other","digest":"d-other","priority":100,"effective_priority":100}}`,
 		},
 	}
 	runner := &mount.RecorderRunner{}
