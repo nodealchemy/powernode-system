@@ -256,6 +256,46 @@ RSpec.describe "Operator API — Node Template modules", type: :request do
 
       expect(response).to have_http_status(:forbidden)
     end
+
+    # IMP-5fa3c8d0e2f7 — DELETE used to destroy the join alone, and the FK
+    # nullified source_template_module_id on every derived NodeModuleAssignment,
+    # orphaning them where no purging apply would ever find them. It now runs
+    # the same System::TemplateModuleUnassignService as the MCP verb.
+    context "when nodes carry assignments derived from the join" do
+      let(:kept_module) do
+        create(:system_node_module, account: account, node_platform: platform,
+               category: category, variety: "subscription", name: "kept-spec-mod-#{SecureRandom.hex(3)}")
+      end
+      let(:hand_module) do
+        create(:system_node_module, account: account, node_platform: platform,
+               category: category, variety: "subscription", name: "hand-spec-mod-#{SecureRandom.hex(3)}")
+      end
+      let!(:join) { ::System::TemplateModule.create!(node_template: template, node_module: node_module) }
+      let!(:kept_join) { ::System::TemplateModule.create!(node_template: template, node_module: kept_module) }
+      let(:nodes) do
+        Array.new(2) { create(:system_node, account: account, node_template: template, name: "n-#{SecureRandom.hex(3)}") }
+      end
+
+      before do
+        nodes.each { |n| ::System::TemplateApplyService.new(n).apply! }
+        create(:system_node_module_assignment, node: nodes.first, node_module: hand_module)
+      end
+
+      it "purges the derived assignments, keeps the rest, and reports the purged node ids and count" do
+        delete "/api/v1/system/node_templates/#{template.id}/modules/#{node_module.id}", headers: headers
+
+        expect(response).to have_http_status(:ok)
+        purged = JSON.parse(response.body).dig("data", "purged_assignments")
+        expect(purged["count"]).to eq(2)
+        expect(purged["node_ids"]).to match_array(nodes.map(&:id))
+
+        expect(::System::NodeModuleAssignment.where(node_module_id: node_module.id)).to be_empty
+        expect(::System::NodeModuleAssignment.where(node_module_id: kept_module.id)
+                 .pluck(:source_template_module_id)).to all(eq(kept_join.id))
+        expect(nodes.first.node_module_assignments.find_by!(node_module_id: hand_module.id)
+                 .source_template_module_id).to be_nil
+      end
+    end
   end
 
   # === Join attributes (IMP-5c340c72ff9a) ===
