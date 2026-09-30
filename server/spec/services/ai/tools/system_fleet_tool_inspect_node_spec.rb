@@ -24,8 +24,10 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_inspect_node" do
   # system.nodes.read is the tool floor Ai::Executors::DeferredToolCall re-asks
   # for when it replays the call through the gate.
   let(:user)     { create(:user, account: account, permissions: %w[system.infra_tasks.create system.nodes.read]) }
-  let(:instance) { create(:system_node_instance, :running, account: account) }
-  let(:other)    { create(:system_node_instance, :running, account: account) }
+  # A running node the verb may address is one whose agent has reported: the
+  # liveness check refuses a running row with no heartbeat, or a stale one.
+  let(:instance) { create(:system_node_instance, :running, account: account, last_heartbeat_at: Time.current) }
+  let(:other)    { create(:system_node_instance, :running, account: account, last_heartbeat_at: Time.current) }
 
   # The shipped default: system.task.probe.node_inspect is declared auto_approve
   # and the reconciler mints that row, so the verb runs inline. With NO row the
@@ -579,9 +581,61 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_inspect_node" do
 
     it "accepts running and starting" do
       %w[running starting].each do |status|
-        inst = create(:system_node_instance, account: account, status: status)
+        inst = create(:system_node_instance, account: account, status: status, last_heartbeat_at: Time.current)
         expect(inspect_call(user_tool, instance_id: inst.id, collector: "routes")[:success]).to be(true), status
       end
+    end
+  end
+
+  # IMP-b90b505d2a9a - a running node whose agent is silent takes a task nothing
+  # will pull, which then waits until the janitor cancels it two days later. The
+  # refusal is the model's own (#on_node_dispatch_refusal), the same one
+  # system_restart_unit consults.
+  describe "the agent must be reporting" do
+    it "refuses a running instance that has never reported, and creates no task" do
+      inst = create(:system_node_instance, :running, account: account, last_heartbeat_at: nil)
+
+      r = inspect_call(user_tool, instance_id: inst.id, collector: "routes")
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq(inst.on_node_dispatch_refusal)
+      expect(r[:error]).to match(/never reported/)
+      expect(inspect_tasks.count).to eq(0)
+    end
+
+    it "refuses a running instance whose heartbeat is stale, and creates no task" do
+      inst = create(:system_node_instance, :running, account: account,
+                                                     last_heartbeat_at: (System::NodeInstance::HEARTBEAT_STALE_AFTER + 1.minute).ago)
+
+      r = inspect_call(user_tool, instance_id: inst.id, collector: "routes")
+
+      expect(r[:success]).to be false
+      expect(r[:error]).to eq(inst.on_node_dispatch_refusal)
+      expect(r[:error]).to match(/went silent/)
+      expect(inspect_tasks.count).to eq(0)
+    end
+
+    it "refuses the same silent node for an instance principal inspecting itself" do
+      inst = create(:system_node_instance, :running, account: account, last_heartbeat_at: nil)
+
+      r = inspect_call(instance_tool(inst), collector: "routes")
+
+      expect(r[:success]).to be false
+      expect(inspect_tasks.count).to eq(0)
+    end
+
+    it "still dispatches a running instance with a fresh heartbeat" do
+      inst = create(:system_node_instance, :running, account: account, last_heartbeat_at: 30.seconds.ago)
+
+      expect(inspect_call(user_tool, instance_id: inst.id, collector: "routes")[:success]).to be true
+      expect(inspect_tasks.count).to eq(1)
+    end
+
+    it "does not refuse a starting instance merely for lacking a heartbeat (the model treats that as not-yet)" do
+      inst = create(:system_node_instance, account: account, status: "starting", last_heartbeat_at: nil)
+
+      expect(inst.on_node_dispatch_refusal).to be_nil
+      expect(inspect_call(user_tool, instance_id: inst.id, collector: "routes")[:success]).to be true
     end
   end
 end
