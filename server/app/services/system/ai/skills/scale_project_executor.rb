@@ -339,7 +339,8 @@ module System
               joined_ids << instance_id
             rescue StandardError => e
               result[:failures] << { step: "join_service_backends", service_id: svc.id,
-                                     node_instance_id: instance_id, error: e.message }
+                                     node_instance_id: instance_id, error: safe_error_text(e),
+                                     error_class: e.class.name }
             end
             # Rows this step MINTED — the materialised legacy member included
             # — never the whole set, so a re-read of the outputs cannot claim
@@ -381,7 +382,7 @@ module System
         def regen_service_exposure!(failures)
           ::Sdwan::ServiceExposureWriter.write!(account: @account)
         rescue ::Sdwan::ServiceExposureWriter::WriteError => e
-          failures << { step: "regenerate_service_exposure", error: e.message }
+          failures << { step: "regenerate_service_exposure", error: safe_error_text(e), error_class: e.class.name }
         end
 
         # remove_replicas — the scale-IN arm (INC-4).
@@ -804,7 +805,8 @@ module System
               errors << { resource: "provider_volume", id: volume_id, error: result.error }
             end
           rescue StandardError => e
-            errors << { resource: "provider_volume", id: volume_id, error: e.message }
+            errors << { resource: "provider_volume", id: volume_id, error: safe_error_text(e),
+                        error_class: e.class.name }
           end
 
           Array(node_instance_ids).reverse_each do |instance_id|
@@ -820,7 +822,8 @@ module System
               errors << { resource: "node_instance", id: instance_id, error: result.error }
             end
           rescue StandardError => e
-            errors << { resource: "node_instance", id: instance_id, error: e.message }
+            errors << { resource: "node_instance", id: instance_id, error: safe_error_text(e),
+                        error_class: e.class.name }
           end
 
           { errors: errors, terminated: terminated, deleted_volumes: deleted_volumes,
@@ -836,7 +839,8 @@ module System
                                  .flat_map { |svc| ::Sdwan::ServiceBackend.remove_instance!(service: svc, instance: instance) }
                                  .map(&:id)
         rescue StandardError => e
-          errors << { resource: "sdwan_service_backend", id: instance.id, error: e.message }
+          errors << { resource: "sdwan_service_backend", id: instance.id, error: safe_error_text(e),
+                      error_class: e.class.name }
           []
         end
 

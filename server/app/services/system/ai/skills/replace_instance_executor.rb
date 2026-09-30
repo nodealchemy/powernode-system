@@ -413,7 +413,8 @@ module System
               enrolled[peer.id] = fresh.id
             rescue StandardError => e
               errors << { "step" => "enrol_peer", "network_id" => network.id,
-                          "previous_peer_id" => peer.id, "error" => e.message }
+                          "previous_peer_id" => peer.id, "error" => safe_error_text(e),
+                          "error_class" => e.class.name }
             end
           end
 
@@ -529,12 +530,16 @@ module System
             vip.holder_peer_ids          = holders.map  { |id| peer_map[id] || id }.uniq
             vip.failover_holder_peer_ids = standbys.map { |id| peer_map[id] || id }.uniq
 
-            if vip.save
-              moved << vip.id
-            else
-              errors << { "step" => "move_vip", "virtual_ip_id" => vip.id,
-                          "error" => vip.errors.full_messages.join("; ") }
-            end
+            # save! + rescue, not save + full_messages: the helper's
+            # RecordInvalid arm names only the failing attributes and logs the
+            # full text (IMP-156eb1a7bdbc). RecordNotSaved keeps what a false
+            # `save` from a halted callback used to be — an error entry, not
+            # an abort of the other VIPs.
+            vip.save!
+            moved << vip.id
+          rescue ::ActiveRecord::RecordInvalid, ::ActiveRecord::RecordNotSaved => e
+            errors << { "step" => "move_vip", "virtual_ip_id" => vip.id,
+                        "error" => safe_error_text(e), "error_class" => e.class.name }
           end
 
           [ moved, errors ]
@@ -564,14 +569,16 @@ module System
             ::Sdwan::ServiceBackend.drain_instance!(service: svc, instance: failed)
             rehomed << svc.id
           rescue StandardError => e
-            errors << { "step" => "rehome_service_backends", "service_id" => svc.id, "error" => e.message }
+            errors << { "step" => "rehome_service_backends", "service_id" => svc.id,
+                        "error" => safe_error_text(e), "error_class" => e.class.name }
           end
 
           if rehomed.any?
             begin
               ::Sdwan::ServiceExposureWriter.write!(account: @account)
             rescue ::Sdwan::ServiceExposureWriter::WriteError => e
-              errors << { "step" => "regenerate_service_exposure", "error" => e.message }
+              errors << { "step" => "regenerate_service_exposure", "error" => safe_error_text(e),
+                          "error_class" => e.class.name }
             end
           end
 

@@ -107,7 +107,8 @@ module System
             result = ::System::ProvisioningService.terminate_instance(instance: instance)
             errors << { resource: "node_instance", id: instance_id, error: result.error } unless result.success?
           rescue StandardError => e
-            errors << { resource: "node_instance", id: instance_id, error: e.message }
+            errors << { resource: "node_instance", id: instance_id, error: safe_error_text(e),
+                        error_class: e.class.name }
           end
 
           { success: errors.empty?, errors: errors }
