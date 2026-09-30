@@ -11,8 +11,9 @@ module System
   # producer whose payload nothing consumes is invisible to unit specs on both
   # sides, because both pass while the wire between them is cut.
   #
-  # WIRE SHAPE (runtime.HeartbeatPayload — NINE TOP-LEVEL SCALAR KEYS, not a
-  # nested block like the two sibling lanes):
+  # WIRE SHAPE (runtime.HeartbeatPayload — TEN TOP-LEVEL KEYS, nine scalars or
+  # string lists plus assignment_deferral, a list of objects, not a nested
+  # block like the two sibling lanes):
   #
   #   lkg_present, lkg_confirmed_at, lkg_module_count   — ARM telemetry (HIGH-1):
   #     emitted on every boot from the on-disk frozen LKG, so an operator can
@@ -61,7 +62,7 @@ module System
   # The two sibling lanes write nothing when their block is missing, full stop.
   # That is right for them and WRONG here, because this lane's absence is not
   # only "an old agent": a CURRENT agent whose on-disk LKG was deleted, wiped by
-  # a re-provision, or corrupted emits NONE of the seven (service.go's
+  # a re-provision, or corrupted emits NONE of WIRE_KEYS (service.go's
   # LoadBootLKG error path plus `omitempty` on every remaining false/zero). If
   # such a heartbeat left the previous document untouched, a node that WAS armed
   # would keep answering `arm_state: "armed"` forever after it stopped being
@@ -70,11 +71,11 @@ module System
   #
   # So the rule is:
   #
-  #   * NO document yet AND none of the seven keys ⇒ write NOTHING. A pre-#39
+  #   * NO document yet AND none of the WIRE_KEYS keys ⇒ write NOTHING. A pre-#39
   #     agent (much of the deployed fleet) leaves no document, which reads as
   #     "never reported" and is distinct from every reported state.
   #   * A document ALREADY EXISTS ⇒ REWRITE IT on every heartbeat, even one
-  #     carrying none of the seven. The stored answer is then never older than
+  #     carrying none of them. The stored answer is then never older than
   #     the last heartbeat, and an LKG that disappears flips `arm_state` to
   #     "unreported" on the very next tick.
   class BootLkgStateWriter

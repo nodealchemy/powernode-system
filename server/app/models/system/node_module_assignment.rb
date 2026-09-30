@@ -49,8 +49,9 @@ module System
     # data-bearing module, so a removal must be RECORDED for it to be honoured
     # (System::AssignmentClearanceService). In the transaction, not after_commit:
     # the clearance commits or rolls back with the removal (system_update_node's
-    # explicit rollback included), and a failed write is contained by the
-    # service's savepoint rather than blocking the operator's action.
+    # explicit rollback included). A failed ISSUE is contained by the service's
+    # savepoint rather than blocking the operator's action (fail closed); a failed
+    # REVOKE raises and rolls the assign or enable back (fail open otherwise).
     after_create :revoke_clearance, if: :enabled?
     after_update :sync_clearance_with_enabled, if: :saved_change_to_enabled?
     after_destroy :issue_clearance_for_destroyed_assignment, if: :enabled?
@@ -59,10 +60,11 @@ module System
 
     private
 
+    # Bare, not guarded: a failed revoke must roll the assign or enable back, or a
+    # live clearance would outlast the re-assignment (see
+    # AssignmentClearanceService.guarded).
     def revoke_clearance
-      ::System::AssignmentClearanceService.guarded("assignment #{id} enabled") do
-        ::System::AssignmentClearanceService.revoke!(node_id: node_id, node_module_ids: [ node_module_id ])
-      end
+      ::System::AssignmentClearanceService.revoke!(node_id: node_id, node_module_ids: [ node_module_id ])
     end
 
     def sync_clearance_with_enabled

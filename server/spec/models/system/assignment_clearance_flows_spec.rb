@@ -198,6 +198,57 @@ RSpec.describe "assignment clearance across the unassign flows" do
     end
   end
 
+  describe "a failed REVOKE must not leave a live clearance on a re-assigned module" do
+    let!(:mod) { node_module("reassigned") }
+
+    before do
+      create(:system_node_module_assignment, node: node, node_module: mod, enabled: true).destroy!
+      allow(System::AssignmentClearanceService).to receive(:revoke!).and_raise(ActiveRecord::StatementInvalid, "boom")
+    end
+
+    it "rolls back a re-assignment" do
+      expect { create(:system_node_module_assignment, node: node, node_module: mod, enabled: true) }
+        .to raise_error(ActiveRecord::StatementInvalid)
+      expect(node.reload.node_module_assignments).to be_empty
+    end
+
+    it "rolls back re-enabling a disabled assignment" do
+      assignment = create(:system_node_module_assignment, node: node, node_module: mod, enabled: false)
+
+      expect { assignment.update!(enabled: true) }.to raise_error(ActiveRecord::StatementInvalid)
+      expect(assignment.reload.enabled).to be(false)
+    end
+
+    it "rolls back a global re-enable of the module" do
+      mod.update_columns(enabled: false)
+
+      expect { mod.update!(enabled: true) }.to raise_error(ActiveRecord::StatementInvalid)
+      expect(mod.reload.enabled).to be(false)
+    end
+  end
+
+  describe "a global re-enable revokes only where the module is served again" do
+    let!(:mod) { node_module("toggled") }
+    let(:served_node) { create(:system_node, account: account, node_template: template, name: "served-#{SecureRandom.hex(3)}") }
+    let(:still_unassigned_node) { create(:system_node, account: account, node_template: template, name: "gone-#{SecureRandom.hex(3)}") }
+    let(:disabled_assignment_node) { create(:system_node, account: account, node_template: template, name: "off-#{SecureRandom.hex(3)}") }
+
+    before do
+      create(:system_node_module_assignment, node: served_node, node_module: mod, enabled: true)
+      create(:system_node_module_assignment, node: still_unassigned_node, node_module: mod, enabled: true).destroy!
+      create(:system_node_module_assignment, node: disabled_assignment_node, node_module: mod, enabled: true).update!(enabled: false)
+    end
+
+    it "keeps the clearance on nodes where the module stays unassigned" do
+      mod.update!(enabled: false)
+      mod.update!(enabled: true)
+
+      expect(clearances(served_node)).to be_empty
+      expect(clearances(still_unassigned_node).pluck(:node_module_id)).to eq([ mod.id ])
+      expect(clearances(disabled_assignment_node).pluck(:node_module_id)).to eq([ mod.id ])
+    end
+  end
+
   describe "the flows the task does NOT change" do
     it "destroying the node records no clearance for the assignments that go with it" do
       mod = node_module("with-node")

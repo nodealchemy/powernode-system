@@ -25,9 +25,14 @@ module System
   # backend that answered with nothing) therefore returns an empty confirmation
   # set too: absence yields absence. A row exists only if a removal was recorded,
   # in the same commit as the removal, with an audit row. Stale rows are bounded
-  # three ways: they expire (TTL), they are revoked the moment the module is
-  # assigned or enabled again (the callbacks), and the response never lists a
-  # module it is itself serving (the controller subtracts the served set).
+  # four ways: they expire (TTL); they are revoked the moment the module is
+  # assigned or enabled again, in the enabling transaction, so a failed revoke
+  # rolls the assign back rather than being swallowed (only ISSUES are swallowed,
+  # see .guarded); the response never lists a module it is itself serving (the
+  # controller subtracts the served set); and the agent drops a confirmation its
+  # own list contradicts. Audit granularity: one row per issue! call, which the
+  # per-assignment callbacks make one per assignment; issue_for_module! writes one
+  # per module.
   #
   # WHAT IT IS NOT. It is not signed: the response is authenticated by mTLS like
   # every node_api answer, no more. The fail-closed rule guards against a degraded
@@ -76,13 +81,16 @@ module System
       end
 
       # The module is assigned or enabled again: whatever said it was unassigned is
-      # no longer true. Scoped to one node, or to every node when none is named.
-      def revoke!(node_module_ids:, node_id: nil)
+      # no longer true THERE. Scoped to one node (node_id), to the nodes where the
+      # module is served again (node_ids), or to every node when neither is named.
+      # Raises on failure; see #guarded for why a revoke is never swallowed.
+      def revoke!(node_module_ids:, node_id: nil, node_ids: nil)
         ids = Array(node_module_ids).compact.map(&:to_s).uniq
         return 0 if ids.empty?
 
         scope = ::System::NodeAssignmentClearance.where(node_module_id: ids)
         scope = scope.where(node_id: node_id) if node_id
+        scope = scope.where(node_id: node_ids) if node_ids
         scope.delete_all
       end
 
@@ -96,11 +104,15 @@ module System
         end
       end
 
-      # Runs a clearance write from a model callback. A SAVEPOINT, so a failure
-      # here cannot poison the caller's transaction, and swallowed after logging:
-      # the operator's removal must not be blocked by its own bookkeeping. The
-      # failure mode is the fail-closed one (no confirmation, the agent keeps the
-      # module, the node reports a persistent empty_assignment deferral).
+      # Runs an ISSUE from a model callback. A SAVEPOINT, so a failure here cannot
+      # poison the caller's transaction, and swallowed after logging: the operator's
+      # removal must not be blocked by its own bookkeeping. Swallowing is safe ONLY
+      # because a failed issue means no confirmation, so the agent keeps the module
+      # and the node reports a persistent empty_assignment deferral (the fail-closed
+      # direction). NEVER wrap a revoke in this: a failed revoke that is swallowed
+      # leaves a live confirmation on a module that is assigned again, which is the
+      # fail-OPEN direction. A revoke runs bare, inside the enabling transaction, so
+      # if it fails the assign or enable rolls back with it.
       def guarded(context)
         ::ActiveRecord::Base.transaction(requires_new: true) { yield }
       rescue StandardError => e
@@ -116,8 +128,6 @@ module System
         [ seconds.seconds, TTL_FLOOR ].max
       end
 
-      private
-
       # Nodes whose SERVED list contains the module: an enabled assignment, plus the
       # node a dependant child is bound to (node_modules in NodeApi::ModulesController
       # serves both). A node whose own assignment is already disabled never served it.
@@ -126,6 +136,8 @@ module System
         ids << node_module.node_id if node_module.node_id.present?
         ids.uniq
       end
+
+      private
 
       # pairs: [[node_id, node_module_id], ...]
       def write!(pairs, account_id:, reason:)

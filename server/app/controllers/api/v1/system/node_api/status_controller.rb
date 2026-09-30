@@ -228,7 +228,7 @@ module Api
             #
             # Every field is Go `omitempty`, so a missing key is ingested as
             # UNREPORTED, never as a measured false — see
-            # System::BootLkgStateWriter. None of the seven present ⇒ nothing
+            # System::BootLkgStateWriter. None of WIRE_KEYS present ⇒ nothing
             # written (absence stays absence). Wrapped so an ingest bug cannot
             # bounce telemetry, exactly like the three blocks above.
             begin

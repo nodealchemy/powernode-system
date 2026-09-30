@@ -750,11 +750,16 @@ module System
     private
 
     def sync_assignment_clearances
-      ::System::AssignmentClearanceService.guarded("module #{id} enabled=#{enabled}") do
-        if enabled
-          ::System::AssignmentClearanceService.revoke!(node_module_ids: [ id ])
-        else
-          ::System::AssignmentClearanceService.issue_for_module!(node_module: self, reason: "module_disabled")
+      service = ::System::AssignmentClearanceService
+      if enabled
+        # Bare, not guarded: a failed revoke must roll the re-enable back (see
+        # AssignmentClearanceService.guarded). Only where the module is served again:
+        # a node whose own assignment is gone or disabled stays unassigned, and its
+        # clearance is still true.
+        service.revoke!(node_module_ids: [ id ], node_ids: service.serving_node_ids(self))
+      else
+        service.guarded("module #{id} disabled") do
+          service.issue_for_module!(node_module: self, reason: "module_disabled")
         end
       end
     end
