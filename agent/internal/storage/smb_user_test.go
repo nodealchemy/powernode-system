@@ -180,7 +180,10 @@ func TestApplySambaUser_SetPasswordFallsBackToCredentialWhenNoNewCredential(t *t
 }
 
 func TestApplySambaUser_DeleteNeverFetchesACredential(t *testing.T) {
-	rec := &mount.RecorderRunner{StubOutput: map[string][]byte{"smbstatus --processes --json": []byte(`{"sessions": {}}`)}}
+	rec := &mount.RecorderRunner{StubOutput: map[string][]byte{
+		"wbinfo -i svc-share":          []byte("SAMDOM\\svc-share:*:3000017:100::/home/SAMDOM/svc-share:/bin/false\n"),
+		"smbstatus --processes --json": []byte(`{"sessions": {}}`),
+	}}
 	getter := stubGetter{err: errFetchMustNotHappen}
 	task := &SmbUserApplyTask{
 		StorageID:  "019f7cb5-3858-7000-8000-000000000006",

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -66,24 +67,29 @@ func createSambaUser(ctx context.Context, runner mount.Runner, client httpGetter
 // principal kept every share it had mounted until it disconnected on its own.
 //
 // Order is deliberate:
-//  1. enumerate the user's sessions FIRST, while the name still resolves
-//     (smbstatus reports uidtoname(), which after the delete may no longer
-//     map back to this user). A failure here mutates nothing.
+//  1. resolve the user's uid (wbinfo -i) and enumerate its sessions FIRST,
+//     while the account still exists. A failure here mutates nothing; an
+//     account that exists but whose uid cannot be resolved fails here too,
+//     because its sessions could not be identified afterwards.
 //  2. delete, so nothing can re-authenticate — closing first would let an
 //     auto-reconnecting client straight back in before the delete landed.
 //  3. close each enumerated smbd process, then poll until none is listed.
 //
 // Every command goes through the runner as argv (no shell); the username has
-// already passed Validate()'s taskguard.Identifier and pids are parsed as
-// integers before they reach smbcontrol.
+// already passed Validate()'s taskguard.Identifier, and uids and pids are
+// parsed as integers before they are compared or reach smbcontrol.
 //
 // Residual: an smbd process serves one client connection, and a connection
 // can carry sessions for more than one user — closing it drops those too. A
 // session opened between step 1 and step 2 is not closed; and a retry after a
-// delete that landed but whose close failed finds the user already gone and
-// cannot re-identify its sessions by name.
+// delete that landed but whose close failed finds the account gone, has no
+// uid to match, and can fall back only on the name.
 func deleteSambaUser(ctx context.Context, runner mount.Runner, task *SmbUserApplyTask) error {
-	pids, err := smbSessionPIDs(ctx, runner, task.Username)
+	uid, resolved, err := resolveSambaUID(ctx, runner, task.Username)
+	if err != nil {
+		return fmt.Errorf("storage.smb_user.apply delete: %w", err)
+	}
+	pids, err := smbSessionPIDs(ctx, runner, task.Username, uid, resolved)
 	if err != nil {
 		return fmt.Errorf("storage.smb_user.apply delete: list sessions: %w", err)
 	}
@@ -103,6 +109,61 @@ func deleteSambaUser(ctx context.Context, runner mount.Runner, task *SmbUserAppl
 	return waitSmbSessionsGone(ctx, runner, pids)
 }
 
+// resolveSambaUID returns the uid smbd runs username's sessions under, from
+// `wbinfo -i <user>` (passwd-line shape DOMAIN\user:*:<uid>:<gid>:...).
+// smbstatus reports a session's owner as that uid, and — without
+// libnss-winbind in nsswitch — ALSO puts the bare number in its username
+// field, so the uid is the only reliable key.
+//
+// When wbinfo cannot resolve the name, `samba-tool user show` decides between
+// the two cases: an account that exists is a failure (its sessions could not
+// be found); an account that does not exist is resolved=false, and the
+// delete below reports samba-tool's own not-found as success.
+func resolveSambaUID(ctx context.Context, runner mount.Runner, username string) (uint32, bool, error) {
+	out, werr := runner.Output(ctx, "wbinfo", "-i", username)
+	if werr == nil {
+		uid, err := parseWbinfoPasswd(string(out), username)
+		if err != nil {
+			return 0, false, err
+		}
+		return uid, true, nil
+	}
+	serr := runner.Run(ctx, "samba-tool", "user", "show", username)
+	switch {
+	case serr == nil:
+		return 0, false, fmt.Errorf("user %s exists but its uid could not be resolved: %w", username, werr)
+	case isSambaUserShowNotFound(serr, username):
+		return 0, false, nil
+	default:
+		return 0, false, fmt.Errorf("resolve uid: %w (existence check: %v)", werr, serr)
+	}
+}
+
+// parseWbinfoPasswd reads the uid from one `wbinfo -i` line and checks that
+// the line is for username (the part after the domain separator,
+// case-insensitive — sAMAccountName is). uid 0 and the -1 sentinel are
+// refused: matching sessions on either would close ones that are not this
+// user's.
+func parseWbinfoPasswd(out, username string) (uint32, error) {
+	line := strings.TrimSpace(out)
+	fields := strings.Split(line, ":")
+	if strings.Contains(line, "\n") || len(fields) != 7 {
+		return 0, errors.New("wbinfo -i: unexpected output shape")
+	}
+	name := fields[0]
+	if i := strings.LastIndex(name, `\`); i >= 0 {
+		name = name[i+1:]
+	}
+	if !strings.EqualFold(name, username) {
+		return 0, fmt.Errorf("wbinfo -i: output is not for user %s", username)
+	}
+	uid, err := strconv.ParseUint(fields[2], 10, 32)
+	if err != nil || uid == 0 || uid == math.MaxUint32 {
+		return 0, fmt.Errorf("wbinfo -i: refusing uid %q", fields[2])
+	}
+	return uint32(uid), nil
+}
+
 // isSambaUserNotFound reports whether err is samba-tool's own "no such user"
 // failure for username — the one delete outcome that is success (idempotent).
 //
@@ -118,24 +179,45 @@ func deleteSambaUser(ctx context.Context, runner mount.Runner, task *SmbUserAppl
 // line for THIS username are required, so another user's not-found or the
 // text under another exit status does not count.
 //
-// UNVERIFIED by execution: derived from the source above; the verify script
-// (imp65a-samba-verify.sh) proves it against a live samba-tool.
+// UNVERIFIED by execution: derived from the source above; check C of the
+// verify script (imp65a-samba-verify.sh) proves it against a live samba-tool.
 func isSambaUserNotFound(err error, username string) bool {
+	return sambaToolFailedWith(err, `ERROR: Unable to find user "`+username+`"`)
+}
+
+// isSambaUserShowNotFound is the same check for `samba-tool user show`, whose
+// 4.19.5 path (user.py GetPasswordCommand.get_account_attributes) wraps the
+// empty search as CommandError("Failed to get password for user '%s': %s")
+// around Exception('Unable to find user "%s"'); printed and exited as above.
+//
+// UNVERIFIED by execution: derived from that source; check D of the verify
+// script proves it.
+func isSambaUserShowNotFound(err error, username string) bool {
+	return sambaToolFailedWith(err, `ERROR: Failed to get password for user '`+username+`': Unable to find user "`+username+`"`)
+}
+
+func sambaToolFailedWith(err error, line string) bool {
 	var ee *exec.ExitError
 	if !errors.As(err, &ee) || ee.ExitCode() != 255 {
 		return false
 	}
-	return strings.Contains(err.Error(), `ERROR: Unable to find user "`+username+`"`)
+	return strings.Contains(err.Error(), line)
 }
 
 // smbstatusSessions is the part of `smbstatus --processes --json` (samba
 // 4.16+; source3/utils/status_json.c traverse_sessionid_json and
-// add_server_id_to_json) this file reads. server_id.pid is a string there.
+// add_server_id_to_json) this file reads. Observed on a live 4.19.5 AD DC:
+//
+//	"uid": 3000016, "username": "3000016", "server_id": {"pid": "30046", ...}
+//
+// server_id.pid is decoded from a string OR a number; uid is an int that is
+// -1 while authentication is still in progress.
 type smbstatusSessions struct {
 	Sessions map[string]struct {
 		ServerID struct {
-			PID string `json:"pid"`
+			PID json.RawMessage `json:"pid"`
 		} `json:"server_id"`
+		UID      *int64 `json:"uid"`
 		Username string `json:"username"`
 	} `json:"sessions"`
 }
@@ -156,21 +238,21 @@ func listSmbSessions(ctx context.Context, runner mount.Runner, args ...string) (
 }
 
 // smbSessionPIDs returns the distinct smbd process ids holding a session for
-// username, sorted. smbstatus names the session owner with uidtoname(), which
-// on a domain member or DC is winbind's DOMAIN\user form, so the part after
-// the last separator is compared too; sAMAccountName compares
-// case-insensitively. A pid that is not a positive integer above 1 fails the
-// whole listing closed rather than being skipped.
+// the user, sorted. The session's numeric uid is the primary key (when
+// resolved); the username field — the bare name, or winbind's DOMAIN\user
+// form when libnss-winbind resolves the uid — is a secondary match. A pid
+// that is not an integer above 1 fails the whole listing closed rather than
+// being skipped.
 //
-// UNVERIFIED by execution: that the node's smbstatus reports this user's
-// sessions under one of these two names (it needs NSS to resolve the uid).
-// The verify script asserts the pre-delete listing matches its session.
-func smbSessionPIDs(ctx context.Context, runner mount.Runner, username string) ([]string, error) {
+// Verified by execution on a live 4.19.5 AD DC without libnss-winbind: the
+// session listed "username": "<uid>", never the name — which is why the uid
+// comes first.
+func smbSessionPIDs(ctx context.Context, runner mount.Runner, username string, uid uint32, uidResolved bool) ([]string, error) {
 	st, err := listSmbSessions(ctx, runner, "--processes", "--json")
 	if err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
+	seen := map[uint64]bool{}
 	for _, s := range st.Sessions {
 		pid, err := smbdPID(s.ServerID.PID)
 		if err != nil {
@@ -180,28 +262,39 @@ func smbSessionPIDs(ctx context.Context, runner mount.Runner, username string) (
 		if i := strings.LastIndex(name, `\`); i >= 0 {
 			name = name[i+1:]
 		}
-		if strings.EqualFold(name, username) {
+		if (uidResolved && s.UID != nil && *s.UID == int64(uid)) || strings.EqualFold(name, username) {
 			seen[pid] = true
 		}
 	}
-	pids := make([]string, 0, len(seen))
+	nums := make([]uint64, 0, len(seen))
 	for pid := range seen {
-		pids = append(pids, pid)
+		nums = append(nums, pid)
 	}
-	sort.Slice(pids, func(i, j int) bool {
-		a, _ := strconv.ParseUint(pids[i], 10, 64)
-		b, _ := strconv.ParseUint(pids[j], 10, 64)
-		return a < b
-	})
+	sort.Slice(nums, func(i, j int) bool { return nums[i] < nums[j] })
+	pids := make([]string, len(nums))
+	for i, n := range nums {
+		pids[i] = strconv.FormatUint(n, 10)
+	}
 	return pids, nil
 }
 
-func smbdPID(raw string) (string, error) {
-	n, err := strconv.ParseUint(raw, 10, 32)
-	if err != nil || n <= 1 {
-		return "", fmt.Errorf("smbstatus: refusing session process id %q", raw)
+// smbdPID decodes server_id.pid, which status_json.c emits as a string but
+// which is accepted as a JSON number too, and refuses anything that is not
+// an integer above 1.
+func smbdPID(raw json.RawMessage) (uint64, error) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		var n json.Number
+		if err := json.Unmarshal(raw, &n); err != nil {
+			return 0, fmt.Errorf("smbstatus: refusing session process id %s", raw)
+		}
+		s = n.String()
 	}
-	return strconv.FormatUint(n, 10), nil
+	n, err := strconv.ParseUint(s, 10, 32)
+	if err != nil || n <= 1 {
+		return 0, fmt.Errorf("smbstatus: refusing session process id %q", s)
+	}
+	return n, nil
 }
 
 // smbSessionGonePolls/Interval bound the post-close check. smbcontrol only
@@ -214,12 +307,12 @@ var (
 )
 
 // waitSmbSessionsGone polls `smbstatus --processes --numeric --json` until no
-// session is held by any of pids. --numeric because after the delete the
-// uid may no longer resolve to a name; only the pid is compared.
+// session is held by any of pids. --numeric keeps smbstatus from resolving
+// names at all; only the pid is compared.
 //
 // UNVERIFIED by execution: that `smbcontrol <pid> shutdown` ends an smbd
 // child's session on the node (the child inherits the parent's MSG_SHUTDOWN
-// registration across fork). The verify script proves the session is gone.
+// registration across fork). Check B of the verify script proves it.
 func waitSmbSessionsGone(ctx context.Context, runner mount.Runner, pids []string) error {
 	var remaining []string
 	for i := 0; i < smbSessionGonePolls; i++ {
@@ -236,7 +329,11 @@ func waitSmbSessionsGone(ctx context.Context, runner mount.Runner, pids []string
 		}
 		live := map[string]bool{}
 		for _, s := range st.Sessions {
-			live[s.ServerID.PID] = true
+			pid, err := smbdPID(s.ServerID.PID)
+			if err != nil {
+				return fmt.Errorf("storage.smb_user.apply delete: verify sessions closed: %w", err)
+			}
+			live[strconv.FormatUint(pid, 10)] = true
 		}
 		remaining = remaining[:0]
 		for _, pid := range pids {
