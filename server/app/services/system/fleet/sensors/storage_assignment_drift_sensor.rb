@@ -16,29 +16,30 @@ module System
       # previous version swept and mutated directly, and was never invoked).
       class StorageAssignmentDriftSensor < BaseSensor
         STALE_WINDOW = 5.minutes
+        OVERDUE_FINGERPRINT_PREFIX = "storage_smb_rotation_overdue"
 
-        # IMP-a366d6fb6b80 - a second population on the same lane: an
-        # assignment holding an SMB credential that has been "rotating" past
+        # IMP-a366d6fb6b80 - a second check on the same kind: an assignment
+        # holding an SMB credential that has been "rotating" past
         # System::Storage::RotatingCredentialSweeper.window, i.e. the consumer
-        # never confirmed the remount that would have retired it. It rides
-        # THIS signal kind so the applier this lane already has
-        # (DecisionEngine#reconcile_storage_assignment) runs the sweep; one
-        # signal per assignment, whichever population(s) it is in. An
-        # assignment that is only in this population is otherwise healthy, so
-        # its payload says "reconcile" => false and the applier sweeps without
-        # re-driving a mount. No staleness window applies: the overdue test IS
-        # the window, and the credential's assignment can be mounted, disabled
-        # or already reconciled, none of which stops the old samba user being
-        # valid.
+        # never confirmed the remount that would have retired it. It rides THIS
+        # signal kind so the applier the lane already has
+        # (DecisionEngine#reconcile_storage_assignment) runs the sweep, but it
+        # is its OWN signal with its OWN fingerprint, never merged into the
+        # drift signal. The drift fingerprint accrues ineffective outcomes for
+        # a node whose reconcile keeps failing, and three of them force that
+        # fingerprint to require_approval (F3-11): sharing it would strand this
+        # bound behind an operator for exactly the unhealthy nodes it exists
+        # for, and let this check pollute the drift lane's history. Separate
+        # fingerprints mean each is scored on its own outcome: a retirement
+        # makes this one disappear (effective); a failed one is applied:false
+        # and never scored, and the sweeper raises its own alert.
+        #
+        # Its payload says "reconcile" => false: the assignment may be healthy
+        # and mounted, so the applier sweeps without re-driving its mount. No
+        # staleness window applies - the overdue test IS the window.
         def sense
-          drift = drifting_assignments.to_h { |assignment| [ assignment.id, assignment ] }
-          overdue = overdue_rotating_credentials
-
-          drift.map { |id, assignment| build_signal(assignment, overdue[id]) } +
-            (overdue.keys - drift.keys).map do |id|
-              credentials = overdue[id]
-              build_signal(credentials.first.storage_assignment, credentials, reconcile: false)
-            end
+          drifting_assignments.map { |assignment| build_drift_signal(assignment) } +
+            overdue_rotating_credentials.map { |_id, credentials| build_overdue_signal(credentials) }
         end
 
         private
@@ -57,10 +58,14 @@ module System
             .find_each.to_a
         end
 
-        # { storage_assignment_id => [rotating credentials past the window] }.
-        # A row with no rotating_since is included on purpose: the sweep stamps
-        # it, which is what gives it a clock; leaving it out would leave it
-        # unbounded.
+        # { storage_assignment_id => [rotating credentials past the window] },
+        # for SMB storages only: the sweep has nothing to act on for a
+        # credential whose storage is NFS or no longer resolves, and signalling
+        # it every tick would only manufacture ineffective outcomes. A row with
+        # no rotating_since is included on purpose: the sweep stamps it, which
+        # is what gives it a clock. The storage is a hand-written lookup, not
+        # an association, so it is resolved per assignment; the set is empty in
+        # steady state.
         def overdue_rotating_credentials
           cutoff = Time.current - ::System::Storage::RotatingCredentialSweeper.window
           ::System::StorageCredential
@@ -69,29 +74,38 @@ module System
             .merge(::System::StorageAssignment.where(account_id: account.id))
             .includes(storage_assignment: :node_instance)
             .group_by(&:storage_assignment_id)
+            .select { |_id, credentials| credentials.first.storage_assignment.file_storage&.smb? }
         end
 
-        def build_signal(assignment, overdue_credentials, reconcile: true)
-          payload = {
-            storage_assignment_id: assignment.id,
-            node_instance_id: assignment.node_instance_id,
-            status: assignment.status,
-            last_status_at: assignment.last_status_at&.utc&.iso8601
-          }
-          if overdue_credentials.present?
-            payload.merge!(
-              node_instance_name: assignment.node_instance&.name,
-              smb_rotation_overdue_credential_ids: overdue_credentials.map(&:id),
-              smb_rotation_window_hours: (::System::Storage::RotatingCredentialSweeper.window / 1.hour).to_i
-            )
-          end
-          payload[:reconcile] = false unless reconcile
-
+        def build_drift_signal(assignment)
           signal(
             kind: "system.storage_assignment_drift",
             severity: :medium,
-            payload: payload,
+            payload: {
+              storage_assignment_id: assignment.id,
+              node_instance_id: assignment.node_instance_id,
+              status: assignment.status,
+              last_status_at: assignment.last_status_at&.utc&.iso8601
+            },
             fingerprint: "storage_assignment_drift:#{assignment.id}"
+          )
+        end
+
+        def build_overdue_signal(credentials)
+          assignment = credentials.first.storage_assignment
+          signal(
+            kind: "system.storage_assignment_drift",
+            severity: :medium,
+            payload: {
+              storage_assignment_id: assignment.id,
+              node_instance_id: assignment.node_instance_id,
+              node_instance_name: assignment.node_instance&.name,
+              status: assignment.status,
+              smb_rotation_overdue_credential_ids: credentials.map(&:id),
+              smb_rotation_window_hours: (::System::Storage::RotatingCredentialSweeper.window / 1.hour).to_i,
+              reconcile: false
+            },
+            fingerprint: "#{OVERDUE_FINGERPRINT_PREFIX}:#{assignment.id}"
           )
         end
       end

@@ -223,7 +223,10 @@ module PowernodeSystem
           setting_type: "integer",
           description: "Hours a rotated-out SMB credential may stay valid while its consumer node has " \
                        "not confirmed a remount, before the platform retires it anyway (deletes the " \
-                       "samba user, audits it and raises a fleet alert naming the node). Whole hours, " \
+                       "samba user, audits it and raises a fleet alert naming the node; it runs " \
+                       "through the system.storage_assignment_reconcile gate on the fleet tick, so " \
+                       "expect it up to about ten minutes after the window, and a held gate holds " \
+                       "it). Whole hours, " \
                        "#{::System::Storage::RotatingCredentialSweeper::MIN_WINDOW_HOURS} to " \
                        "#{::System::Storage::RotatingCredentialSweeper::MAX_WINDOW_HOURS}. Unset or invalid " \
                        "falls back to #{::System::Storage::RotatingCredentialSweeper::DEFAULT_WINDOW_HOURS}."

@@ -1300,7 +1300,8 @@ RSpec.describe System::Fleet::DecisionEngine do
       end
 
       # IMP-a366d6fb6b80 - the applier of the storage_assignment_drift lane also
-      # bounds SMB credentials a consumer never confirmed the remount for.
+      # bounds SMB credentials a consumer never confirmed the remount for, on
+      # the sensor's OWN signal (a separate fingerprint from the drift signal).
       context "with an SMB credential rotating past the retire window" do
         let(:platform) { create(:system_node_platform, account: account) }
         let(:template) { create(:system_node_template, account: account, node_platform: platform) }
@@ -1318,6 +1319,7 @@ RSpec.describe System::Fleet::DecisionEngine do
           create(:system_storage_assignment, account: account, node_instance: inst,
                  file_storage_id: smb_storage.id, mount_path: "/mnt/engine-smb")
         end
+        let(:sensor) { System::Fleet::Sensors::StorageAssignmentDriftSensor.new(account: account) }
 
         before do
           policy!("system.storage_assignment_reconcile", "notify_and_proceed")
@@ -1332,36 +1334,62 @@ RSpec.describe System::Fleet::DecisionEngine do
           allow(::System::Storage::AssignmentReconciliationService).to receive(:reconcile_assignment!)
         end
 
-        def decide_drift(payload_extra = {})
-          engine.decide(kind: "system.storage_assignment_drift", severity: :medium,
-                        payload: { "storage_assignment_id" => assignment.id }.merge(payload_extra),
-                        fingerprint: "storage_assignment_drift:#{assignment.id}")
+        def overdue_signal
+          sensor.sense.find { |sig| sig.fingerprint.start_with?("storage_smb_rotation_overdue:") }
         end
 
-        it "retires it, reports it, and still reconciles a drifting assignment" do
-          d = decide_drift
+        def make_drift_stuck!
+          assignment.update_columns(status: "degraded", last_status_at: 10.minutes.ago)
+          described_class::STUCK_STREAK_THRESHOLD.times do |i|
+            System::Fleet::RemediationOutcome.create!(
+              account: account, signal_kind: "system.storage_assignment_drift",
+              fingerprint: "storage_assignment_drift:#{assignment.id}",
+              action_category: "system.storage_assignment_reconcile", status: "ineffective",
+              acted_at: (5 - i).hours.ago, settle_until: (4 - i).hours.ago, validated_at: (4 - i).hours.ago
+            )
+          end
+        end
+
+        it "retires it and reports it, without re-driving a mount" do
+          d = engine.decide(overdue_signal)
 
           expect(d[:decision]).to eq(:proceed)
           expect(d[:remediation]).to include(applied: true, smb_credentials_retired: [ @old.id ])
           expect(@old.reload.status).to eq("revoked")
-          expect(::System::Storage::AssignmentReconciliationService).to have_received(:reconcile_assignment!).with(assignment)
-        end
-
-        it "sweeps without re-driving a mount when the signal is only about the overdue credential" do
-          d = decide_drift("reconcile" => false)
-
-          expect(d[:remediation]).to include(applied: true, smb_credentials_retired: [ @old.id ])
           expect(::System::Storage::AssignmentReconciliationService).not_to have_received(:reconcile_assignment!)
         end
 
-        it "reports applied: false when a retirement raised, and still reconciles" do
+        it "is not held by a drift fingerprint that is stuck behind operator approval" do
+          make_drift_stuck!
+          signals = sensor.sense
+          drift = signals.find { |sig| sig.fingerprint == "storage_assignment_drift:#{assignment.id}" }
+          expect(engine.decide(drift)[:remediation_stuck]).to be true # the drift lane IS stuck
+
+          d = engine.decide(signals.find { |sig| sig.fingerprint.start_with?("storage_smb_rotation_overdue:") })
+
+          expect(d[:decision]).to eq(:proceed)
+          expect(d[:remediation]).to include(smb_credentials_retired: [ @old.id ])
+          expect(@old.reload.status).to eq("revoked")
+        end
+
+        it "does not sweep on a plain drift signal, which only reconciles" do
+          d = engine.decide(kind: "system.storage_assignment_drift", severity: :medium,
+                            payload: { "storage_assignment_id" => assignment.id },
+                            fingerprint: "storage_assignment_drift:#{assignment.id}")
+
+          expect(d[:remediation]).to include(applied: true)
+          expect(@old.reload.status).to eq("rotating")
+          expect(::System::Storage::AssignmentReconciliationService).to have_received(:reconcile_assignment!)
+        end
+
+        it "reports applied: false when a retirement raised, and raises its alert" do
           allow_any_instance_of(System::Storage::SmbUserManager).to receive(:deprovision_user!).and_raise("backend unreachable")
 
-          d = decide_drift
+          d = engine.decide(overdue_signal)
 
           expect(d[:remediation]).to include(applied: false, smb_credentials_failed: [ @old.id ])
           expect(@old.reload.status).to eq("rotating")
-          expect(::System::Storage::AssignmentReconciliationService).to have_received(:reconcile_assignment!)
+          expect(System::FleetEvent.where(kind: System::Storage::RotatingCredentialSweeper::FAILED_EVENT_KIND).count).to eq(1)
         end
       end
     end

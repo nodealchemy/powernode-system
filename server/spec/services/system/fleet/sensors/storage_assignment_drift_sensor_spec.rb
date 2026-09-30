@@ -144,7 +144,7 @@ RSpec.describe System::Fleet::Sensors::StorageAssignmentDriftSensor do
       [ assignment, old ]
     end
 
-    it "emits a signal naming the node, even for a healthy mounted assignment inside the staleness window" do
+    it "emits its own signal naming the node, even for a healthy mounted assignment inside the staleness window" do
       assignment, old = healthy_assignment_with_rotating!(since: 30.hours.ago)
 
       signals = sensor.sense
@@ -152,7 +152,7 @@ RSpec.describe System::Fleet::Sensors::StorageAssignmentDriftSensor do
       expect(signals.size).to eq(1)
       signal = signals.first
       expect(signal.kind).to eq("system.storage_assignment_drift")
-      expect(signal.fingerprint).to eq("storage_assignment_drift:#{assignment.id}")
+      expect(signal.fingerprint).to eq("storage_smb_rotation_overdue:#{assignment.id}")
       expect(signal.payload).to include(
         "storage_assignment_id" => assignment.id,
         "node_instance_id" => instance.id,
@@ -176,15 +176,28 @@ RSpec.describe System::Fleet::Sensors::StorageAssignmentDriftSensor do
       expect(sensor.sense.map { |sig| sig.payload["storage_assignment_id"] }).to eq([ assignment.id ])
     end
 
-    it "emits ONE signal for an assignment that is both drifting and holding an overdue credential, and does not suppress reconcile" do
+    it "keeps the overdue check on its OWN fingerprint when the assignment is also drifting, and leaves the drift signal unchanged" do
       assignment, = healthy_assignment_with_rotating!(since: 30.hours.ago)
       assignment.update_columns(status: "degraded", last_status_at: 10.minutes.ago)
 
       signals = sensor.sense
+      drift = signals.find { |sig| sig.fingerprint == "storage_assignment_drift:#{assignment.id}" }
+      overdue = signals.find { |sig| sig.fingerprint == "storage_smb_rotation_overdue:#{assignment.id}" }
 
-      expect(signals.size).to eq(1)
-      expect(signals.first.payload).to include("smb_rotation_overdue_credential_ids" => be_present)
-      expect(signals.first.payload).not_to have_key("reconcile")
+      expect(signals.size).to eq(2)
+      expect(drift.payload).not_to have_key("smb_rotation_overdue_credential_ids")
+      expect(drift.payload).not_to have_key("reconcile")
+      expect(overdue.payload).to include("reconcile" => false)
+    end
+
+    it "does not emit for a rotating credential the sweep cannot act on (storage is not SMB, or no longer resolves)" do
+      assignment, = healthy_assignment_with_rotating!(since: 30.hours.ago)
+
+      assignment.update_columns(file_storage_id: SecureRandom.uuid)
+      expect(sensor.sense).to be_empty
+
+      assignment.update_columns(file_storage_id: mountable_file_storage.id) # an NFS storage
+      expect(sensor.sense).to be_empty
     end
 
     it "does not emit for another account's credential" do

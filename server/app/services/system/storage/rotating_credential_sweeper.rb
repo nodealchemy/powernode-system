@@ -53,6 +53,7 @@ module System
       AUDIT_ACTION = "system.storage.smb_credential.force_retire"
       AUDITED_ACTIONS = [ AUDIT_ACTION ].freeze
       EVENT_KIND = "system.storage.smb_credential_force_retired"
+      FAILED_EVENT_KIND = "system.storage.smb_credential_force_retire_failed"
 
       class << self
         # The effective window. Fails to the default for anything that is not a
@@ -95,10 +96,11 @@ module System
       end
 
       # @return [Hash] { retired: [credential ids this call retired],
-      #   stamped: [ids given a clock], failed: [ids whose retirement raised] }
+      #   stamped: [ids given a clock], failed: [ids whose retirement raised],
+      #   alert_failed: [retired ids whose fleet event could not be emitted] }
       def sweep!
-        result = { retired: [], stamped: [], failed: [] }
-        return result unless @assignment.file_storage&.smb?
+        @result = { retired: [], stamped: [], failed: [], alert_failed: [] }
+        return @result unless @assignment.file_storage&.smb?
 
         window = self.class.window
         cutoff = @now - window
@@ -106,21 +108,25 @@ module System
 
         @assignment.storage_credentials.rotating_overdue(cutoff).find_each do |credential|
           if credential.rotating_since.nil?
-            result[:stamped] << credential.id if stamp!(credential)
+            @result[:stamped] << credential.id if stamp!(credential)
           elsif retire!(issuer, credential, cutoff: cutoff, window: window)
-            result[:retired] << credential.id
+            @result[:retired] << credential.id
           end
         rescue StandardError => e
           # The transaction rolled back, so the credential is still rotating
-          # and overdue: the drift signal persists and the next tick retries.
+          # and overdue and the next tick retries. But the applier's
+          # applied:false is never scored, so nothing else would tell an
+          # operator that an old credential is staying valid: raise a HIGH
+          # alert of our own, once per credential per window.
           Rails.logger.error(
             "[RotatingCredentialSweeper] could not retire credential #{credential.id} " \
             "of assignment #{@assignment.id}: #{e.class}: #{e.message}"
           )
-          result[:failed] << credential.id
+          @result[:failed] << credential.id
+          alert_failure(credential, e, window: window)
         end
 
-        result
+        @result
       end
 
       private
@@ -140,8 +146,56 @@ module System
         retired = issuer.retire_overdue_rotating_smb_credential!(credential, cutoff: cutoff) do |row, delete_task|
           write_audit!(row, delete_task, rotating_since: rotating_since, window: window)
         end
-        emit_event(credential, rotating_since: rotating_since, window: window) if retired
+        alert_retirement(credential, rotating_since: rotating_since, window: window) if retired
         retired
+      end
+
+      # The retirement has committed, so nothing raised here may turn it into a
+      # reported failure (the caller's rescue would list it as failed and a
+      # retirement error would be indistinguishable from an alert error).
+      # EventBroadcaster.emit! returns nil when it could not persist; either
+      # way the id is recorded so the tick shows an alert was lost.
+      def alert_retirement(credential, rotating_since:, window:)
+        event = emit_event(credential, rotating_since: rotating_since, window: window)
+        @result[:alert_failed] << credential.id if event.nil?
+      rescue StandardError => e
+        Rails.logger.error(
+          "[RotatingCredentialSweeper] retired credential #{credential.id} of assignment #{@assignment.id}; " \
+          "the fleet event could not be emitted: #{e.class}: #{e.message}"
+        )
+        @result[:alert_failed] << credential.id
+      end
+
+      # A HIGH event naming the node and the credential, deduplicated to one
+      # per credential per window: the failure repeats every tick until fixed,
+      # and an alert per tick would drown the fleet feed. The error CLASS only,
+      # never its message (it can carry backend detail). Never raises: it runs
+      # from the failure path and must not mask the failure it reports.
+      def alert_failure(credential, error, window:)
+        return if failure_alerted?(credential, window: window)
+
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: @assignment.account,
+          kind: FAILED_EVENT_KIND,
+          severity: :high,
+          payload: details(rotating_since: credential.rotating_since, window: window)
+                     .merge("credential_id" => credential.id, "error_class" => error.class.name),
+          source: "storage_rotating_credential_sweeper",
+          node_instance_id: @assignment.node_instance_id
+        )
+      rescue StandardError => e
+        Rails.logger.error(
+          "[RotatingCredentialSweeper] could not raise the retirement-failed alert for credential " \
+          "#{credential.id}: #{e.class}: #{e.message}"
+        )
+      end
+
+      def failure_alerted?(credential, window:)
+        ::System::FleetEvent
+          .where(account_id: @assignment.account_id, kind: FAILED_EVENT_KIND)
+          .since(@now - window)
+          .where("payload ->> 'credential_id' = ?", credential.id)
+          .exists?
       end
 
       # Inside the retirement's transaction: the record and the revocation

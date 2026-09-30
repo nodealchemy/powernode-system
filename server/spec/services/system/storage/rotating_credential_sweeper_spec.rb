@@ -239,6 +239,111 @@ RSpec.describe System::Storage::RotatingCredentialSweeper do
     end
   end
 
+  describe "when a forced retirement fails" do
+    def failed_events
+      System::FleetEvent.where(kind: described_class::FAILED_EVENT_KIND)
+    end
+
+    it "raises one HIGH alert naming the node and the credential" do
+      assignment, old, = rotated_assignment(share: "s-alert", username: "n-legacy-alert")
+      old.update_columns(rotating_since: 30.hours.ago)
+      allow_any_instance_of(System::Storage::SmbUserManager).to receive(:deprovision_user!).and_raise("backend unreachable")
+
+      described_class.sweep_assignment!(assignment)
+
+      event = failed_events.sole
+      expect(event.severity).to eq("high")
+      expect(event.node_instance_id).to eq(node_instance.id)
+      expect(event.payload).to include(
+        "credential_id" => old.id,
+        "node_instance_name" => node_instance.name,
+        "storage_assignment_id" => assignment.id,
+        "error_class" => "RuntimeError"
+      )
+      expect(event.payload.to_s).not_to include("backend unreachable")
+    end
+
+    it "does not re-alert for the same credential inside the window, and alerts again once it has passed" do
+      assignment, old, = rotated_assignment(share: "s-dedup", username: "n-legacy-dedup")
+      old.update_columns(rotating_since: 30.hours.ago)
+      allow_any_instance_of(System::Storage::SmbUserManager).to receive(:deprovision_user!).and_raise("backend unreachable")
+
+      described_class.sweep_assignment!(assignment)
+      described_class.sweep_assignment!(assignment)
+      expect(failed_events.count).to eq(1)
+
+      travel_to(25.hours.from_now) do
+        described_class.sweep_assignment!(assignment)
+        expect(failed_events.count).to eq(2)
+      end
+    end
+
+    it "alerts per credential: a second failing credential is not suppressed by the first's alert" do
+      assignment, cred_a = build_assignment_and_credential(share: "s-two", username: "n-legacy-two-a")
+      issuer = System::Storage::CredentialIssuer.new(assignment: assignment)
+      cred_b = issuer.rotate!(cred_a)
+      cred_b.update_columns(metadata: cred_b.metadata.merge("username" => "n-legacy-two-b"))
+      issuer.rotate!(cred_b)
+      [ cred_a, cred_b ].each { |c| c.reload.update_columns(rotating_since: 30.hours.ago) }
+      allow_any_instance_of(System::Storage::SmbUserManager).to receive(:deprovision_user!).and_raise("backend unreachable")
+
+      described_class.sweep_assignment!(assignment)
+
+      expect(failed_events.map { |e| e.payload["credential_id"] }).to contain_exactly(cred_a.id, cred_b.id)
+    end
+
+    it "does not let a failing alert emit mask the failure it reports" do
+      assignment, old, = rotated_assignment(share: "s-alertfail", username: "n-legacy-alertfail")
+      old.update_columns(rotating_since: 30.hours.ago)
+      allow_any_instance_of(System::Storage::SmbUserManager).to receive(:deprovision_user!).and_raise("backend unreachable")
+      allow(System::Fleet::EventBroadcaster).to receive(:emit!).and_raise("bus down")
+
+      result = described_class.sweep_assignment!(assignment)
+
+      expect(result[:failed]).to eq([ old.id ])
+    end
+
+    it "rolls the revocation and its delete task back when the audit write fails" do
+      assignment, old, = rotated_assignment(share: "s-rollback", username: "n-legacy-rollback")
+      old.update_columns(rotating_since: 30.hours.ago)
+      allow(AuditLog).to receive(:log_action).and_raise(ActiveRecord::RecordInvalid)
+
+      result = described_class.sweep_assignment!(assignment)
+
+      expect(result[:retired]).to be_empty
+      expect(result[:failed]).to eq([ old.id ])
+      expect(old.reload.status).to eq("rotating")
+      expect(delete_tasks_for(old)).to be_empty
+      expect(force_events).to be_empty
+    end
+  end
+
+  describe "when the retirement commits but its alert cannot be emitted" do
+    it "still reports the credential as retired, and records the lost alert instead of failing" do
+      assignment, old, = rotated_assignment(share: "s-lostalert", username: "n-legacy-lostalert")
+      old.update_columns(rotating_since: 30.hours.ago)
+      allow(System::Fleet::EventBroadcaster).to receive(:emit!).and_raise("bus down")
+
+      result = described_class.sweep_assignment!(assignment)
+
+      expect(result[:retired]).to eq([ old.id ])
+      expect(result[:failed]).to be_empty
+      expect(result[:alert_failed]).to eq([ old.id ])
+      expect(old.reload.status).to eq("revoked")
+      expect(force_audits.count).to eq(1)
+    end
+
+    it "records a swallowed emit (EventBroadcaster returned nil) the same way" do
+      assignment, old, = rotated_assignment(share: "s-nilalert", username: "n-legacy-nilalert")
+      old.update_columns(rotating_since: 30.hours.ago)
+      allow(System::Fleet::EventBroadcaster).to receive(:emit!).and_return(nil)
+
+      result = described_class.sweep_assignment!(assignment)
+
+      expect(result).to include(retired: [ old.id ], failed: [], alert_failed: [ old.id ])
+    end
+  end
+
   describe ".window" do
     it "defaults to 24 hours when unset" do
       expect(described_class.window).to eq(24.hours)
