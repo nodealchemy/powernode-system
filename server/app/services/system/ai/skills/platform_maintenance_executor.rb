@@ -138,6 +138,15 @@ module System
           return success(action: "cert_rotate", data: { rotated: [], skipped_count: 0 },
                          recommendations: [ "No certs need renewal." ]) if targets.empty?
 
+          # IMP-156eb1a7bdbc — only an explicit, permission-gated request for
+          # ONE certificate renews inline (the shape of the REST renew action
+          # and system_acme_renew_certificate: one cert, a caller waiting on
+          # it). Everything else — the fleet tick's system.acme_cert_expiring
+          # remediation, which runs every account inside one worker HTTP
+          # request, and the all-due form, which would renew a whole window
+          # sequentially — must not place multi-minute ACME orders inline.
+          return defer_to_renewal_sweep(targets) unless target_id.present? && !internal_caller?
+
           rotated = []
           failures = []
           targets.each do |cert|
@@ -163,6 +172,32 @@ module System
           success(
             action: "cert_rotate",
             data: { rotated: rotated, failures: failures },
+            recommendations: recs
+          )
+        end
+
+        # The fire-and-forget arm. The asynchronous renewal path already
+        # exists and needs no enqueue from here: the worker's
+        # AcmeCertificateRenewalJob runs Acme::RenewalSweepService every 6
+        # hours, and the sweep renews every `valid` certificate inside the
+        # model's RENEWAL_WINDOW — exactly AcmeCertificate.needs_renewal with
+        # its default window, the same window CertExpirySensor raises
+        # system.acme_cert_expiring for. So a due certificate is reported as
+        # deferred, and one outside that window (a caller-widened
+        # renewal_window_days) as not yet due, because the sweep will not
+        # touch it until it is.
+        def defer_to_renewal_sweep(targets)
+          due_ids = ::System::AcmeCertificate.needs_renewal.where(id: targets.map(&:id)).pluck(:id).to_set
+          deferred, not_due = targets.partition { |cert| due_ids.include?(cert.id) }
+          row = ->(cert) { { id: cert.id, common_name: cert.common_name } }
+
+          recs = []
+          recs << "#{deferred.size} cert(s) are due; the scheduled ACME renewal sweep (every 6 hours) renews them. No ACME order was placed by this call." if deferred.any?
+          recs << "#{not_due.size} cert(s) are outside the #{::System::AcmeCertificate::RENEWAL_WINDOW.inspect} renewal window; the sweep renews them once inside it. To renew one now, request it by certificate_id with the system.acme.renew permission." if not_due.any?
+          success(
+            action: "cert_rotate",
+            data: { rotated: [], failures: [], deferred_to_renewal_sweep: deferred.map(&row),
+                    not_yet_due: not_due.map(&row) },
             recommendations: recs
           )
         end
