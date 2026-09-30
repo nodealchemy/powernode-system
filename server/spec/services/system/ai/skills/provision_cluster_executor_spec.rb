@@ -70,13 +70,17 @@ RSpec.describe System::Ai::Skills::ProvisionClusterExecutor do
     context "in execute mode (provisioning stubbed at the service layer)" do
       # 20084a27 added environment_id and environment&.slug to
       # SystemFleetTool#serialize_instance; the doubles did not allow them, so
-      # these examples were red from that commit on.
+      # these examples were red from that commit on. 27c056ec (IMP-79e075dc73a0)
+      # then added serialize_instance_observation, which reads the provider's
+      # power state and its timestamp; a just-provisioned instance has no
+      # provider observation yet, so both are nil (basis "not_measured").
       let(:environment) { create(:ai_environment, account: account, slug: "staging-east") }
       let(:fake_instance) do
         instance_double("System::NodeInstance", id: SecureRandom.uuid, name: "x",
                         node_id: SecureRandom.uuid, variety: nil, status: "provisioning",
                         architecture: "amd64", private_ip_address: nil,
                         public_ip_address: nil, last_heartbeat_at: nil,
+                        provider_power_state: nil, provider_power_state_at: nil,
                         mtls_subject: nil, agent_version: nil,
                         gpu_count: 0, gpu_type: nil, gpu_memory_mb: nil,
                         environment_id: environment.id, environment: environment)
@@ -110,6 +114,7 @@ RSpec.describe System::Ai::Skills::ProvisionClusterExecutor do
                         node_id: SecureRandom.uuid, variety: nil, status: "provisioning",
                         architecture: "amd64", private_ip_address: nil,
                         public_ip_address: nil, last_heartbeat_at: nil,
+                        provider_power_state: nil, provider_power_state_at: nil,
                         mtls_subject: nil, agent_version: nil,
                         gpu_count: 0, gpu_type: nil, gpu_memory_mb: nil,
                         environment_id: nil, environment: nil)
