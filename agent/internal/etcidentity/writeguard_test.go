@@ -29,6 +29,14 @@ func TestDefaultTargetsAreRefusedUnderTheGuard(t *testing.T) {
 		"ApplyHosts":           func() error { _, err := ApplyHosts("", "guard-probe"); return err },
 		"EnsureTraversableDir": func() error { return EnsureTraversableDir("/home") },
 		"EnsureOwnedDir":       func() error { return EnsureOwnedDir("/home/guard-probe", 0, 0, 0o700) },
+		"ReconcileHomeOwnership": func() error {
+			// Reconcile does its own Check (it no longer routes through the
+			// two helpers above); a warn is its only error channel.
+			var got error
+			set := &Set{Users: []User{{Name: "probe", UID: 0, PrimaryGID: 0, Home: "/home/guard-probe"}}}
+			ReconcileHomeOwnership(set, "", func(_ string, err error) { got = err })
+			return got
+		},
 	}
 	for name, call := range calls {
 		var err error

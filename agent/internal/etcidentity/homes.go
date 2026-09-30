@@ -69,11 +69,16 @@ func isManagedHome(home string) bool {
 	return false
 }
 
-// fchown is the chown the walk applies to an opened directory. A var so an
-// unprivileged test — which cannot chown to any uid but its own — can
-// observe the (fd, uid, gid) the walk requests and still run the real call
-// against its own ids.
-var fchown = unix.Fchown
+// fchown and fstat are the two syscalls the walk applies to an opened
+// directory that an unprivileged test cannot drive to their interesting
+// arm: it cannot chown to any uid but its own, and it cannot create a
+// directory owned by anyone else. Vars so a test can observe the (fd, uid,
+// gid) a chown requests, and report a foreign owner for a directory it
+// made, while the real calls still run.
+var (
+	fchown = unix.Fchown
+	fstat  = unix.Fstat
+)
 
 // ReconcileHomeOwnership makes the filesystem agree with the rendered
 // passwd for every managed-home user in the set. Idempotent, best-effort:
@@ -86,7 +91,11 @@ var fchown = unix.Fchown
 // and is made traversable (r-x added for group and other, nothing else);
 // a home's own mode is set only when this call creates it. A home declared
 // inside ANOTHER managed user's home is refused outright: reconciling it
-// would have to widen that user's home, which is theirs to keep 0700.
+// would have to widen that user's home, which is theirs to keep 0700. The
+// same refusal applies on disk, keyed on the owner (ensureTraversableFd):
+// the Set can be partial mid-delivery, so a pre-existing ancestor that is
+// not owned by the reconcile's own uid is treated as someone's home
+// whether or not this run's Set names them.
 func ReconcileHomeOwnership(set *Set, root string, onWarn func(stage string, err error)) {
 	if set == nil {
 		return
@@ -143,8 +152,14 @@ func enclosingHome(home string, managed map[string]bool) string {
 // EnsureTraversableDir ensures path exists and is group/other-traversable
 // (adds r-x) so a non-root user can path through it. Creates it, and any
 // missing parent, at homeParentMode. Never changes ownership (the parent
-// stays root:root). Refuses a symlink at any component.
+// stays root:root). Refuses a symlink at any component. The live root
+// itself ("/", the parent of a home declared directly under it) is a
+// no-op: it is neither created nor rewritten, so there is no write for
+// the guard to judge either.
 func EnsureTraversableDir(path string) error {
+	if filepath.Clean(path) == "/" {
+		return nil
+	}
 	if err := writeguard.Check(path); err != nil {
 		return err
 	}
@@ -190,8 +205,9 @@ type openedDir struct {
 // walkNoFollow opens every component of the absolute path rel beneath
 // base (the sysroot prefix; "" is the live root) one at a time, each with
 // openat(2) O_NOFOLLOW|O_DIRECTORY relative to the descriptor of the
-// component before it, so a symlink anywhere in the chain fails with
-// ELOOP instead of being followed. A missing component is created with
+// component before it, so a symlink anywhere in the chain fails the open
+// (Linux reports it as ENOTDIR) instead of being followed. A missing
+// component is created with
 // mkdirat(2) on that same parent descriptor — parents at homeParentMode,
 // the leaf at leafMode — and then opened the same way. visit runs on each
 // opened component, in order, and does its chmod/chown on the descriptor.
@@ -290,14 +306,21 @@ func openDir(dirfd int, name string, extra int) (int, error) {
 
 // ensureTraversableFd gives the opened directory r-x for group and other:
 // exactly homeParentMode when this walk created it (mkdirat applied the
-// umask), otherwise its current bits plus 0o055 and nothing more.
+// umask), otherwise its current bits plus 0o055 and nothing more. A
+// pre-existing directory is widened only when the reconcile's own uid
+// owns it (root in production): a shared parent stays root:root by
+// contract, so any other owner marks a user's directory — a home this
+// run's Set does not happen to list — and is refused, never widened.
 func ensureTraversableFd(d openedDir) error {
 	if d.created {
 		return unix.Fchmod(d.fd, uint32(homeParentMode))
 	}
 	var st unix.Stat_t
-	if err := unix.Fstat(d.fd, &st); err != nil {
+	if err := fstat(d.fd, &st); err != nil {
 		return err
+	}
+	if st.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("owned by uid %d, not a shared parent, refusing", st.Uid)
 	}
 	perm := st.Mode & 0o7777
 	if perm&0o055 != 0o055 { // needs r-x for BOTH group and other

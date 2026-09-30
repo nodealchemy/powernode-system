@@ -8,6 +8,10 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
 )
 
 func TestIsManagedHome(t *testing.T) {
@@ -28,9 +32,26 @@ func TestIsManagedHome(t *testing.T) {
 	}
 }
 
+// tempRoot is t.TempDir() with every symlink resolved: the Ensure helpers
+// walk from "/" with no-follow on every component, so a TMPDIR that passes
+// through a symlink would otherwise be refused before the test's own dir.
+func tempRoot(t *testing.T) string {
+	t.Helper()
+	return realPath(t, t.TempDir())
+}
+
 func TestEnsureTraversableDir(t *testing.T) {
+	t.Run("the live root itself is a no-op", func(t *testing.T) {
+		// authorized_keys calls this with Dir(home); a home directly under /
+		// (admin_user=root) must not warn every heartbeat.
+		var err error
+		if rec := writeguard.Capture(func() { err = EnsureTraversableDir("/") }); err != nil || len(rec) != 0 {
+			t.Errorf("EnsureTraversableDir(\"/\") = %v, recorded=%d; want nil, 0", err, len(rec))
+		}
+	})
+
 	t.Run("creates missing dir 0755", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "home")
+		p := filepath.Join(tempRoot(t), "home")
 		if err := EnsureTraversableDir(p); err != nil {
 			t.Fatal(err)
 		}
@@ -44,7 +65,7 @@ func TestEnsureTraversableDir(t *testing.T) {
 	})
 
 	t.Run("repairs a 0700 dir to be traversable", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "home")
+		p := filepath.Join(tempRoot(t), "home")
 		if err := os.Mkdir(p, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +79,7 @@ func TestEnsureTraversableDir(t *testing.T) {
 	})
 
 	t.Run("refuses a symlink", func(t *testing.T) {
-		base := t.TempDir()
+		base := tempRoot(t)
 		target := filepath.Join(base, "target")
 		_ = os.Mkdir(target, 0o755)
 		link := filepath.Join(base, "link")
@@ -75,7 +96,7 @@ func TestEnsureOwnedDir(t *testing.T) {
 	uid, gid := os.Getuid(), os.Getgid()
 
 	t.Run("creates missing dir with mode", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "sub", "home")
+		p := filepath.Join(tempRoot(t), "sub", "home")
 		if err := EnsureOwnedDir(p, uid, gid, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -89,7 +110,7 @@ func TestEnsureOwnedDir(t *testing.T) {
 	})
 
 	t.Run("idempotent on existing owned dir", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "home")
+		p := filepath.Join(tempRoot(t), "home")
 		_ = os.Mkdir(p, 0o700)
 		if err := EnsureOwnedDir(p, uid, gid, 0o700); err != nil {
 			t.Fatal(err)
@@ -97,7 +118,7 @@ func TestEnsureOwnedDir(t *testing.T) {
 	})
 
 	t.Run("refuses a symlink (swap guard)", func(t *testing.T) {
-		base := t.TempDir()
+		base := tempRoot(t)
 		target := filepath.Join(base, "target")
 		_ = os.Mkdir(target, 0o755)
 		link := filepath.Join(base, "link")
@@ -108,7 +129,7 @@ func TestEnsureOwnedDir(t *testing.T) {
 	})
 
 	t.Run("errors on a non-directory", func(t *testing.T) {
-		p := filepath.Join(t.TempDir(), "afile")
+		p := filepath.Join(tempRoot(t), "afile")
 		_ = os.WriteFile(p, []byte("x"), 0o600)
 		if err := EnsureOwnedDir(p, uid, gid, 0o700); err == nil {
 			t.Error("expected error for non-directory, got nil")
@@ -409,7 +430,7 @@ func TestReconcileHomeOwnership_RefusesSymlinkedLeaf(t *testing.T) {
 // The exported single-dir helpers (used by the authorized_keys writer on
 // the live root) get the same parent-component refusal.
 func TestEnsureHelpers_RefuseSymlinkedParent(t *testing.T) {
-	base := t.TempDir()
+	base := tempRoot(t)
 	elsewhere := filepath.Join(base, "elsewhere")
 	if err := os.Mkdir(elsewhere, 0o700); err != nil {
 		t.Fatal(err)
@@ -418,11 +439,14 @@ func TestEnsureHelpers_RefuseSymlinkedParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	uid, gid := os.Getuid(), os.Getgid()
-	if err := EnsureTraversableDir(filepath.Join(base, "link", "sub")); err == nil {
-		t.Error("EnsureTraversableDir followed a symlinked parent")
+	// The refusal must name the LINK component: an error for any other
+	// reason (a symlinked TMPDIR ancestor, say) is not this guard firing.
+	wantMsg := filepath.Join(base, "link") + ": is a symlink, refusing"
+	if err := EnsureTraversableDir(filepath.Join(base, "link", "sub")); err == nil || err.Error() != wantMsg {
+		t.Errorf("EnsureTraversableDir: err = %v, want %q", err, wantMsg)
 	}
-	if err := EnsureOwnedDir(filepath.Join(base, "link", "sub"), uid, gid, 0o700); err == nil {
-		t.Error("EnsureOwnedDir followed a symlinked parent")
+	if err := EnsureOwnedDir(filepath.Join(base, "link", "sub"), uid, gid, 0o700); err == nil || err.Error() != wantMsg {
+		t.Errorf("EnsureOwnedDir: err = %v, want %q", err, wantMsg)
 	}
 	if _, err := os.Lstat(filepath.Join(elsewhere, "sub")); !os.IsNotExist(err) {
 		t.Errorf("sub was created through the symlink (err=%v)", err)
@@ -435,5 +459,60 @@ func TestEnsureHelpers_RefuseSymlinkedParent(t *testing.T) {
 	// path against the working directory in production either.
 	if err := walkNoFollow("", "relative/home", 0o700, func(openedDir) error { return nil }); err == nil {
 		t.Error("walkNoFollow accepted a relative path")
+	}
+}
+
+// recordFstat swaps the fstat seam so the pre-existing directory at path
+// reports owner uid instead of the runner's: unprivileged, a test cannot
+// create a directory owned by anyone else, so this is the only way to make
+// the "not a shared parent" arm fire.
+func fakeOwner(t *testing.T, path string, uid uint32) {
+	t.Helper()
+	orig := fstat
+	real := realPath(t, path)
+	fstat = func(fd int, st *unix.Stat_t) error {
+		if err := orig(fd, st); err != nil {
+			return err
+		}
+		if target, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd)); err == nil && target == real {
+			st.Uid = uid
+		}
+		return nil
+	}
+	t.Cleanup(func() { fstat = orig })
+}
+
+// A pre-existing ancestor owned by a uid other than the reconcile's own
+// is somebody's home whether or not this run's Set lists them (the Set
+// can be partial mid-delivery). It must be refused, never widened, and
+// nothing may be created inside it.
+func TestReconcileHomeOwnership_RefusesForeignOwnedParent(t *testing.T) {
+	root := t.TempDir()
+	alice := filepath.Join(root, "home", "alice")
+	if err := os.MkdirAll(alice, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(alice, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	foreign := uint32(os.Geteuid()) + 1
+	fakeOwner(t, alice, foreign)
+	calls := recordChowns(t)
+	var warns []warnRec
+	set := &Set{Users: []User{{Name: "bob", UID: 4242, PrimaryGID: 4242, Home: "/home/alice/bob"}}}
+	ReconcileHomeOwnership(set, root, collectWarns(&warns))
+
+	wantMsg := fmt.Sprintf("%s: owned by uid %d, not a shared parent, refusing", alice, foreign)
+	if !hasWarn(warns, "home_dir_bob") || warns[0].err.Error() != wantMsg {
+		t.Errorf("warns = %v, want %q under home_dir_bob", warns, wantMsg)
+	}
+	if got := permOf(t, alice); got != 0o700 {
+		t.Errorf("foreign-owned parent widened to %o", got)
+	}
+	if _, err := os.Lstat(filepath.Join(alice, "bob")); !os.IsNotExist(err) {
+		t.Errorf("home created inside a foreign-owned directory (err=%v)", err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("chown requested: %+v", *calls)
 	}
 }
