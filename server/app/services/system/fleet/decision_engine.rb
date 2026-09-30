@@ -330,15 +330,22 @@ module System
           action_category: "system.cert_rotate"
         },
         # Platform ACME cert expiry (CertExpirySensor) → platform_maintenance
-        # cert_rotate. The executor's cert_rotate is fire-and-forget (queues
-        # the async renewal sweep), so invoke_skill fires it on the
-        # notify_and_proceed path — mirroring how CVE bindings invoke their
-        # executor.
+        # cert_rotate. From here (an in-process caller, user: nil) cert_rotate
+        # places NO ACME order: it reports the certificate as deferred to the
+        # scheduled renewal sweep (AcmeCertificateRenewalJob →
+        # Acme::RenewalSweepService, every 6 hours), which renews every valid
+        # certificate inside RENEWAL_WINDOW — the window this signal fires for.
+        # It enqueues nothing; the sweep already picks the certificate up. So
+        # invoke_skill fires it on the notify_and_proceed path without a
+        # multi-minute order inside the fleet tick's HTTP request — mirroring
+        # how CVE bindings invoke their executor. (Only an explicit
+        # system.acme.renew request naming one certificate_id renews inline;
+        # IMP-156eb1a7bdbc.)
         "system.acme_cert_expiring" => {
           skill: ::System::Ai::Skills::PlatformMaintenanceExecutor,
           action_category: "system.acme_cert_rotate",
-          # Queues the real renewal sweep and has no dry_run mode — when the
-          # policy doesn't auto-execute, the executor is skipped entirely.
+          # Has no dry_run mode — when the policy doesn't auto-execute, the
+          # executor is skipped entirely.
           side_effectful: true,
           input_mapper: ->(signal) {
             { action: "cert_rotate", certificate_id: signal.dig(:payload, "certificate_id") }
