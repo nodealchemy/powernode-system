@@ -46,6 +46,52 @@ RSpec.describe System::NodeModule, type: :model do
     it { is_expected.to validate_inclusion_of(:variety).in_array(described_class::VARIETIES) }
     it { is_expected.to validate_numericality_of(:priority).only_integer.is_greater_than_or_equal_to(0) }
 
+    # IMP-3f6c2f35c50d: the name is one component of the on-node
+    # /etc/sudoers.d/powernode-<module>-<id> drop-in, and the agent refuses any
+    # name outside [a-zA-Z0-9_-]+. The manifest import checks it, but a rename
+    # (node_modules_controller#update) never goes through the import.
+    describe 'name as a sudoers drop-in component' do
+      let(:node_module) { create(:system_node_module, name: 'fine-name_1') }
+
+      [ '../x', 'a/b', 'a.b', 'a~', "caf\u00e9", 'a b', "a\nb", "a\n" ].each do |bad|
+        it "rejects the name #{bad.inspect} on create" do
+          expect(build(:system_node_module, name: bad)).not_to be_valid
+        end
+
+        it "rejects renaming to #{bad.inspect}" do
+          node_module.name = bad
+          expect(node_module).not_to be_valid
+          expect(node_module.errors[:name]).to be_present
+        end
+      end
+
+      it 'accepts the names the fleet actually uses' do
+        %w[postgres-primary dev-cell Mod_9 a].each do |ok|
+          expect(build(:system_node_module, name: ok)).to be_valid, ok
+        end
+      end
+
+      it 'caps the name so the longest legal drop-in name still fits the agent cap' do
+        max = described_class::NAME_MAX_LENGTH
+        expect(build(:system_node_module, name: 'm' * max)).to be_valid
+        expect(build(:system_node_module, name: 'm' * (max + 1))).not_to be_valid
+        expect(System::SudoersGrant.filename_for('m' * max, 'i' * 64).bytesize)
+          .to be <= System::SudoersGrant::MAX_FILENAME_LENGTH
+      end
+
+      it 'leaves a dependant module (named "<parent> for <node>") alone' do
+        parent = create(:system_node_module, name: 'base-mod')
+        child = build(:system_node_module, name: 'base-mod for web 1.example', parent_module: parent)
+        expect(child).to be_valid
+      end
+
+      it 'does not re-validate a legacy name when an unrelated field changes' do
+        node_module.update_columns(name: 'legacy.name')
+        node_module.reload.description = 'edited'
+        expect(node_module).to be_valid
+      end
+    end
+
     it 'validates uniqueness of name scoped to account (case insensitive)' do
       account = create(:account)
       create(:system_node_module, account: account, name: 'TestModule')

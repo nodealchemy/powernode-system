@@ -1038,23 +1038,28 @@ RSpec.describe System::ManifestImportService, type: :service do
         end
 
         it "rejects a grant on a module whose name is not a plain [a-zA-Z0-9_-]+ token" do
+          # A legacy row: NodeModule now refuses such a name on create/rename.
           dotted = create(:system_node_module, account: account, node_platform: platform,
-                          category: category, variety: "subscription", name: "demo.mod")
+                          category: category, variety: "subscription", name: "demo-legacy")
+          dotted.update_columns(name: "demo.mod")
           result = described_class.import!(node_module: dotted, yaml: grant_yaml("reload").sub("name: demo-mod", "name: demo.mod"))
           expect(result.ok?).to be false
           expect(result.validation_errors.join).to include("module name").and include("sudoers")
         end
 
         it "does not object to the module name when the manifest declares no sudoers" do
+          # A legacy row: NodeModule now refuses such a name on create/rename.
           dotted = create(:system_node_module, account: account, node_platform: platform,
-                          category: category, variety: "subscription", name: "demo.mod")
+                          category: category, variety: "subscription", name: "demo-legacy")
+          dotted.update_columns(name: "demo.mod")
           result = described_class.import!(node_module: dotted, yaml: manifest_yaml.sub("name: demo-mod", "name: demo.mod"))
           expect(result.validation_errors.to_a.join).not_to include("sudoers")
         end
 
         it "rejects a grant whose drop-in name is over the agent's length cap" do
           long_mod = create(:system_node_module, account: account, node_platform: platform,
-                            category: category, variety: "subscription", name: "m" * 150)
+                            category: category, variety: "subscription", name: "long-legacy")
+          long_mod.update_columns(name: "m" * 150)
           result = described_class.import!(node_module: long_mod,
                                            yaml: grant_yaml("i" * 60).sub("name: demo-mod", "name: #{'m' * 150}"))
           expect(result.ok?).to be false

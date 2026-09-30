@@ -344,7 +344,7 @@ FactoryBot.define do
     association :account
     association :node_platform, factory: :system_node_platform
     association :category, factory: :system_node_module_category
-    sequence(:name) { |n| "Module #{n}" }
+    sequence(:name) { |n| "module-#{n}" }
     variety { "config" }
     enabled { true }
     public { false }

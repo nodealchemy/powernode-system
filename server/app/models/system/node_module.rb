@@ -159,8 +159,23 @@ module System
              class_name: "System::SudoersGrant",
              dependent: :destroy
 
+    # Longest module name whose longest legal grant id (SudoersGrant caps ids at
+    # 64) still yields a drop-in basename within the agent's cap.
+    NAME_MAX_LENGTH = ::System::SudoersGrant::MAX_FILENAME_LENGTH - "powernode-".length - 1 - 64
+
     # === Validations ===
     validates :name, presence: true, uniqueness: { scope: :account_id, case_sensitive: false }
+    # The name is a component of the on-node /etc/sudoers.d/powernode-<module>-<id>
+    # drop-in, and the agent refuses one outside [a-zA-Z0-9_-]+ (see
+    # SudoersGrant::FILENAME_COMPONENT_RX). Checked on create and on rename only,
+    # so a legacy row that predates the rule stays editable in its other fields,
+    # and only for a base module: a dependant (parent_module_id set) is a per-node
+    # override that create_dependant! names "<parent> for <node>", carries no
+    # manifest of its own, and so never renders a drop-in under that name.
+    validates :name, format: { with: ::System::SudoersGrant::FILENAME_COMPONENT_RX,
+                               message: "may only contain letters, digits, '_' and '-'" },
+                     length: { maximum: NAME_MAX_LENGTH },
+                     if: -> { will_save_change_to_name? && parent_module_id.nil? }
     validates :variety, presence: true, inclusion: { in: VARIETIES }
     validates :priority, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
 
