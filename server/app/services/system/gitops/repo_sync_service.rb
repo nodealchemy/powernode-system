@@ -96,7 +96,10 @@ module System
         Rails.logger.warn("[Gitops::RepoSync] #{@repository.id}: #{HOST_KEY_MISMATCH_REASON}: #{e.message}")
         ::System::Gitops::RepositoryHostKey.emit_mismatch!(@repository, @host_keys)
         Result.new(ok?: false, reason: HOST_KEY_MISMATCH_REASON, error: "#{HOST_KEY_MISMATCH_REASON}: #{e.message}")
-      rescue HostKeyUnavailableError => e
+      rescue HostKeyUnavailableError, ::System::Gitops::RepositoryHostKey::ScannerUnavailable => e
+        # ScannerUnavailable: ssh-keyscan is not installed on this host — a
+        # deploy defect, named as such rather than as "the host returned no
+        # key" (the message comes from RepositoryHostKey.scan).
         Rails.logger.warn("[Gitops::RepoSync] #{@repository.id}: #{HOST_KEY_UNAVAILABLE_REASON}: #{e.message}")
         Result.new(ok?: false, reason: HOST_KEY_UNAVAILABLE_REASON, error: "#{HOST_KEY_UNAVAILABLE_REASON}: #{e.message}")
       rescue UnsupportedRemoteError => e

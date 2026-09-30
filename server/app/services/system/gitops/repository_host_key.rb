@@ -30,6 +30,9 @@ module System
       # Raised for an explicit value that is not a valid public host key line.
       # The message describes the expected shape only, never the value.
       class InvalidHostKey < StandardError; end
+      # Raised by .scan when the ssh-keyscan binary itself is missing: a hub
+      # deploy defect, distinct from a host that answered with no key.
+      class ScannerUnavailable < StandardError; end
 
       # HostKeyAlias for the sync's known_hosts. Keyed on the repository, not
       # the host: it is port- and IPv6-safe under SshHostKeys::ALIAS_FORMAT,
@@ -97,9 +100,12 @@ module System
 
       # Validated entries from a live `ssh-keyscan` of host:port. Array-form
       # Open3 (no shell), bounded timeout, stdout only (the banner goes to
-      # stderr). [] on any failure, and never raises: the caller decides
-      # whether an empty scan is fatal (the sync refuses; registration leaves
-      # the key unrecorded for the sync to pin on first use).
+      # stderr). [] on any host-side failure, never raising for those: the
+      # caller decides whether an empty scan is fatal (the sync refuses;
+      # registration leaves the key unrecorded for the sync to pin on first
+      # use). A MISSING ssh-keyscan binary is the one exception — it raises
+      # ScannerUnavailable, because "not installed on this host" and "the
+      # host returned no key" call for different operators.
       def scan(host:, port:)
         out, _err, status = ::Open3.capture3(
           "ssh-keyscan", "-T", KEYSCAN_TIMEOUT_SECONDS.to_s, "-p", port.to_i.to_s, host.to_s
@@ -113,12 +119,17 @@ module System
           entry_from_line(line)
         end
         ::System::SshHostKeys.normalize_all(entries)
+      rescue Errno::ENOENT
+        Rails.logger.error("[Gitops::RepositoryHostKey] ssh-keyscan is not installed on this host (Errno::ENOENT)")
+        raise ScannerUnavailable, "ssh-keyscan is not installed on this host (Errno::ENOENT); " \
+                                  "install openssh-client, or record the host key on the repository (ssh_host_key)"
       rescue StandardError => e
         Rails.logger.warn("[Gitops::RepositoryHostKey] ssh-keyscan #{host}:#{port} failed: #{e.class}: #{e.message}")
         []
       end
 
-      # Scan the repository's own remote. [] for a non-ssh URL.
+      # Scan the repository's own remote. [] for a non-ssh URL. Propagates
+      # ScannerUnavailable.
       def scan_for(repository)
         endpoint = ::System::Gitops::SshRemote.parse(repository.repo_url)
         return [] unless endpoint
@@ -157,6 +168,12 @@ module System
         entries = scan_for(repository)
         repository.ssh_host_keys = document(entries, source: "keyscan") if entries.any?
         entries
+      rescue ScannerUnavailable => e
+        # Registration's scan is best-effort by design (an empty scan leaves
+        # the key for the sync to pin); the sync names the missing binary on
+        # its first tick. Logged here so the registration is attributable.
+        Rails.logger.error("[Gitops::RepositoryHostKey] registration scan skipped for #{repository.name}: #{e.message}")
+        []
       end
 
       def emit_recorded!(repository, entries, source:)
