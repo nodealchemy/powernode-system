@@ -158,7 +158,10 @@ module Api
           return render_not_found("Template Module assignment") unless join
 
           result = ::System::TemplateModuleUnassignService.new(join).call!
-          render_success(data: { message: "Module removed from template", **result.to_payload })
+          # `message` stays at the top level too, as the message-only envelope
+          # this action returned before it carried the purge.
+          message = "Module removed from template"
+          render_success(data: { message: message, **result.to_payload }, message: message)
         rescue ActiveRecord::RecordNotDestroyed, ActiveRecord::RecordInvalid => e
           render_error("Module removal failed: #{e.message}", status: :unprocessable_content)
         end

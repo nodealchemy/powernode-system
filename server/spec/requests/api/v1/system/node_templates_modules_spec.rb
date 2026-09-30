@@ -285,7 +285,9 @@ RSpec.describe "Operator API — Node Template modules", type: :request do
         delete "/api/v1/system/node_templates/#{template.id}/modules/#{node_module.id}", headers: headers
 
         expect(response).to have_http_status(:ok)
-        purged = JSON.parse(response.body).dig("data", "purged_assignments")
+        body = JSON.parse(response.body)
+        expect(body["message"]).to match(/removed/i)
+        purged = body.dig("data", "purged_assignments")
         expect(purged["count"]).to eq(2)
         expect(purged["node_ids"]).to match_array(nodes.map(&:id))
 
