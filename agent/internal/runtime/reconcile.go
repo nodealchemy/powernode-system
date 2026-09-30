@@ -2262,6 +2262,20 @@ func (r *Reconciler) stagePendingCompose(assigned []AssignedModule, manifests ma
 		return // no breadcrumb (non-pivot node, or compose wrote none) — nothing to compare against
 	}
 
+	// Same untrusted-answer rule as the detach and state-rebase guards: a list
+	// naming no data-bearing module while this boot composed some says nothing
+	// about what the next boot should run, and staging it would overwrite a
+	// legitimately staged set with a config-only one (IMP-1023e79cc82d).
+	if !assignsDataModule(assigned) {
+		for _, m := range bc.Modules {
+			if m.HasDataFile {
+				r.cfg.OnError("reconciler:stage_pending_compose_skipped_empty_assignment", errors.New(
+					"the assignment list names no data-bearing module while this boot composed some; not staging it for the next boot"))
+				return
+			}
+		}
+	}
+
 	mods := make([]LKGModule, 0, len(assigned))
 	for _, mod := range assigned {
 		lm := LKGModule{ID: mod.ID, Name: mod.Name, EffectivePriority: mod.EffectivePriority,

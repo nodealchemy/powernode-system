@@ -10,6 +10,7 @@ import (
 
 	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
+	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
 )
 
@@ -368,5 +369,57 @@ func TestRunOnce_FetchFailureAfterDigestlessDoesNotRenderTheCachedGhost(t *testi
 	}
 	if hasUser(rendered, "ghostuser") {
 		t.Error("a fetch-failed tick rendered a never-attached module's user from its cached digestless manifest")
+	}
+}
+
+// Staging the next boot's composition reads the same assignment list, so it
+// must not act on one that names no data-bearing module while this boot
+// composed some: that set is untrusted (see filterEmptyAssignmentDetaches) and
+// staging it would overwrite a legitimately staged set with a config-only one.
+func TestStagePendingCompose_UntrustedAssignmentDoesNotOverwriteAStagedSet(t *testing.T) {
+	dir := t.TempDir()
+	t.Cleanup(SetPendingComposePathForTest(dir + "/pending.json"))
+	cache := dir + "/cache"
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lay := mount.Layout{ModulesCacheRoot: cache}
+	if err := os.WriteFile(lay.ModuleCachePath("sha256:new"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bcPath := dir + "/boot-composed.json"
+	if err := WriteBreadcrumb(bcPath, &BootComposedBreadcrumb{
+		ComposedAt: time.Now().UTC(),
+		Modules:    []LKGModule{{ID: "m1", HasDataFile: true, Digest: "sha256:old"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(SetBootBreadcrumbPathForTest(bcPath))
+	var signals []string
+	r := &Reconciler{cfg: ReconcilerConfig{
+		Layout:  lay,
+		OnError: func(stage string, err error) { signals = append(signals, stage) },
+	}}
+
+	// A trusted tick stages m1@new.
+	r.stagePendingCompose([]AssignedModule{{ID: "m1", Name: "mod", HasDataFile: true}},
+		map[string]*manifest.Manifest{"m1": {ID: "m1", Digest: "sha256:new"}}, AssignmentMeta{})
+	staged, err := LoadPendingCompose(PendingComposePath)
+	if err != nil || len(staged.Set.Modules) != 1 || staged.Set.Modules[0].Digest != "sha256:new" {
+		t.Fatalf("precondition: m1@new must be staged, got %+v err=%v", staged, err)
+	}
+
+	// A config-only list arrives: must not replace it.
+	signals = nil
+	r.stagePendingCompose([]AssignedModule{{ID: "cfg", Name: "cfg", HasDataFile: false}}, map[string]*manifest.Manifest{}, AssignmentMeta{})
+	after, err := LoadPendingCompose(PendingComposePath)
+	if err != nil {
+		t.Fatalf("LoadPendingCompose: %v", err)
+	}
+	if len(after.Set.Modules) != 1 || after.Set.Modules[0].ID != "m1" || after.Set.Modules[0].Digest != "sha256:new" {
+		t.Errorf("a config-only assignment overwrote the staged set: %+v", after.Set.Modules)
+	}
+	if !strings.Contains(strings.Join(signals, " "), "reconciler:stage_pending_compose_skipped_empty_assignment") {
+		t.Errorf("skipping the staging must be surfaced, got %v", signals)
 	}
 }
