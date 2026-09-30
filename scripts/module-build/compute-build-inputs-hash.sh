@@ -32,10 +32,26 @@
 #
 #   1. each --input-path's object id at --ref (default: the module's own
 #      modules/<slug> tree)
-#   2. the --apt-snapshot id, when given — the package closure is an input the
+#   2. the build scripts (scripts/module-build/ tree object id at --ref), for a
+#      module with its own arm in stage15.sh's module dispatch — see BUILD
+#      SCRIPTS below
+#   3. the --apt-snapshot id, when given — the package closure is an input the
 #      git tree cannot see
-#   3. the --core-ref commit, when given — the parent-repo subtree a needs-parent
+#   4. the --core-ref commit, when given — the parent-repo subtree a needs-parent
 #      module packages is an input NO path in this repo can see
+#
+# BUILD SCRIPTS (IMP-24d473c6f448). A module's stage15.sh arm, and the helpers
+# that arm calls, decide what its artifact contains but live in
+# scripts/module-build/, outside modules/<slug>/ — so a change confined to one
+# arm left the tree hash untouched and the skip re-tagged the old digest. The
+# build planner now targets a module for exactly that kind of change
+# (System::ModuleBuildScriptAttribution), which would have made the skip the
+# thing that defeats it. So a module with its OWN arm folds the scripts/
+# module-build tree object id into the hash. Whole tree rather than just the arm
+# and its helpers: a sound over-approximation (the direction this file always
+# errs in) that needs no second parser of the arm structure, and it only costs
+# an arm module a rebuild when some build script changed. A module with NO arm
+# (package-origin) hashes exactly as before, so it keeps skipping.
 #
 # Deliberately NOT hashed: the build sha, timestamps, the erofs UUID, and the
 # output digest — the very things that vary per build without changing content.
@@ -124,6 +140,27 @@ for path in "${SORTED_PATHS[@]}"; do
   fi
   digest_input+="${path}:${oid}"$'\n'
 done
+
+# Has $1 its own arm in stage15.sh's module dispatch? A line-level match on an
+# arm's pattern list (`slug)` or `a|slug|b)`), read from the SAME ref the hash is
+# taken at. Deliberately loose: a false positive only folds the scripts tree
+# into a module that did not need it (one extra rebuild); a false negative would
+# reproduce the wrong SKIP this fold exists to prevent.
+module_has_stage15_arm() {
+  local slug="$1" text
+  text=$(git -C "$REPO" show "$REF:scripts/module-build/stage15.sh" 2>/dev/null) || return 1
+  # A here-string, not `printf | grep -q`: under `set -o pipefail` grep -q's early
+  # exit SIGPIPEs the printf of a ~100KB script and reads as "no arm" — the
+  # unsafe direction.
+  grep -Eq "^[[:space:]]*\(?([^[:space:])|]+\|)*${slug//./\\.}(\|[^[:space:])|]+)*\)" <<<"$text"
+}
+
+if module_has_stage15_arm "$MODULE"; then
+  if ! scripts_oid=$(git -C "$REPO" rev-parse --quiet --verify "$REF:scripts/module-build" 2>/dev/null); then
+    die "scripts/module-build not found at $REF but stage15.sh has an arm for $MODULE"
+  fi
+  digest_input+="build-scripts:${scripts_oid}"$'\n'
+fi
 
 if [ -n "$APT_SNAPSHOT" ]; then
   digest_input+="apt-snapshot:${APT_SNAPSHOT}"$'\n'
