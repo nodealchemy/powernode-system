@@ -758,6 +758,26 @@ module PowernodeSystem
           **(::Ai::Tools::SiteSettingTool.method(:register_key).parameters.any? { |_, name| name == :machine_parkable } ? { machine_parkable: true } : {})
         )
 
+        # IMP-06cf44531256 — the operator grant for modules declaring
+        # security.privileged=true. PROTECTED and deliberately NOT machine
+        # parkable: unlike the two keys above, an instance may not even ASK for
+        # it, because the module it would ask to unconfine is often the one it
+        # runs as. Only a person, in their own session, writes it. The value
+        # check is what makes a wrong entry (a name, a stale or foreign id)
+        # fail at write time rather than as a module that will not start.
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::PrivilegedModuleAllowlist::SETTING_KEY,
+          setting_type: "json",
+          description: "JSON list of NodeModule ids the operator permits to run with " \
+                       "security.privileged=true (ALL on-node confinement off). A module manifest can " \
+                       "only request it; the agent refuses to attach, and compose refuses to enable, a " \
+                       "privileged module not listed here. Ids only, never names. Unset or [] grants none.",
+          protected: true
+        )
+        ::SiteSetting.register_value_check(::System::PrivilegedModuleAllowlist::SETTING_KEY) do |value|
+          ::System::PrivilegedModuleAllowlist.declaration_problem(value)
+        end
+
         ::Ai::Tools::SiteSettingTool.register_key(
           ::System::Fleet::Sensors::BootImageStalenessSensor::SOURCE_REPO_SETTING,
           setting_type: "string",

@@ -88,12 +88,12 @@ module Api
               # confinement). A module manifest can only REQUEST privileged; this
               # list is the GRANT the agent's apply-side gate checks before
               # honouring it (IMP-01a02f70-20b1, agent buildPolicy +
-              # privilegedApproved). Sourced from an admin-gated account setting /
-              # SiteSetting — NEVER from the module manifest — so a compromised
+              # privilegedApproved). Sourced from a protected, human-only site
+              # setting (IMP-06cf44531256) — NEVER from the module manifest — so a compromised
               # module cannot self-approve. Default empty = deny. Refetched every
               # poll like #protected_egress_hosts so an operator approval (or
               # revocation) takes effect on the next reconcile with no agent
-              # restart. Values are matched against a module's id AND name.
+              # restart. Values are module ids.
               privileged_module_ids: privileged_module_ids(resolved_modules)
             )
           end
@@ -217,35 +217,35 @@ module Api
             Array(raw).map(&:to_s).map(&:strip).reject(&:blank?)
           end
 
-          # Account → global cascade (same shape as #protected_egress_hosts).
-          # The operator's list of modules approved to run
-          # security.privileged=true. This is the ONLY grant the agent's
-          # privileged gate honours; the module manifest cannot contribute to
-          # it. Empty when unset — the agent then refuses every privileged
-          # module (default-deny), so a node whose modules genuinely need
-          # privileged (e.g. dev-cell) must have those modules listed here.
-          # Kept out of the module manifest deliberately: an admin-gated setting
-          # is the operator acknowledgement, so approval cannot travel with a
-          # module that merely declares itself privileged.
+          # The operator's list of modules approved to run security.privileged=true.
+          # This is the ONLY grant the agent's privileged gate honours; the module
+          # manifest cannot contribute to it. Empty when unset — the agent then
+          # refuses every privileged module (default-deny), so a node whose
+          # modules genuinely need privileged (e.g. dev-cell) must have those
+          # modules listed.
           #
-          # Operators MAY configure entries by human-friendly module NAME or by
-          # NodeModule id. We RESOLVE them here, against the modules actually
-          # resolved for THIS node, down to NodeModule ids — the immutable,
-          # server-assigned UUIDv7 the agent keys its gate on. The agent
-          # therefore never matches on a mutable/author-influenced name (review
-          # finding F1): name→id resolution is done here where the authoritative
-          # NodeModule records live, so two modules sharing a name can never both
-          # inherit an approval — only the id(s) present on this node are emitted.
+          # Sourced from ONE place: the protected site setting
+          # System::PrivilegedModuleAllowlist::SETTING_KEY, whose only write door
+          # is the human-only, audited site_setting_set_protected (IMP-06cf44531256).
+          # The account-settings and unregistered-SiteSetting sources this used to
+          # read are gone; a migration moved any existing grant into the setting.
+          #
+          # The setting holds NodeModule ids, and we emit only the ids present on
+          # THIS node (resolved_modules), so a stale or foreign-account id is
+          # inert. The agent keys its gate on the immutable server-assigned id,
+          # never a mutable, author-influenced name (review finding F1).
           def privileged_module_ids(resolved_modules)
-            raw = current_account&.settings&.dig("privileged_module_ids")
-            raw = SiteSetting.get("privileged_module_ids") if raw.blank?
-            configured = Array(raw).map(&:to_s).map(&:strip).reject(&:blank?).to_set
-            return [] if configured.empty?
+            granted = ::System::PrivilegedModuleAllowlist.configured_ids.to_set
+            approved = resolved_modules.filter_map { |m| m.id.to_s if granted.include?(m.id.to_s) }.uniq
 
-            resolved_modules.filter_map do |m|
-              id = m.id.to_s
-              id if configured.include?(id) || configured.include?(m.name.to_s)
-            end.uniq
+            # A module that declares privileged and is not granted is refused by
+            # the agent; say so where an operator will see it.
+            ::System::PrivilegedModuleAllowlist.report_unapproved!(
+              account: current_account,
+              instance: current_instance,
+              modules: ::System::PrivilegedModuleAllowlist.unapproved_privileged(resolved_modules, approved)
+            )
+            approved
           end
 
           def set_module

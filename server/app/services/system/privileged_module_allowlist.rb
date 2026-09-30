@@ -1,0 +1,122 @@
+# frozen_string_literal: true
+
+module System
+  # The operator's GRANT for modules that declare security.privileged=true.
+  #
+  # A module manifest can only REQUEST privileged (all on-node confinement off);
+  # the agent refuses to attach it, and at pivot compose refuses to enable its
+  # services, unless the node API lists its id in privileged_module_ids. That
+  # list is this setting. It is PROTECTED: registering it that way is the whole
+  # point (IMP-06cf44531256), because before it the only way to grant it was a
+  # direct SQL write to accounts.settings, which left no audit trail. Now the
+  # only write door is the human-only site_setting_set_protected, which parks
+  # for a person to confirm in their own session and records who did it.
+  #
+  # NOT machine-parkable, deliberately. dev_merge.private_extension_names and
+  # system.ssh.require_host_key let an instance ASK; this one does not. The
+  # module an instance would ask to have unconfined is very often the module the
+  # instance itself runs (dev-cell), so a request would be a self-grant awaiting
+  # a click, and the approval card shows bare UUIDs a person cannot tell apart.
+  # The grant is initiated by a person, in the settings surface, naming the
+  # module they mean.
+  #
+  # The value is a JSON list of NodeModule ids. Ids only, never names: the agent
+  # keys its gate on the immutable server-assigned id, and a name is mutable and
+  # author-influenced (finding F1 on the original gate). Existence is checked
+  # across accounts because a SiteSetting is global and a value check sees no
+  # account; a foreign-account id is inert regardless, since the node API only
+  # ever emits ids of modules resolved for THIS node.
+  module PrivilegedModuleAllowlist
+    SETTING_KEY = "system.privileged_module_ids"
+
+    UUID_FORMAT = /\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/
+
+    # A fleet event per (instance, module) at most this often, so a node polling
+    # the modules endpoint every few seconds does not write a row per poll.
+    UNAPPROVED_EVENT_KIND = "system.privileged_module_unapproved"
+    UNAPPROVED_EVENT_INTERVAL = 1.hour
+
+    module_function
+
+    # Ids the operator has granted, as strings. [] when unset (deny), and [] when
+    # the stored value is not a list of strings: an unreadable grant is no grant.
+    def configured_ids
+      row = ::SiteSetting.find_by(key: SETTING_KEY)
+      return [] if row.nil?
+
+      parsed = parse(row.value)
+      return parsed if parsed
+
+      ::Rails.logger.error("[PrivilegedModuleAllowlist] #{SETTING_KEY} is not a JSON list of strings; treating as empty (deny)")
+      []
+    end
+
+    # The registered value check: nil when acceptable, else the reason.
+    def declaration_problem(value)
+      ids = parse(value)
+      return "must be a JSON list of NodeModule ids (strings), for example [\"<module id>\"]; [] grants none" if ids.nil?
+
+      malformed = ids.reject { |id| id.match?(UUID_FORMAT) }
+      unless malformed.empty?
+        return "entries must be NodeModule ids (UUIDs), not names; #{malformed.size} entr#{malformed.size == 1 ? 'y is' : 'ies are'} not a module id"
+      end
+
+      known = ::System::NodeModule.where(id: ids).pluck(:id).map(&:to_s)
+      missing = ids - known
+      return nil if missing.empty?
+
+      "#{missing.size} entr#{missing.size == 1 ? 'y names' : 'ies name'} no existing NodeModule: #{missing.first(3).join(', ')}"
+    end
+
+    # An Array<String>, or nil when `value` is not a JSON list of strings.
+    def parse(value)
+      list = value.is_a?(String) ? JSON.parse(value) : value
+      return nil unless list.is_a?(Array) && list.all?(String)
+
+      list.map(&:strip).reject(&:blank?).uniq
+    rescue JSON::ParserError
+      nil
+    end
+
+    # The module ids on this node that declare security.privileged=true and are
+    # not granted. The agent refuses each of them (at attach, and at compose it
+    # leaves their services disabled), so without this the operator's first sign
+    # is a module that simply is not running.
+    def unapproved_privileged(resolved_modules, approved_ids)
+      approved = approved_ids.to_set
+      resolved_modules.select do |mod|
+        security = mod.config.is_a?(Hash) ? mod.config["security"] : nil
+        security.is_a?(Hash) && security["privileged"] == true && !approved.include?(mod.id.to_s)
+      end
+    end
+
+    # Make the refusal visible: a high-severity fleet event naming the module and
+    # the instance, so the operator sees "module X wants privileged and is not
+    # granted" instead of a node whose services quietly stayed off. Never raises
+    # into the node API poll it rides on.
+    def report_unapproved!(account:, instance:, modules:)
+      modules.each do |mod|
+        next if recently_reported?(instance, mod)
+
+        ::System::Fleet::EventBroadcaster.emit!(
+          account: account,
+          kind: UNAPPROVED_EVENT_KIND,
+          severity: :high,
+          payload: { "module_name" => mod.name.to_s, "setting_key" => SETTING_KEY,
+                     "remedy" => "an operator grants the module id through the protected site setting #{SETTING_KEY}" },
+          source: "node_api.modules",
+          node_instance_id: instance&.id,
+          node_module_id: mod.id
+        )
+      end
+    rescue StandardError => e
+      ::Rails.logger.warn("[PrivilegedModuleAllowlist] could not report unapproved privileged modules: #{e.class}: #{e.message}")
+    end
+
+    def recently_reported?(instance, mod)
+      ::System::FleetEvent.by_kind(UNAPPROVED_EVENT_KIND)
+                          .where(node_instance_id: instance&.id, node_module_id: mod.id)
+                          .where("emitted_at >= ?", UNAPPROVED_EVENT_INTERVAL.ago).exists?
+    end
+  end
+end
