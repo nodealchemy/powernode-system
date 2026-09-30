@@ -133,12 +133,27 @@ curl -X POST http://localhost:3000/api/v1/system/gitops_repositories \
       "vault_credential_path": "secret/data/powernode/gitops/fleet-deploy-key",
       "path_prefix": "",
       "enabled": true,
-      "auto_apply": false
+      "auto_apply": false,
+      "ssh_host_key": "ssh-ed25519 AAAA...  (optional: the git host's public host key line)"
     }
   }'
 ```
 
 Permission: `system.gitops.write`.
+
+For an SSH remote, registration records the git host's SSH **public** host
+key, which every later sync verifies against (see
+[Host key verification](#host-key-verification)). Pass it explicitly as
+`ssh_host_key` — one or more `<type> <base64-key>` lines, exactly what
+`ssh-keyscan -p <port> <host>` prints — when you can confirm it out of band;
+otherwise the platform runs that `ssh-keyscan` itself at registration and
+records the result. The response carries `ssh_host_key_fingerprints`
+(`SHA256:...`, the form `ssh-keygen -l` prints) and `ssh_host_key_source`
+(`explicit` | `keyscan` | `tofu`), never the key itself. A malformed or
+hostile `ssh_host_key` (a private key, a known_hosts marker line) is refused
+with `422 invalid_ssh_host_key` and nothing is registered. `PATCH` with a new
+`ssh_host_key` replaces the recorded key; sent blank, it clears it. The same
+input is on the `gitops_register_repository` skill.
 
 ### 2. Trigger an off-schedule sync
 
@@ -205,6 +220,11 @@ the reconcile continues — one failure never aborts the rest of the tick.
 `https://user:pass@host/repo`) are rejected at validation time — they
 leak credentials into git history and shell logs. Always use Vault.
 
+SSH remotes are additionally verified against the repository's recorded
+host key, with or without a credential path — see
+[Host key verification](#host-key-verification). HTTPS remotes are not
+affected.
+
 ---
 
 ## Safety mechanisms
@@ -216,6 +236,31 @@ proposals opened per reconcile run. When a repository is rewritten in one
 commit, the first 25 diffs become proposals; the run is marked `partial`
 with an error message indicating remaining diffs. Subsequent ticks pick
 up the rest as the operator approves the first batch.
+
+### Host key verification
+
+Every SSH clone/pull runs `ssh` with `StrictHostKeyChecking=yes` against a
+per-call, mode-0600 `known_hosts` file holding only this repository's
+recorded host key(s) (`GitopsRepository#ssh_host_keys`, validated by
+`System::SshHostKeys` — the same validator and option set
+`System::SshExecutionService` uses for node connections: `-F /dev/null`,
+`GlobalKnownHostsFile=/dev/null`, `HostKeyAlias`, `CheckHostIP=no`,
+`UpdateHostKeys=no`, `VerifyHostKeyDNS=no`). Without it a man-in-the-middle
+on the path to the git host could serve manifests the reconciler applies.
+
+- **No recorded key** (a repository registered before this, or one whose
+  registration scan found nothing): the next sync runs `ssh-keyscan` against
+  the URL's host and port, records what validates as source `tofu` (trust on
+  first use) and emits `system.gitops.host_key_recorded` (low). If the scan
+  returns nothing the sync fails with `host_key_unavailable` rather than
+  connect unverified.
+- **Changed key**: the sync fails with the named reason
+  `host_key_mismatch` (the sync run's `error_message` and the repository's
+  `last_error` start with it), emits `system.gitops.host_key_mismatch`
+  (high, recorded fingerprints in the payload) and **never** replaces the
+  recorded key. Either the host was legitimately rekeyed — confirm its new
+  key out of band and `PATCH` it as `ssh_host_key` — or a different host is
+  answering at that address.
 
 ### URL sanitization
 
@@ -274,12 +319,13 @@ recent runs per repository.
 | Operator API | `extensions/system/server/app/controllers/api/v1/system/gitops_repositories_controller.rb` |
 | Reconciler orchestrator | `extensions/system/server/app/services/system/gitops/reconciler.rb` |
 | Repo clone/pull | `extensions/system/server/app/services/system/gitops/repo_sync_service.rb` |
+| Host key record / keyscan / events | `extensions/system/server/app/services/system/gitops/repository_host_key.rb`, `ssh_remote.rb` |
 | YAML parsing | `extensions/system/server/app/services/system/gitops/desired_state_parser.rb` |
 | Desired-state validation | `extensions/system/server/app/services/system/gitops/desired_state_validator.rb` |
 | Live-vs-desired diff | `extensions/system/server/app/services/system/gitops/diff_engine.rb` |
 | Apply (create/update; destroy for assignments only) | `extensions/system/server/app/services/system/gitops/apply_service.rb` |
 | Models | `extensions/system/server/app/models/system/gitops_repository.rb`, `gitops_sync_run.rb` |
-| Migrations | `db/migrate/20260503040300_create_system_gitops_repositories.rb`, `_040400_*sync_runs.rb`, `_040500_seed_gitops_permissions.rb` |
+| Migrations | `db/migrate/20260503040300_create_system_gitops_repositories.rb`, `_040400_*sync_runs.rb`, `_040500_seed_gitops_permissions.rb`, `20260930150000_add_ssh_host_keys_to_system_gitops_repositories.rb` |
 | Permissions seed | `system.gitops.read`, `.write`, `.sync`, `.reconcile` |
 | Cron entry | `extensions/system/worker/config/sidekiq_system.yml` (`system_gitops_sync` every 5 min) |
 

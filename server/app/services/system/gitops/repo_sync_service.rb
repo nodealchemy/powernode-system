@@ -2,6 +2,7 @@
 
 require "fileutils"
 require "open3"
+require "shellwords"
 
 module System
   module Gitops
@@ -17,6 +18,16 @@ module System
     #   - SSH with `vault_credential_path`: reads `{ssh_key}` from Vault KV
     #     and writes to a tempfile referenced via GIT_SSH_COMMAND.
     #
+    # Host verification (IMP-1e5db5e6aefb): every SSH remote is verified
+    # against the repository's recorded host key (GitopsRepository
+    # #ssh_host_keys, see System::Gitops::RepositoryHostKey), rendered into a
+    # per-call 0600 known_hosts file and connected with the exact option set
+    # System::SshExecutionService#with_host_verification uses. A repository
+    # with no recorded key is keyscanned and pinned on first use; a host that
+    # presents a key other than the recorded one fails the sync with the
+    # named reason HOST_KEY_MISMATCH_REASON, and the recorded key is never
+    # replaced by this service. HTTPS remotes are untouched.
+    #
     # Reference: comprehensive stabilization sweep P5.
     class RepoSyncService
       # Raised when the Vault payload at `vault_credential_path` does not carry
@@ -25,7 +36,21 @@ module System
       # #require_creds!.
       class CredentialShapeError < StandardError; end
 
-      Result = Struct.new(:ok?, :work_tree_path, :commit_sha, :error, keyword_init: true)
+      # The git host presented a key other than the recorded one. Message
+      # carries host, port and recorded FINGERPRINTS only.
+      class HostKeyMismatchError < StandardError; end
+      # No key is recorded and the host could not be scanned; the sync refuses
+      # rather than connect unverified.
+      class HostKeyUnavailableError < StandardError; end
+
+      HOST_KEY_MISMATCH_REASON    = "host_key_mismatch"
+      HOST_KEY_UNAVAILABLE_REASON = "host_key_unavailable"
+      HOST_KEY_VERIFICATION_FAILED = "Host key verification failed"
+
+      # `reason` is set only for the named host-key outcomes; the sync run's
+      # error_message carries "<reason>: ..." so an operator reading the
+      # timeline sees the same word.
+      Result = Struct.new(:ok?, :work_tree_path, :commit_sha, :error, :reason, keyword_init: true)
 
       WORK_TREE_ROOT = Rails.root.join("tmp/gitops")
       CLONE_TIMEOUT_SEC = 60
@@ -58,6 +83,16 @@ module System
         # pinned by the "wrong-shaped credential payload" spec examples.
         Rails.logger.error("[Gitops::RepoSync] #{@repository.id}: #{e.class}: #{e.message}")
         Result.new(ok?: false, error: "#{e.class}: #{e.message}")
+      rescue HostKeyMismatchError => e
+        # Safe by design like CredentialShapeError: host, port and recorded
+        # fingerprints only (see #host_key_mismatch!). The stored key is left
+        # exactly as it was — only an operator can record the new one.
+        Rails.logger.warn("[Gitops::RepoSync] #{@repository.id}: #{HOST_KEY_MISMATCH_REASON}: #{e.message}")
+        ::System::Gitops::RepositoryHostKey.emit_mismatch!(@repository, @host_keys)
+        Result.new(ok?: false, reason: HOST_KEY_MISMATCH_REASON, error: "#{HOST_KEY_MISMATCH_REASON}: #{e.message}")
+      rescue HostKeyUnavailableError => e
+        Rails.logger.warn("[Gitops::RepoSync] #{@repository.id}: #{HOST_KEY_UNAVAILABLE_REASON}: #{e.message}")
+        Result.new(ok?: false, reason: HOST_KEY_UNAVAILABLE_REASON, error: "#{HOST_KEY_UNAVAILABLE_REASON}: #{e.message}")
       rescue StandardError => e
         Rails.logger.error("[Gitops::RepoSync] #{@repository.id}: #{e.class}: #{e.message}")
         Result.new(ok?: false, error: "Repository sync failed")
@@ -91,6 +126,7 @@ module System
         env = build_git_env
         out, err, status = Open3.capture3(env, "git", *args, chdir: cwd)
         unless status.success?
+          host_key_mismatch!(err, status) if host_key_mismatch?(err, status)
           # Two-pass sanitization. The git-specific regex catches the
           # exact `https://user:pat@host/` URL shape git's own error
           # output emits. ShellOutputSanitizer then catches the
@@ -112,7 +148,7 @@ module System
       # git password and SSH key never linger on disk after the command. Runs on
       # every run_git! exit (success or raise); paths are deterministic.
       def cleanup_secret_files!
-        [ "#{work_tree_path}.askpass", "#{work_tree_path}.ssh_key" ].each do |path|
+        [ "#{work_tree_path}.askpass", "#{work_tree_path}.ssh_key", known_hosts_path ].each do |path|
           File.delete(path) if File.exist?(path)
         end
       rescue StandardError => e
@@ -120,34 +156,144 @@ module System
       end
 
       # Builds an env hash with Git auth configured, depending on the
-      # repository's vault_credential_path. Returns {} for anonymous public
-      # HTTPS clones.
+      # repository's vault_credential_path — and, for an SSH remote, host
+      # verification whether or not a credential is configured. Returns {}
+      # for anonymous public HTTPS clones.
       def build_git_env
-        return {} if @repository.vault_credential_path.blank?
+        if ::System::Gitops::SshRemote.ssh?(@repository.repo_url)
+          build_ssh_env
+        elsif @repository.repo_url.start_with?("https://", "http://")
+          build_https_env
+        else
+          {}
+        end
+      end
+
+      def build_https_env
+        creds = fetch_required_creds
+        return {} unless creds
+
+        # Build a one-shot askpass that answers both git prompts
+        askpass = build_askpass_script(creds["username"], creds["password"])
+        { "GIT_ASKPASS" => askpass, "GIT_TERMINAL_PROMPT" => "0" }
+      end
+
+      # Credentials FIRST (local, cheap, and the shape guard must refuse before
+      # anything touches the network), then the host key, then the command.
+      # `-F /dev/null` and the option set are exactly
+      # SshExecutionService#with_host_verification's, for the same reasons
+      # documented there: no ssh_config, no global known_hosts, no DNS or
+      # KnownHostsCommand trust source, and ssh may not add entries of its
+      # own to the per-call file.
+      def build_ssh_env
+        creds = fetch_required_creds
+        ssh_key_file = creds && build_ssh_key_file(creds["ssh_key"])
+
+        write_known_hosts!(host_keys)
+
+        # GIT_SSH_COMMAND is a shell string: the two file paths are the only
+        # words that can carry shell metacharacters, so they alone are
+        # escaped; the option words are fixed literals and the alias is
+        # ALIAS_FORMAT-safe.
+        words = [
+          "ssh",
+          "-F", "/dev/null",
+          "-o", "StrictHostKeyChecking=yes",
+          "-o", "UserKnownHostsFile=#{Shellwords.escape(known_hosts_path)}",
+          "-o", "GlobalKnownHostsFile=/dev/null",
+          "-o", "HostKeyAlias=#{host_alias}",
+          "-o", "CheckHostIP=no",
+          "-o", "UpdateHostKeys=no",
+          "-o", "VerifyHostKeyDNS=no"
+        ]
+        words.push("-i", Shellwords.escape(ssh_key_file), "-o", "IdentitiesOnly=yes") if ssh_key_file
+
+        { "GIT_SSH_COMMAND" => words.join(" ") }
+      end
+
+      # The Vault payload for this repository, shape-checked, or nil when no
+      # credential path is configured or Vault could not be read (the
+      # pre-existing anonymous fallback). Raises CredentialShapeError.
+      def fetch_required_creds
+        return nil if @repository.vault_credential_path.blank?
 
         creds = fetch_vault_creds
-        return {} unless creds
+        return nil unless creds
 
         # The required key set comes from the REPOSITORY, not from a literal
         # here, so the operator surfaces that advertise it (serialize_repo,
         # serialize_gitops_repository, and the credential-path probe on
         # POST /api/v1/admin_settings/vault/test) cannot drift from what this
         # branch actually enforces. IMP-0f914db2c7cf.
-        required = Array(@repository.required_credential_keys)
+        require_creds!(creds, *Array(@repository.required_credential_keys))
+        creds
+      end
 
-        if @repository.repo_url.start_with?("https://", "http://")
-          # Build a one-shot askpass that answers both git prompts
-          require_creds!(creds, *required)
-          askpass = build_askpass_script(creds["username"], creds["password"])
-          { "GIT_ASKPASS" => askpass, "GIT_TERMINAL_PROMPT" => "0" }
-        elsif @repository.repo_url.start_with?("git@", "ssh://")
-          require_creds!(creds, *required)
-          ssh_key_file = build_ssh_key_file(creds["ssh_key"])
-          ssh_command = "ssh -i #{ssh_key_file} -o StrictHostKeyChecking=no -o IdentitiesOnly=yes"
-          { "GIT_SSH_COMMAND" => ssh_command }
-        else
-          {}
+      # The recorded host keys, or — when none are recorded — the keys a live
+      # scan of the remote returns, recorded as trust-on-first-use and
+      # announced. Memoized per sync: fetch + reset share one answer, and a
+      # first-use scan happens once. Raises HostKeyUnavailableError when there
+      # is nothing to verify against; this service never connects unverified.
+      def host_keys
+        return @host_keys if defined?(@host_keys)
+
+        recorded = ::System::Gitops::RepositoryHostKey.recorded_for(@repository)
+        return @host_keys = recorded if recorded.any?
+
+        endpoint = ::System::Gitops::SshRemote.parse(@repository.repo_url)
+        raise HostKeyUnavailableError, "#{@repository.repo_url} is not a parseable ssh remote" unless endpoint
+
+        scanned = ::System::Gitops::RepositoryHostKey.scan(host: endpoint.host, port: endpoint.port)
+        if scanned.empty?
+          raise HostKeyUnavailableError,
+                "no host key recorded for #{endpoint.host}:#{endpoint.port} and ssh-keyscan returned none; " \
+                "refusing to clone unverified. Record the host key on the repository (ssh_host_key) or retry."
         end
+
+        ::System::Gitops::RepositoryHostKey.record!(@repository, scanned, source: "tofu")
+        ::System::Gitops::RepositoryHostKey.emit_recorded!(@repository, scanned, source: "tofu")
+        Rails.logger.info(
+          "[Gitops::RepoSync] #{@repository.id}: recorded host key on first use for " \
+          "#{endpoint.host}:#{endpoint.port} (#{::System::SshHostKeys.fingerprints(scanned).join(', ')})"
+        )
+        @host_keys = scanned
+      end
+
+      def host_alias
+        ::System::Gitops::RepositoryHostKey.alias_for(@repository)
+      end
+
+      def known_hosts_path
+        "#{work_tree_path}.known_hosts"
+      end
+
+      # Per-call, 0600, holding only this repository's line(s); removed by
+      # cleanup_secret_files! on every run_git! exit.
+      def write_known_hosts!(entries)
+        File.open(known_hosts_path, "w", 0o600) do |f|
+          f.write(::System::SshHostKeys.known_hosts(host_alias, entries))
+        end
+        FileUtils.chmod(0o600, known_hosts_path)
+      end
+
+      # Mirrors SshExecutionService#host_key_mismatch?: exit 255, ssh's own
+      # strict-checking text, AND this repository's alias in stderr (ssh names
+      # the alias), so a remote hook printing the same words is not read as a
+      # mismatch about this host.
+      def host_key_mismatch?(err, status)
+        stderr = err.to_s
+        status.exitstatus == 255 && defined?(@host_keys) && @host_keys.present? &&
+          stderr.include?(HOST_KEY_VERIFICATION_FAILED) && stderr.include?(host_alias)
+      end
+
+      def host_key_mismatch!(_err, _status)
+        endpoint = ::System::Gitops::SshRemote.parse(@repository.repo_url)
+        fingerprints = ::System::SshHostKeys.fingerprints(@host_keys)
+        raise HostKeyMismatchError,
+              "the git host #{endpoint&.host}:#{endpoint&.port} did not present a recorded key " \
+              "(recorded fingerprints: #{fingerprints.join(', ')}). The stored key was NOT updated. " \
+              "Either the host was legitimately rekeyed — record its new key on the repository " \
+              "(ssh_host_key) after confirming it out of band — or a different host is answering at its address."
       end
 
       # Fail with one honest "the credential payload is the wrong shape" instead

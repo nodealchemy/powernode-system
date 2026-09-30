@@ -10114,6 +10114,11 @@ module Ai
           # are safe and what they pair with (IMP-0f914db2c7cf).
           vault_credential_path: repo.vault_credential_path,
           required_credential_keys: repo.required_credential_keys,
+          # Fingerprints and provenance of the recorded git host key, never
+          # the key blob (IMP-1e5db5e6aefb; same fields as serialize_repo).
+          ssh_host_key_fingerprints: repo.ssh_host_key_fingerprints,
+          ssh_host_key_source: repo.ssh_host_key_source,
+          ssh_host_key_recorded_at: repo.ssh_host_key_recorded_at,
           auto_apply: repo.auto_apply,
           enabled: repo.enabled,
           last_status: repo.last_status,

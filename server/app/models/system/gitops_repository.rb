@@ -77,6 +77,21 @@ module System
       end
     end
 
+    # IMP-1e5db5e6aefb — the git host's recorded SSH public key(s), read
+    # through System::Gitops::RepositoryHostKey (re-validated on every read).
+    # Fingerprints and metadata only; the key blob is never serialized.
+    def ssh_host_key_fingerprints
+      ::System::Gitops::RepositoryHostKey.fingerprints_for(self)
+    end
+
+    def ssh_host_key_source
+      ssh_host_keys.is_a?(Hash) ? ssh_host_keys["source"] : nil
+    end
+
+    def ssh_host_key_recorded_at
+      ssh_host_keys.is_a?(Hash) ? ssh_host_keys["recorded_at"] : nil
+    end
+
     def schedule_sync!
       ::System::GitopsSyncRun.create!(
         gitops_repository: self,

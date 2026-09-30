@@ -30,9 +30,16 @@ module Api
           )
         end
 
+        # IMP-1e5db5e6aefb — an SSH remote's host key is recorded at
+        # registration: an explicit `ssh_host_key` ("<type> <base64-key>", as
+        # ssh-keyscan prints it) when the operator has one, else a keyscan of
+        # the remote's host and port. The response carries fingerprints only.
+        # A hostile value is refused whole (422) and nothing is registered.
         def create
           require_permission("system.gitops.write")
           repo = @account.system_gitops_repositories.build(repository_params)
+          return unless assign_host_key!(repo, explicit: host_key_param, scan: true)
+
           if repo.save
             render_success(gitops_repository: serialize_repo(repo), status: :created)
           else
@@ -40,9 +47,17 @@ module Api
           end
         end
 
+        # `ssh_host_key` on update is the operator's recovery from a
+        # host_key_mismatch: the sync never replaces a recorded key itself.
+        # Sent blank, it clears the record so the next sync pins on first use.
         def update
           require_permission("system.gitops.write")
-          if @repository.update(repository_params)
+          @repository.assign_attributes(repository_params)
+          if host_key_param_sent?
+            return unless assign_host_key!(@repository, explicit: host_key_param, scan: false)
+          end
+
+          if @repository.save
             render_success(gitops_repository: serialize_repo(@repository))
           else
             render_validation_error(@repository)
@@ -138,6 +153,32 @@ module Api
           )
         end
 
+        # An INPUT, not a column: validated by RepositoryHostKey and stored as
+        # the normalized document, never assigned raw.
+        def host_key_param
+          params.require(:gitops_repository)[:ssh_host_key]
+        end
+
+        def host_key_param_sent?
+          params.require(:gitops_repository).key?(:ssh_host_key)
+        end
+
+        # Returns false after rendering the refusal. The refusal names the
+        # expected shape and never echoes the value.
+        def assign_host_key!(repo, explicit:, scan:)
+          if explicit.present?
+            ::System::Gitops::RepositoryHostKey.assign_for_registration!(repo, explicit: explicit)
+          elsif scan
+            ::System::Gitops::RepositoryHostKey.assign_for_registration!(repo)
+          else
+            repo.ssh_host_keys = nil
+          end
+          true
+        rescue ::System::Gitops::RepositoryHostKey::InvalidHostKey => e
+          render_error(e.message, status: :unprocessable_content, code: "invalid_ssh_host_key")
+          false
+        end
+
         def serialize_repo(repo)
           {
             id: repo.id,
@@ -154,6 +195,11 @@ module Api
             # to see whether that path resolves and carries these keys.
             vault_credential_path: repo.vault_credential_path,
             required_credential_keys: repo.required_credential_keys,
+            # The git host's recorded SSH public key, as FINGERPRINTS plus how
+            # and when it was recorded — never the key blob. IMP-1e5db5e6aefb.
+            ssh_host_key_fingerprints: repo.ssh_host_key_fingerprints,
+            ssh_host_key_source: repo.ssh_host_key_source,
+            ssh_host_key_recorded_at: repo.ssh_host_key_recorded_at,
             enabled: repo.enabled,
             auto_apply: repo.auto_apply,
             last_synced_at: repo.last_synced_at,

@@ -85,13 +85,16 @@ RSpec.describe Ai::Tools::SystemFleetTool, "GitOps repository read verbs (IMP-f0
       expect(r[:data][:repository][:required_credential_keys]).to eq(%w[password username])
     end
 
-    # A closed key set, not a denylist — see the header note.
+    # A closed key set, not a denylist — see the header note. The three
+    # ssh_host_key_* fields (IMP-1e5db5e6aefb) are the git host's PUBLIC key
+    # fingerprints and their provenance; the key blob itself is never here.
     it "returns key NAMES and configuration only, never credential material" do
       r = call("system_gitops_get_repository", repository_id: repo.id)
 
       expect(r[:data][:repository].keys).to match_array(
         %i[id name repo_url branch path_prefix vault_credential_path
-           required_credential_keys auto_apply enabled last_status
+           required_credential_keys ssh_host_key_fingerprints ssh_host_key_source
+           ssh_host_key_recorded_at auto_apply enabled last_status
            last_synced_at last_synced_revision last_diff_count last_error
            created_at]
       )

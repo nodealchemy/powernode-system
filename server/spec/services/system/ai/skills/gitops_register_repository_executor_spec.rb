@@ -17,7 +17,7 @@ RSpec.describe System::Ai::Skills::GitopsRegisterRepositoryExecutor do
       expect(d[:name]).to eq("gitops_register_repository")
       expect(d[:requires_approval]).to be true
       expect(d[:inputs].keys).to contain_exactly(:name, :repo_url, :branch, :vault_credential_path,
-                                                 :path_prefix, :auto_apply)
+                                                 :path_prefix, :auto_apply, :ssh_host_key)
       expect(d[:inputs][:name][:required]).to be true
       expect(d[:inputs][:repo_url][:required]).to be true
 

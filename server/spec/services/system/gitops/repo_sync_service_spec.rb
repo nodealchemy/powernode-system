@@ -57,12 +57,21 @@ RSpec.describe System::Gitops::RepoSyncService do
     invocations.find { |inv| inv[:argv].include?("clone") }
   end
 
+  # IMP-1e5db5e6aefb — an SSH remote is host-verified, so the stub also
+  # answers the first-use ssh-keyscan with one valid public key line (host
+  # verification itself is pinned in repo_sync_service_host_key_spec.rb).
+  let(:host_key_entry) { SshHostKeyFixtures.entry("ssh-ed25519") }
+
   before do
     allow(Security::VaultClient).to receive(:instance).and_return(vault_client)
     allow(Open3).to receive(:capture3) do |*args, **_kwargs|
       env = args.first.is_a?(Hash) ? args.first : {}
       argv = args.first.is_a?(Hash) ? args[1..] : args
       invocations << { env: env, argv: argv.map(&:to_s) }
+      if argv.first.to_s == "ssh-keyscan"
+        next [ "git.example.test #{host_key_entry['type']} #{host_key_entry['key']}\n", "",
+               instance_double(Process::Status, success?: true, exitstatus: 0) ]
+      end
       secret_files[:askpass] = File.read(env["GIT_ASKPASS"]) if env["GIT_ASKPASS"]
       if (match = env["GIT_SSH_COMMAND"].to_s.match(/-i (\S+)/))
         secret_files[:ssh_key] = File.read(match[1])
@@ -107,10 +116,12 @@ RSpec.describe System::Gitops::RepoSyncService do
       expect(secret_files[:ssh_key]).to eq("#{vault_payload[:ssh_key]}\n")
     end
 
-    it "points GIT_SSH_COMMAND at that key file" do
+    it "points GIT_SSH_COMMAND at that key file, identities-only, under strict host checking" do
       described_class.sync!(repository)
 
-      expect(clone_invocation[:env]["GIT_SSH_COMMAND"]).to match(/\Assh -i \S+ -o StrictHostKeyChecking=no -o IdentitiesOnly=yes\z/)
+      expect(clone_invocation[:env]["GIT_SSH_COMMAND"])
+        .to match(/\Assh -F \/dev\/null -o StrictHostKeyChecking=yes .* -i \S+ -o IdentitiesOnly=yes\z/)
+      expect(clone_invocation[:env]["GIT_SSH_COMMAND"]).not_to include("StrictHostKeyChecking=no")
     end
   end
 

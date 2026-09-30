@@ -16,10 +16,16 @@ module System
       # of truth the reconciler will sync every five minutes). The repository
       # URL is the one input that can carry userinfo; it is never echoed back
       # in the envelope.
+      #
+      # IMP-1e5db5e6aefb — an SSH remote's host key is recorded here as the
+      # REST door records it: an explicit `ssh_host_key` is validated in
+      # #validate_inputs! (before the gate — a hostile value can only fail, so
+      # no approval is parked for it); otherwise the remote is keyscanned in
+      # #perform, after approval. The envelope carries fingerprints only.
       class GitopsRegisterRepositoryExecutor < BaseSkillExecutor
         skill_descriptor(
           name:        "gitops_register_repository",
-          description: "Register a Git repository as a declarative source of fleet state the GitOps Reconciler syncs every 5 minutes (branch, path prefix, Vault credential path, auto_apply); the first sync runs on the next reconcile tick",
+          description: "Register a Git repository as a declarative source of fleet state the GitOps Reconciler syncs every 5 minutes (branch, path prefix, Vault credential path, auto_apply, SSH host key); the first sync runs on the next reconcile tick",
           category:    "devops",
           requires_approval: true,
           action_category:   "system.gitops_register_repository",
@@ -35,15 +41,19 @@ module System
             path_prefix:           { type: "string",  required: false,
                                      description: "Directory inside the repo holding fleet.yaml (default repo root)" },
             auto_apply:            { type: "boolean", required: false,
-                                     description: "Apply non-destructive drift without operator review (default false)" }
+                                     description: "Apply non-destructive drift without operator review (default false)" },
+            ssh_host_key:          { type: "string",  required: false,
+                                     description: "The git host's SSH PUBLIC host key line ('<type> <base64-key>', as ssh-keyscan prints it) the sync verifies against; omitted, an SSH remote is keyscanned and the result pinned" }
           },
           outputs: {
-            repository_id: :string,
-            name:          :string,
-            branch:        :string,
-            path_prefix:   :string,
-            auto_apply:    :boolean,
-            last_status:   :string
+            repository_id:             :string,
+            name:                      :string,
+            branch:                    :string,
+            path_prefix:               :string,
+            auto_apply:                :boolean,
+            last_status:               :string,
+            ssh_host_key_fingerprints: :array,
+            ssh_host_key_source:       :string
           }
         )
 
@@ -71,30 +81,43 @@ module System
             auto_apply:            ::ActiveModel::Type::Boolean.new.cast(inputs[:auto_apply]) == true,
             last_status:           "pending"
           )
-          return if @candidate.valid?
+          unless @candidate.valid?
+            # CallerFacingError, not a bare ArgumentError (IMP-8552945f2672) —
+            # same reasoning as disk_image_retention_executor.rb's own probe
+            # validation: the model's own validation text, describing the
+            # caller's own supplied attributes.
+            raise ::Ai::Tools::BaseTool::CallerFacingError,
+                  "gitops repository validation failed: #{@candidate.errors.full_messages.to_sentence}"
+          end
 
-          # CallerFacingError, not a bare ArgumentError (IMP-8552945f2672) —
-          # same reasoning as disk_image_retention_executor.rb's own probe
-          # validation: the model's own validation text, describing the
-          # caller's own supplied attributes.
-          raise ::Ai::Tools::BaseTool::CallerFacingError,
-                "gitops repository validation failed: #{@candidate.errors.full_messages.to_sentence}"
+          return if inputs[:ssh_host_key].blank?
+
+          # InvalidHostKey's message names the expected shape only, never the
+          # value, so it is safe to forward.
+          ::System::Gitops::RepositoryHostKey.assign_for_registration!(@candidate, explicit: inputs[:ssh_host_key])
+        rescue ::System::Gitops::RepositoryHostKey::InvalidHostKey => e
+          raise ::Ai::Tools::BaseTool::CallerFacingError, "gitops repository validation failed: #{e.message}"
         end
 
-        def perform(name:, repo_url:, branch: nil, vault_credential_path: nil, path_prefix: nil, auto_apply: false)
+        def perform(name:, repo_url:, branch: nil, vault_credential_path: nil, path_prefix: nil, auto_apply: false,
+                    ssh_host_key: nil)
           # Built and admitted in #validate_inputs! above, before the gate. The
           # rescue stays as a race backstop: a name can be taken between the
           # admission check and this insert.
           repo = @candidate
+          # No explicit key: scan the remote now, after approval (network).
+          ::System::Gitops::RepositoryHostKey.assign_for_registration!(repo) if ssh_host_key.blank?
           repo.save!
 
           success(
-            repository_id: repo.id,
-            name:          repo.name,
-            branch:        repo.branch,
-            path_prefix:   repo.path_prefix,
-            auto_apply:    repo.auto_apply,
-            last_status:   repo.last_status
+            repository_id:             repo.id,
+            name:                      repo.name,
+            branch:                    repo.branch,
+            path_prefix:               repo.path_prefix,
+            auto_apply:                repo.auto_apply,
+            last_status:               repo.last_status,
+            ssh_host_key_fingerprints: repo.ssh_host_key_fingerprints,
+            ssh_host_key_source:       repo.ssh_host_key_source
           )
         rescue ::ActiveRecord::RecordInvalid => e
           # IMP-8552945f2672 — was e.record.errors.full_messages.to_sentence,
