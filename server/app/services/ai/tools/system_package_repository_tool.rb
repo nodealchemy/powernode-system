@@ -409,12 +409,21 @@ module Ai
         repo.package_repository_platforms.where(node_platform_id: remove_ids).destroy_all if remove_ids.any?
       end
 
+      def linkable_platforms(repo)
+        return ::System::NodePlatform.all if repo.shared?
+
+        ::System::NodePlatform.where(account_id: repo.account_id)
+      end
+
       def link_repository_platform(params)
         repo = scoped_repos.find(params[:repository_id])
         if repo.shared? && !(@user&.has_permission?("system.package_repositories.manage_shared"))
           return error_result("permission denied: cannot link platform on shared repository without manage_shared")
         end
-        platform = ::System::NodePlatform.find(params[:node_platform_id])
+        # IMP-156eb1a7bdbc — scoped to what this repo may link to, so a
+        # foreign platform id reads exactly like a nonexistent one (see
+        # PackageRepositoriesController#linkable_platforms).
+        platform = linkable_platforms(repo).find(params[:node_platform_id])
 
         link = repo.package_repository_platforms.find_or_initialize_by(node_platform_id: platform.id)
         if link.persisted?

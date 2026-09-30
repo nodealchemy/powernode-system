@@ -31,11 +31,10 @@ module System
       # Account-scoped repos: platform must belong to the same account.
       return if package_repository.account_id == node_platform.account_id
 
-      errors.add(
-        :node_platform,
-        "must belong to the same account as the repository " \
-        "(repo=#{package_repository.account_id.inspect} platform=#{node_platform.account_id.inspect})"
-      )
+      # IMP-156eb1a7bdbc — no account ids in the message: it is rendered to
+      # the caller (render_validation_error, the MCP tool's full_messages),
+      # and the platform's account is some OTHER tenant's.
+      errors.add(:node_platform, "must belong to the same account as the repository")
     end
   end
 end

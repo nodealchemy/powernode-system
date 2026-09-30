@@ -104,7 +104,7 @@ module Api
         # Body: { node_platform_id: "<uuid>" }
         def link_platform
           authorize_repo_mutation!
-          platform = ::System::NodePlatform.find_by(id: params[:node_platform_id])
+          platform = linkable_platforms(@repository).find_by(id: params[:node_platform_id])
           return render_not_found("Node Platform") unless platform
 
           link = @repository.package_repository_platforms.find_or_initialize_by(node_platform: platform)
@@ -358,6 +358,19 @@ module Api
           if to_remove.any?
             repo.package_repository_platforms.where(node_platform_id: to_remove).destroy_all
           end
+        end
+
+        # IMP-156eb1a7bdbc — the platforms a repo may link to, as the lookup
+        # scope. An account-scoped repo links only its own account's platforms
+        # (PackageRepositoryPlatform#account_consistency), so an unscoped
+        # lookup only let a foreign id through to that validation — a 422
+        # where a nonexistent id gets a 404, i.e. an existence oracle on
+        # another tenant's platform. A shared repo (manage_shared) may link
+        # any account's platform, so it keeps the unscoped lookup.
+        def linkable_platforms(repo)
+          return ::System::NodePlatform.all if repo.shared?
+
+          ::System::NodePlatform.where(account_id: repo.account_id)
         end
 
         def authorize_repo_mutation!
