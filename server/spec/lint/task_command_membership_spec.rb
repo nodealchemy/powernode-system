@@ -51,11 +51,15 @@ RSpec.describe "System::Task command membership across the spec tree" do
   # deliberately refuses to evaluate (interpolated string / symbol /
   # variable / expression) — audited by hand and confirmed every value the
   # binding can carry at runtime is a System::Task::COMMANDS member. Keyed
-  # by path relative to server/spec/, value is the array of construction-site
-  # line numbers (the line the `create`/`build`/... call starts on, same
-  # line a violation would report). Keying on the line rather than the value
-  # means an edit that shifts the line forces re-acknowledgment instead of
-  # silently continuing to match.
+  # by path relative to server/spec/, value is the array of
+  # sites. A site is named by the line the `create`/`build`/... call starts on
+  # (same line a violation would report) as an Integer, or by a CONTENT ANCHOR:
+  # a String (the site's exact stripped source line) or a Regexp matched
+  # against that line. Keying on the site rather than the value means an edit
+  # to the site forces re-acknowledgment instead of silently continuing to
+  # match; an anchor additionally survives unrelated edits ABOVE the site. An
+  # anchor must match exactly one reported site in its file — none is stale,
+  # more than one is ambiguous, both fail the staleness guard below.
   let(:acknowledged_unchecked_sites) do
     {
       # `cmd` ranges over described_class::COMMANDS itself — the example IS
@@ -105,8 +109,14 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # re-audited and found the same three values): :955 -> :956 -> :957
       # (increment 3, a `before` block's line changed) -> :1109
       # (IMP-ad746acac343, re-verified against the actual scanner output
-      # rather than guessed).
-      "models/system/node_instance_spec.rb" => [ 1109 ],
+      # rather than guessed) -> :1132, then replaced by a content anchor
+      # (IMP-9b56ee713422) so edits above the site stop breaking the pin.
+      # RE-AUDITED — the anchored line is still the helper's
+      # `create(:system_task, ..., command: command, ...)`, still carrying only
+      # the three listed COMMANDS values above.
+      "models/system/node_instance_spec.rb" => [
+        "create(:system_task, account: target.account, operable: target, command: command, status: status)"
+      ],
       # `command: command` inside a HEREDOC FIXTURE (<<~RUBY) that the census
       # scanner parses as text — it is source code under test, never executed,
       # and constructs no System::Task. The scanner's own "FIRES on the variable
@@ -279,15 +289,16 @@ RSpec.describe "System::Task command membership across the spec tree" do
   it "acknowledges only sites the scanner still reports" do
     live = unchecked_sites
 
-    stale = acknowledged_unchecked_sites.filter_map do |rel, lines|
+    stale = acknowledged_unchecked_sites.filter_map do |rel, entries|
       next "#{rel} (file no longer exists)" unless File.exist?(File.join(spec_root, rel))
 
-      orphaned = Array(lines) - live[rel]
-      "#{rel} lines #{orphaned.inspect} are no longer reported as unchecked" if orphaned.any?
+      problems = acknowledgment_problems(entries, live[rel])
+      "#{rel} #{problems.join("; ")}" if problems.any?
     end
 
     expect(stale).to be_empty, <<~MSG
-      acknowledged_unchecked_sites names sites that are gone or no longer flagged:
+      acknowledged_unchecked_sites names sites that are gone, no longer flagged,
+      or (for a content anchor) ambiguous:
 
       #{stale.join("\n")}
 
@@ -295,12 +306,38 @@ RSpec.describe "System::Task command membership across the spec tree" do
       it reads as an audited exemption. Delete the entry if the site is gone; if
       it moved, re-audit the values the binding can carry and re-pin it to the
       line the scanner now reports (the failure message of the membership
-      example prints it).
+      example prints it), or re-anchor it on the site's source text.
     MSG
   end
 
-  # Every (relative path, line) at which the scanner currently finds an
-  # UNCHECKED `command:` binding — precisely the set `acknowledged_unchecked_sites`
+  # Does one acknowledgment entry name this site? Integer = the reported line;
+  # String = the site's exact stripped source line; Regexp = matched against it.
+  def acknowledges?(entry, site)
+    case entry
+    when Integer then entry == site[:line]
+    when String then entry == site[:text]
+    when Regexp then entry.match?(site[:text])
+    else raise ArgumentError, "acknowledgment entry must be Integer, String or Regexp: #{entry.inspect}"
+    end
+  end
+
+  # The staleness predicate for one file's entries against the sites the
+  # scanner reports there. An entry that names no site is stale; a content
+  # anchor that names MORE than one is ambiguous (it would silently exempt a
+  # site nobody audited). An Integer names one line, so it can only be stale.
+  def acknowledgment_problems(entries, sites)
+    Array(entries).filter_map do |entry|
+      hits = sites.count { |site| acknowledges?(entry, site) }
+      if hits.zero?
+        "entry #{entry.inspect} is no longer reported as unchecked"
+      elsif hits > 1 && !entry.is_a?(Integer)
+        "anchor #{entry.inspect} is ambiguous: it matches #{hits} sites"
+      end
+    end
+  end
+
+  # Every (relative path, line, stripped source text) at which the scanner
+  # currently finds an UNCHECKED `command:` binding — precisely the set `acknowledged_unchecked_sites`
   # exists to suppress. Both the membership example and the staleness guard read
   # it, so neither can drift from the other's idea of what a site is.
   def unchecked_sites
@@ -318,7 +355,9 @@ RSpec.describe "System::Task command membership across the spec tree" do
 
         args = call_args(src, open_idx)
         line = src[0, match_begin].count("\n") + 1
-        sites[rel] << line if command_assignments(args).any? { |a| a[:kind] == :unchecked }
+        next unless command_assignments(args).any? { |a| a[:kind] == :unchecked }
+
+        sites[rel] << { line: line, text: src.lines[line - 1].to_s.strip }
       end
     end
 
@@ -342,10 +381,11 @@ RSpec.describe "System::Task command membership across the spec tree" do
         scanned_sites += 1
         args = call_args(src, open_idx)
         line = src[0, match_begin].count("\n") + 1
+        site = { line: line, text: src.lines[line - 1].to_s.strip }
 
         command_assignments(args).each do |assignment|
           if assignment[:kind] == :unchecked
-            next if Array(acknowledged_unchecked_sites[rel]).include?(line)
+            next if Array(acknowledged_unchecked_sites[rel]).any? { |entry| acknowledges?(entry, site) }
 
             violations << "#{rel}:#{line} command: #{assignment[:raw]} " \
               "(UNCHECKED — not a literal the scanner can verify; convert to a " \
@@ -385,6 +425,24 @@ RSpec.describe "System::Task command membership across the spec tree" do
       it can carry and add the site to acknowledged_unchecked_sites in
       #{File.basename(__FILE__)}.
     MSG
+  end
+
+  it "the staleness guard fails a content anchor that matches no site or more than one site" do
+    sites = [
+      { line: 10, text: "create(:system_task, command: command)" },
+      { line: 20, text: "create(:system_task, command: other)" }
+    ]
+
+    expect(acknowledgment_problems([ 10, "create(:system_task, command: other)" ], sites)).to be_empty
+    expect(acknowledgment_problems([ /command: other\)\z/ ], sites)).to be_empty
+
+    gone = acknowledgment_problems([ "create(:system_task, command: gone)", /nothing/, 99 ], sites)
+    expect(gone.size).to eq(3)
+    expect(gone).to all(include("no longer reported"))
+
+    ambiguous = acknowledgment_problems([ /create\(:system_task/ ], sites)
+    expect(ambiguous.size).to eq(1)
+    expect(ambiguous.first).to include("ambiguous", "matches 2 sites")
   end
 
   it "classifies interpolated strings, symbols, and variables as unchecked instead of silently skipping them" do
