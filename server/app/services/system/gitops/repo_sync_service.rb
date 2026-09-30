@@ -3,6 +3,7 @@
 require "fileutils"
 require "open3"
 require "shellwords"
+require "tempfile"
 
 module System
   module Gitops
@@ -153,12 +154,17 @@ module System
       end
 
       # Delete the one-shot askpass / ssh-key files written by build_git_env so the
-      # git password and SSH key never linger on disk after the command. Runs on
-      # every run_git! exit (success or raise); paths are deterministic.
+      # git password and SSH key never linger on disk after the command, and
+      # unlink THIS call's known_hosts tempfile. Runs on every run_git! exit
+      # (success or raise). The askpass / ssh-key paths are deterministic; the
+      # known_hosts is per-call (see #write_known_hosts!) and only the one
+      # this call wrote is removed.
       def cleanup_secret_files!
-        [ "#{work_tree_path}.askpass", "#{work_tree_path}.ssh_key", known_hosts_path ].each do |path|
+        [ "#{work_tree_path}.askpass", "#{work_tree_path}.ssh_key" ].each do |path|
           File.delete(path) if File.exist?(path)
         end
+        @known_hosts_file&.close!
+        @known_hosts_file = nil
       rescue StandardError => e
         Rails.logger.warn("[Gitops::RepoSync] secret-file cleanup failed: #{e.message}")
       end
@@ -207,7 +213,7 @@ module System
         creds = fetch_required_creds
         ssh_key_file = creds && build_ssh_key_file(creds["ssh_key"])
 
-        write_known_hosts!(host_keys)
+        known_hosts = write_known_hosts!(host_keys)
 
         # GIT_SSH_COMMAND is a shell string: the two file paths are the only
         # words that can carry shell metacharacters, so they alone are
@@ -217,7 +223,7 @@ module System
           "ssh",
           "-F", "/dev/null",
           "-o", "StrictHostKeyChecking=yes",
-          "-o", "UserKnownHostsFile=#{Shellwords.escape(known_hosts_path)}",
+          "-o", "UserKnownHostsFile=#{Shellwords.escape(known_hosts)}",
           "-o", "GlobalKnownHostsFile=/dev/null",
           "-o", "HostKeyAlias=#{host_alias}",
           "-o", "CheckHostIP=no",
@@ -281,17 +287,22 @@ module System
         ::System::Gitops::RepositoryHostKey.alias_for(@repository)
       end
 
-      def known_hosts_path
-        "#{work_tree_path}.known_hosts"
-      end
-
-      # Per-call, 0600, holding only this repository's line(s); removed by
-      # cleanup_secret_files! on every run_git! exit.
+      # A per-call UNIQUE 0600 tempfile holding only this repository's
+      # line(s) — the SshExecutionService#with_host_verification pattern —
+      # unlinked by cleanup_secret_files! on every run_git! exit. Unique, not
+      # a fixed path beside the work tree: the cron tick, sync_now, the MCP
+      # verbs and the skill all run one repository's sync inline with no
+      # lock, and a shared path let one call's cleanup delete the file
+      # another call's ssh was about to read, which ssh reports as "No ...
+      # host key is known for <alias> ... Host key verification failed" —
+      # a false host_key_mismatch. Returns the path.
       def write_known_hosts!(entries)
-        File.open(known_hosts_path, "w", 0o600) do |f|
-          f.write(::System::SshHostKeys.known_hosts(host_alias, entries))
-        end
-        FileUtils.chmod(0o600, known_hosts_path)
+        file = Tempfile.new([ "gitops-known_hosts", "" ])
+        File.chmod(0o600, file.path)
+        file.write(::System::SshHostKeys.known_hosts(host_alias, entries))
+        file.close
+        @known_hosts_file = file
+        file.path
       end
 
       # Mirrors SshExecutionService#host_key_mismatch? MINUS its exit-code
