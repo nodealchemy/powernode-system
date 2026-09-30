@@ -128,23 +128,42 @@ module System
           failures = []
           targets.each do |cert|
             begin
-              # CertificateManager#renew! ships from P2.5.7a. The skill
-              # is intentionally fire-and-forget — actual ACME work runs
-              # async via the renewal sweep.
-              ::Acme::CertificateManager.renew!(cert) if ::Acme::CertificateManager.respond_to?(:renew!)
-              rotated << { id: cert.id, common_name: cert.common_name }
+              # IMP-156eb1a7bdbc — renew! takes `certificate:` as a keyword;
+              # the old positional call raised ArgumentError on every cert, so
+              # nothing ever rotated. It runs the ACME renewal SYNCHRONOUSLY
+              # (it is what the renewal sweep itself calls) and answers with a
+              # Result, which is what decides rotated vs failed.
+              result = ::Acme::CertificateManager.renew!(certificate: cert)
+              if result.ok?
+                rotated << { id: cert.id, common_name: cert.common_name }
+              else
+                failures << { id: cert.id, error: renewal_failure_text(result) }
+              end
             rescue StandardError => e
-              failures << { id: cert.id, error: e.message }
+              failures << { id: cert.id, error: safe_error_text(e), error_class: e.class.name }
             end
           end
 
-          recs = [ "Renewal queued for #{rotated.size} cert(s); rotation runs async via the next renewal sweep tick." ]
-          recs << "#{failures.size} renewal trigger(s) errored — check audit log for details." if failures.any?
+          recs = [ "Renewed #{rotated.size} cert(s)." ]
+          recs << "#{failures.size} renewal(s) failed — see the server log for details." if failures.any?
           success(
             action: "cert_rotate",
             data: { rotated: rotated, failures: failures },
             recommendations: recs
           )
+        end
+
+        # A failed renew! Result's error is forwarded only when its producer
+        # marked it caller_safe (an authored state message). Anything else —
+        # CertificateManager's blanket rescue carries the raw ACME/DNS/driver
+        # text, and a Result with no annotation is treated the same — is logged
+        # and replaced by a fixed message. Same rule as SystemAcmeTool
+        # #renew_certificate (IMP-1a5c145c24eb).
+        def renewal_failure_text(result)
+          return "Renewal failed: #{result.error}" if result.caller_safe
+
+          Rails.logger.error("[#{self.class.name}] cert_rotate renewal failed: #{audit_text(result.error.to_s)}")
+          "Renewal failed"
         end
 
         # ── drift_check: read NodeInstance drift state ───────────────────
