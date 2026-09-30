@@ -16,6 +16,12 @@ module System
     # is not an ssh remote or does not parse cleanly, so a malformed URL can
     # never become an argv element: the host must match HOST_FORMAT and the
     # port must be a real port.
+    #
+    # .ssh? is the same test: an ssh remote is one this module can pin. The
+    # git-builtin spellings git+ssh:// and ssh+git:// are deliberately not
+    # parsed (no legacy forms) — git would route them to the PATH ssh on its
+    # own, outside the pin — so they, like an unparseable host, are refused
+    # by the model at registration and by the sync before git runs.
     module SshRemote
       Endpoint = Struct.new(:host, :port, :user, keyword_init: true)
 
@@ -29,9 +35,7 @@ module System
       module_function
 
       def ssh?(url)
-        return false unless url.is_a?(String)
-
-        url.start_with?("ssh://") || (!url.include?("://") && url.match?(SCP_FORMAT))
+        !parse(url).nil?
       end
 
       # Endpoint or nil. Never raises.

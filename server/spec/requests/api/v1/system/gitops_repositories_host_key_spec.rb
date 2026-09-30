@@ -79,7 +79,7 @@ RSpec.describe "Operator API — GitOps repository host key", type: :request do
       }.not_to change(::System::GitopsRepository, :count)
 
       expect(response).to have_http_status(:unprocessable_content)
-      expect(response.body).to include("repo_url")
+      expect(json_response["error"].to_s).to match(/repo url must be an https:\/\/ URL or an ssh remote/i)
       expect(scans).to be_empty
     end
   end

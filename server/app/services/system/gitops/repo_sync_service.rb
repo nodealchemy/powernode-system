@@ -42,9 +42,14 @@ module System
       # No key is recorded and the host could not be scanned; the sync refuses
       # rather than connect unverified.
       class HostKeyUnavailableError < StandardError; end
+      # The repo_url is neither https nor an ssh endpoint this service can
+      # pin (git+ssh://, git://, file://, a bare path, an unparseable host).
+      # git would pick a transport of its own for it, so git never runs.
+      class UnsupportedRemoteError < StandardError; end
 
       HOST_KEY_MISMATCH_REASON    = "host_key_mismatch"
       HOST_KEY_UNAVAILABLE_REASON = "host_key_unavailable"
+      UNSUPPORTED_REMOTE_REASON   = "unsupported_remote"
       HOST_KEY_VERIFICATION_FAILED = "Host key verification failed"
 
       # `reason` is set only for the named host-key outcomes; the sync run's
@@ -93,6 +98,9 @@ module System
       rescue HostKeyUnavailableError => e
         Rails.logger.warn("[Gitops::RepoSync] #{@repository.id}: #{HOST_KEY_UNAVAILABLE_REASON}: #{e.message}")
         Result.new(ok?: false, reason: HOST_KEY_UNAVAILABLE_REASON, error: "#{HOST_KEY_UNAVAILABLE_REASON}: #{e.message}")
+      rescue UnsupportedRemoteError => e
+        Rails.logger.warn("[Gitops::RepoSync] #{@repository.id}: #{UNSUPPORTED_REMOTE_REASON}: #{e.message}")
+        Result.new(ok?: false, reason: UNSUPPORTED_REMOTE_REASON, error: "#{UNSUPPORTED_REMOTE_REASON}: #{e.message}")
       rescue StandardError => e
         Rails.logger.error("[Gitops::RepoSync] #{@repository.id}: #{e.class}: #{e.message}")
         Result.new(ok?: false, error: "Repository sync failed")
@@ -159,13 +167,23 @@ module System
       # repository's vault_credential_path — and, for an SSH remote, host
       # verification whether or not a credential is configured. Returns {}
       # for anonymous public HTTPS clones.
+      #
+      # Dispatch is on the repository's own predicates (the same ones its
+      # credential contract and validation use). There is no third arm: git
+      # decides the transport from the URL, and running it with an
+      # environment this service did not build — git+ssh:// would go to the
+      # PATH ssh and the service user's known_hosts, git:// is cleartext,
+      # file:// clones a hub-local directory — is exactly the unverified
+      # connection the pin exists to prevent. Fails closed, before git.
       def build_git_env
-        if ::System::Gitops::SshRemote.ssh?(@repository.repo_url)
+        if @repository.ssh_remote?
           build_ssh_env
-        elsif @repository.repo_url.start_with?("https://", "http://")
+        elsif @repository.https_remote?
           build_https_env
         else
-          {}
+          raise UnsupportedRemoteError,
+                "#{@repository.repo_url} is neither an https:// URL nor a parseable ssh remote " \
+                "(ssh://[user@]host[:port]/path or [user@]host:path); refusing to run git"
         end
       end
 
