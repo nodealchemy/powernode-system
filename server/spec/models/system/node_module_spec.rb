@@ -49,43 +49,70 @@ RSpec.describe System::NodeModule, type: :model do
     # IMP-3f6c2f35c50d: the name is one component of the on-node
     # /etc/sudoers.d/powernode-<module>-<id> drop-in, and the agent refuses any
     # name outside [a-zA-Z0-9_-]+. The manifest import checks it, but a rename
-    # (node_modules_controller#update) never goes through the import.
+    # (node_modules_controller#update) never goes through the import. The rule
+    # therefore binds only a base module that HAS active sudoers grants: package
+    # modules legitimately carry raw distro names (python3.12, libstdc++6, g++)
+    # and no drop-in is ever rendered for them.
     describe 'name as a sudoers drop-in component' do
       let(:node_module) { create(:system_node_module, name: 'fine-name_1') }
 
-      [ '../x', 'a/b', 'a.b', 'a~', "caf\u00e9", 'a b', "a\nb", "a\n" ].each do |bad|
-        it "rejects the name #{bad.inspect} on create" do
-          expect(build(:system_node_module, name: bad)).not_to be_valid
+      def grant!(mod, state: 'active')
+        user = create(:system_service_user)
+        System::SudoersGrant.create!(node_module: mod, service_user: user, grant_id: "g#{SecureRandom.hex(3)}",
+                                     runas_user: 'root', commands: [ '/bin/true' ], state: state)
+      end
+
+      [ 'python3.12', 'libstdc++6', 'g++', 'a b', 'has.dot', 'a~' ].each do |raw|
+        it "still creates a module named #{raw.inspect} (no sudoers grants)" do
+          expect(build(:system_node_module, name: raw)).to be_valid
         end
 
-        it "rejects renaming to #{bad.inspect}" do
+        it "still renames a grant-less module to #{raw.inspect}" do
+          node_module.name = raw
+          expect(node_module).to be_valid
+        end
+      end
+
+      [ '../x', 'a/b', 'a.b', 'a~', "caf\u00e9", 'a b', "a\nb", "a\n" ].each do |bad|
+        it "refuses renaming a module WITH active grants to #{bad.inspect}" do
+          grant!(node_module)
           node_module.name = bad
           expect(node_module).not_to be_valid
           expect(node_module.errors[:name]).to be_present
         end
       end
 
-      it 'accepts the names the fleet actually uses' do
-        %w[postgres-primary dev-cell Mod_9 a].each do |ok|
-          expect(build(:system_node_module, name: ok)).to be_valid, ok
-        end
-      end
-
-      it 'caps the name so the longest legal drop-in name still fits the agent cap' do
+      it 'refuses an over-long rename on a module with active grants, accepts the cap' do
+        grant!(node_module)
         max = described_class::NAME_MAX_LENGTH
-        expect(build(:system_node_module, name: 'm' * max)).to be_valid
-        expect(build(:system_node_module, name: 'm' * (max + 1))).not_to be_valid
+        node_module.name = 'm' * max
+        expect(node_module).to be_valid
+        node_module.name = 'm' * (max + 1)
+        expect(node_module).not_to be_valid
         expect(System::SudoersGrant.filename_for('m' * max, 'i' * 64).bytesize)
           .to be <= System::SudoersGrant::MAX_FILENAME_LENGTH
       end
 
-      it 'leaves a dependant module (named "<parent> for <node>") alone' do
+      it 'accepts a legal rename on a module with active grants' do
+        grant!(node_module)
+        node_module.name = 'renamed-ok_1'
+        expect(node_module).to be_valid
+      end
+
+      it 'does not bind a module whose only grants are removed' do
+        grant!(node_module, state: 'removed')
+        node_module.name = 'has.dot'
+        expect(node_module).to be_valid
+      end
+
+      it 'leaves a dependant module (named "<parent>-for-<node>") alone' do
         parent = create(:system_node_module, name: 'base-mod')
-        child = build(:system_node_module, name: 'base-mod for web 1.example', parent_module: parent)
+        child = build(:system_node_module, name: 'base-mod-for-web-1.example', parent_module: parent)
         expect(child).to be_valid
       end
 
       it 'does not re-validate a legacy name when an unrelated field changes' do
+        grant!(node_module)
         node_module.update_columns(name: 'legacy.name')
         node_module.reload.description = 'edited'
         expect(node_module).to be_valid

@@ -167,15 +167,16 @@ module System
     validates :name, presence: true, uniqueness: { scope: :account_id, case_sensitive: false }
     # The name is a component of the on-node /etc/sudoers.d/powernode-<module>-<id>
     # drop-in, and the agent refuses one outside [a-zA-Z0-9_-]+ (see
-    # SudoersGrant::FILENAME_COMPONENT_RX). Checked on create and on rename only,
-    # so a legacy row that predates the rule stays editable in its other fields,
-    # and only for a base module: a dependant (parent_module_id set) is a per-node
-    # override that create_dependant! names "<parent> for <node>", carries no
-    # manifest of its own, and so never renders a drop-in under that name.
+    # SudoersGrant::FILENAME_COMPONENT_RX). It only matters for a base module that
+    # has active sudoers grants, so only that case is bound, and only when the
+    # name changes: package modules carry raw distro names (python3.12,
+    # libstdc++6, g++) and a dependant (parent_module_id set, named
+    # "<parent>-for-<node>") never renders a drop-in. The manifest import applies
+    # the same rule before any grant exists; this catches a later rename.
     validates :name, format: { with: ::System::SudoersGrant::FILENAME_COMPONENT_RX,
-                               message: "may only contain letters, digits, '_' and '-'" },
+                               message: "may only contain letters, digits, '_' and '-' while the module has sudoers grants" },
                      length: { maximum: NAME_MAX_LENGTH },
-                     if: -> { will_save_change_to_name? && parent_module_id.nil? }
+                     if: :name_names_a_sudoers_dropin?
     validates :variety, presence: true, inclusion: { in: VARIETIES }
     validates :priority, numericality: { only_integer: true, greater_than_or_equal_to: 0 }
 
@@ -742,6 +743,13 @@ module System
     class LadderError < StandardError; end
 
     private
+
+    # A persisted base module being renamed while it still has active grants: the
+    # only case where the name becomes part of a rendered drop-in path.
+    def name_names_a_sudoers_dropin?
+      will_save_change_to_name? && parent_module_id.nil? && persisted? &&
+        sudoers_grants.active.exists?
+    end
 
     def upward_refusal(environment, version)
       predecessor = environment.ladder_predecessor
