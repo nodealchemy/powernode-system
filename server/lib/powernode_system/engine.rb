@@ -853,10 +853,21 @@ module PowernodeSystem
                        "a fleet event. A node WITH a recorded key is always verified strictly, " \
                        "and out-of-band exec always refuses without one, whatever this says.",
           protected: true,
-          # An instance may ASK for a change (it parks for a person to decide).
-          # Passed only when the running core knows the option, so an extension
-          # promoted ahead of its core still boots.
-          **(::Ai::Tools::SiteSettingTool.method(:register_key).parameters.any? { |_, name| name == :machine_parkable } ? { machine_parkable: true } : {})
+          # An instance may ASK for a change (it parks for a person to decide),
+          # and only to TIGHTEN it (IMP-1765f6f09458): on (refuse a node with no
+          # recorded host key) is stricter than off, and unset reads as off, so
+          # a machine may ask to turn verification on and never to turn it off
+          # while it is on. Both options travel together, and only when the
+          # running core knows BOTH — a core that knows machine_parkable but not
+          # ordering would swallow the ArgumentError below and register the key
+          # machine-parkable with no ordering, which refuses every machine change
+          # (fail closed) — so an extension promoted ahead of its core still boots.
+          **(if %i[machine_parkable ordering].all? { |option| ::Ai::Tools::SiteSettingTool.method(:register_key).parameters.any? { |_, name| name == option } }
+               { machine_parkable: true,
+                 ordering: ->(requested, current) { [ true, false ].include?(requested) && (requested == true || current != true) } }
+             else
+               {}
+             end)
         )
 
         ::Ai::Tools::SiteSettingTool.register_key(
