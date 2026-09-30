@@ -218,23 +218,53 @@ RSpec.describe "Api::V1::System::NodeApi::StorageAssignments#credential", type: 
     # codebase works around it by re-fetching via Model.find(id) rather than
     # reusing the object (see CredentialIssuer#issue_credential_row!'s own
     # comment) — do the same here rather than rediscovering it as a failure.
+    # The backend's own fetch, granted by the live storage.smb_user.apply
+    # task #rotate! dispatched for this credential.
+    def fetch_new_credential_as_backend(new_cred)
+      get "/api/v1/system/node_api/storage_assignments/#{assignment.id}/credential",
+          params: { credential_id: new_cred.id }, headers: mtls_headers_for(backend_instance)
+      expect(response).to have_http_status(:ok)
+      json_response_data["password"]
+    end
+
+    # The consumer's remount completing WITH proof it now runs on
+    # `new_cred` — the one event that retires a deferred old credential.
+    # The completion result is what the agent reports (see
+    # RemountCoordinator#confirmed_credential_id), never the task options.
+    def confirm_remount!(new_cred)
+      task = create(:system_task,
+        account: account, operable: client_instance, command: "storage.mount", status: "complete",
+        options: { "assignment_id" => assignment.id, "remount" => true,
+                   "credential" => { "id" => new_cred.id, "kind" => "cifs_user_pass" } },
+        events: [ { "type" => "completed", "message" => "ok", "timestamp" => Time.current.iso8601,
+                    "result" => { "mounted_credential_id" => new_cred.id } } ])
+      ::System::Storage::RemountCoordinator.handle_completed_mount_task!(task)
+    end
+
     def rotate_credential_for(client_instance)
       short_id = client_instance.id.to_s.delete("-").first(12)
       credential.store_in_vault("username" => "node-#{short_id}", "password" => "s3cr3t-pw")
       ::System::StorageCredential.find(credential.id)
     end
 
-    it "still serves the new credential to the backend after the old one is revoked" do
+    # IMP-e48612a32273 Amendment A — a scheme-crossing rotation DEFERS the
+    # old credential's retirement: it stays "rotating" (its samba user still
+    # alive) until the consumer's remount confirms. #rotate_credential_for
+    # forces the OLD scheme, so this rotation is scheme-crossing. The new
+    # credential must be fetchable by the backend both while the old one is
+    # still rotating AND after the confirmed remount has retired it.
+    it "still serves the new credential to the backend while the old one is rotating and after the remount retires it" do
       old_credential = rotate_credential_for(client_instance)
 
       new_cred = ::System::Storage::CredentialIssuer.new(assignment: assignment).rotate!(old_credential)
 
-      expect(old_credential.reload.status).to eq("revoked")
+      expect(old_credential.reload.status).to eq("rotating")
+      expect(fetch_new_credential_as_backend(new_cred)).to eq(new_cred.vault_credentials["password"])
 
-      get "/api/v1/system/node_api/storage_assignments/#{assignment.id}/credential",
-          params: { credential_id: new_cred.id }, headers: mtls_headers_for(backend_instance)
-      expect(response).to have_http_status(:ok)
-      expect(json_response_data["password"]).to eq(new_cred.vault_credentials["password"])
+      confirm_remount!(new_cred)
+
+      expect(old_credential.reload.status).to eq("revoked")
+      expect(fetch_new_credential_as_backend(new_cred)).to eq(new_cred.vault_credentials["password"])
     end
 
     # IMP-eb6a3c299f4b increment 3 review — this used to assert rotation
@@ -247,10 +277,11 @@ RSpec.describe "Api::V1::System::NodeApi::StorageAssignments#credential", type: 
     # the REAL (increment-2) derivation — the two genuinely differ here, so
     # this is a scheme-crossing rotation, and increment 3 correctly
     # provisions the new username and deletes the OLD one (nothing else in
-    # this spec's fixtures needs it). The actual invariant this endpoint's
+    # this spec's fixtures needs it) — since IMP-e48612a32273 only once the
+    # consumer's remount confirms, not at rotation time. The actual invariant this endpoint's
     # spec exists to protect — never touching the NEW credential's own
     # username — is asserted directly below instead.
-    it "deletes only the OLD username after a scheme-crossing rotation, never the new one" do
+    it "deletes only the OLD username, and only once the remount confirms, after a scheme-crossing rotation" do
       old_credential = rotate_credential_for(client_instance)
       old_username = old_credential.vault_credentials["username"]
 
@@ -260,6 +291,10 @@ RSpec.describe "Api::V1::System::NodeApi::StorageAssignments#credential", type: 
 
       tasks = ::System::Task.where(command: "storage.smb_user.apply").order(:created_at)
       expect(tasks.where("options ->> 'action' = 'set_password'")).to be_empty
+      # DEFERRED (Amendment A): nothing retires the old username at rotation time.
+      expect(tasks.where("options ->> 'action' = 'delete'")).to be_empty
+
+      confirm_remount!(new_cred)
 
       delete_task = tasks.where("options ->> 'action' = 'delete'").last
       expect(delete_task).to be_present
