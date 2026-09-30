@@ -198,7 +198,11 @@ module System
             # returning this Hash directly as the tool result — the same
             # Result-path leak already fixed at SystemAcmeTool#renew_
             # certificate/#revoke_certificate, unguarded here.
-            if result.caller_safe == false
+            #
+            # IMP-156eb1a7bdbc — fail CLOSED: forward only on an explicit
+            # truthy caller_safe. `== false` let an unannotated Result (nil)
+            # through verbatim.
+            unless result.caller_safe
               Rails.logger.error("[AcmeCertificateProvisionExecutor] #{result.error}")
               return failure("Certificate issuance failed")
             end

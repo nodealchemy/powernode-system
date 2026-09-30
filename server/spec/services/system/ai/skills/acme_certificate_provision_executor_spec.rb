@@ -237,8 +237,11 @@ RSpec.describe System::Ai::Skills::AcmeCertificateProvisionExecutor do
       before do
         allow(::Acme::CertificateManager).to receive(:issue!) do |certificate:|
           certificate.transition_to!("failed", error_message: "ACME server unreachable")
+          # IMP-156eb1a7bdbc — explicitly caller_safe: this example is about
+          # the forward-and-keep-the-row path. An UNANNOTATED Result is now
+          # withheld (see the caller_safe nil context below).
           ::Acme::CertificateManager::Result.new(
-            ok?: false, certificate: certificate, error: "ACME server unreachable"
+            ok?: false, certificate: certificate, error: "ACME server unreachable", caller_safe: true
           )
         end
       end
