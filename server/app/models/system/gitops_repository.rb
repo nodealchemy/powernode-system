@@ -21,6 +21,9 @@ module System
     include System::Base
 
     STATUSES = %w[pending success failed partial].freeze
+    # Characters git-check-ref-format(1) forbids anywhere in a ref name:
+    # ASCII control characters, space, DEL, ~ ^ : ? * [ and backslash.
+    BRANCH_FORBIDDEN_CHARS = /[\x00-\x20\x7f~^:?*\[\\]/
 
     belongs_to :account
     has_many :sync_runs,
@@ -37,6 +40,7 @@ module System
 
     validate :repo_url_must_not_contain_inline_credentials
     validate :repo_url_must_be_a_supported_remote
+    validate :branch_must_be_a_valid_ref_name
     validate :path_prefix_must_be_relative
 
     scope :enabled, -> { where(enabled: true) }
@@ -152,6 +156,29 @@ module System
       return if https_remote? || ssh_remote?
 
       errors.add(:repo_url, "must be an https:// URL or an ssh remote (ssh://[user@]host[:port]/path or [user@]host:path)")
+    end
+
+    # `branch` reaches `git clone --branch` and `git fetch` argv. A leading
+    # "-" would read as an option (`--upload-pack=<cmd>` runs on the remote);
+    # the rest is git's own check-ref-format rule (git-check-ref-format(1)),
+    # applied here so a bad name is refused at registration rather than on
+    # the first sync tick.
+    def branch_must_be_a_valid_ref_name
+      return if branch.blank?
+
+      if branch.start_with?("-")
+        errors.add(:branch, "must not start with '-'")
+      elsif !valid_ref_name?(branch)
+        errors.add(:branch, "is not a valid git branch name")
+      end
+    end
+
+    def valid_ref_name?(name)
+      return false if name == "@" || name.start_with?("/") || name.end_with?("/", ".", ".lock")
+      return false if name.include?("..") || name.include?("//") || name.include?("@{")
+      return false if name.match?(BRANCH_FORBIDDEN_CHARS)
+
+      name.split("/").none? { |segment| segment.start_with?(".") || segment.end_with?(".lock") }
     end
 
     def path_prefix_must_be_relative

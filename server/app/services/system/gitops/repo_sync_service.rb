@@ -113,15 +113,20 @@ module System
         @work_tree_path ||= WORK_TREE_ROOT.join(@repository.account_id.to_s, @repository.id.to_s).to_s
       end
 
+      # `--` closes git's option parsing before the operator-controlled
+      # positionals (branch is also refused by the model when it starts with
+      # "-"; repo_url by the scheme validation). `git reset --hard` takes no
+      # `--` before a tree-ish (that form means pathspecs), and
+      # "origin/<branch>" cannot start with "-".
       def clone_fresh
         FileUtils.rm_rf(work_tree_path)
         run_git!("clone", "--branch", @repository.branch, "--single-branch", "--depth", "1",
-                 @repository.repo_url, work_tree_path,
+                 "--", @repository.repo_url, work_tree_path,
                  cwd: WORK_TREE_ROOT.to_s)
       end
 
       def fast_forward
-        run_git!("fetch", "origin", @repository.branch, cwd: work_tree_path)
+        run_git!("fetch", "--", "origin", @repository.branch, cwd: work_tree_path)
         run_git!("reset", "--hard", "origin/#{@repository.branch}", cwd: work_tree_path)
       end
 
