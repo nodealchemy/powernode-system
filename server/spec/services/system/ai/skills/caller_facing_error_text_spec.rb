@@ -182,7 +182,11 @@ RSpec.describe "Skill executors: caller-facing error text (IMP-156eb1a7bdbc)" do
   end
 
   describe System::Ai::Skills::PlatformMaintenanceExecutor do
-    let(:exec) { described_class.new(account: account) }
+    # The inline-renewal path: an explicit, system.acme.renew-gated request
+    # for one certificate_id. (The in-process fleet-tick path never renews
+    # inline — platform_maintenance_executor_cert_rotate_spec.rb.)
+    let(:renewer) { create(:user, account: account, permissions: [ "system.acme.renew" ]) }
+    let(:exec) { described_class.new(account: account, user: renewer) }
     let!(:cert) { create(:system_acme_certificate, :expiring_soon, account: account) }
 
     # The call shape: CertificateManager.renew! takes `certificate:` as a
