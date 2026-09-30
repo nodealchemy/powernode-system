@@ -57,10 +57,11 @@ RSpec.describe "SystemFleetTool disk-image verb gating (HIER-P2H)" do
   # The seeded Disk Image Manager identity, scored so DEFAULT_TRUST_CONDITIONS
   # (trust_tier_minimum "monitored") match, with its agent-scoped rows minted
   # by the reconciler exactly as a booted install has them.
-  def seeded_disk_image_manager!
+  def seeded_disk_image_manager!(creator: nil)
     identity = ::System::Governance::PolicyDeclarations::AGENT_IDENTITIES.fetch("disk-image-manager")
     agent = create(:ai_agent, account: account, name: identity[:name],
-                              agent_type: identity[:agent_type], source_key: "disk-image-manager")
+                              agent_type: identity[:agent_type], source_key: "disk-image-manager",
+                              **{ creator: creator }.compact)
     create(:ai_agent_trust_score, :monitored, account: account, agent: agent)
     ::System::Governance::PolicyReconciler.new(account: account).reconcile!
     agent
@@ -568,10 +569,10 @@ RSpec.describe "SystemFleetTool disk-image verb gating (HIER-P2H)" do
     # runs inline, proving the row — not the descriptor — decides.
     describe "the seeded disk-image-manager row is what governs the agent's own call" do
       # The inline replay re-asks BaseTool.permitted?(agent:), which is true
-      # for an account-owned agent only when SOME user in its account holds
-      # the tool floor — materialise the operator so the account has one.
-      let!(:operator) { user }
-      let!(:manager) { seeded_disk_image_manager! }
+      # for an account-owned agent only when its CREATOR holds the tool floor
+      # (IMP-82db8ba318aa) — the operator creates the manager, so the agent
+      # carries exactly the authority its creator holds.
+      let!(:manager) { seeded_disk_image_manager!(creator: user) }
       let!(:seeded_row) do
         row = ::Ai::InterventionPolicy.find_by(account: account, action_category: category,
                                                scope: "agent", ai_agent_id: manager.id)
