@@ -20,8 +20,15 @@
 # node_module_id carries NO foreign key: the module may itself have been
 # destroyed, which is one of the removals this records. Rows die with their node
 # (cascade) and with the account, and expire on their own (expires_at).
+#
+# Guarded by table_exists? because server/db/schema.rb already carries this
+# table: a fresh database built with db:schema:load still sees this migration as
+# pending (the schema version header predates it), and an unguarded create_table
+# there raises PG::DuplicateTable and aborts every later migration.
 class CreateSystemNodeAssignmentClearances < ActiveRecord::Migration[8.1]
-  def change
+  def up
+    return if table_exists?(:system_node_assignment_clearances)
+
     create_table :system_node_assignment_clearances, id: :uuid, default: -> { "uuidv7()" } do |t|
       t.references :account, null: false, type: :uuid, foreign_key: true
       t.references :node, null: false, type: :uuid, foreign_key: { to_table: :system_nodes, on_delete: :cascade }
@@ -37,5 +44,9 @@ class CreateSystemNodeAssignmentClearances < ActiveRecord::Migration[8.1]
               name: "index_node_assignment_clearances_on_node_and_module"
     add_index :system_node_assignment_clearances, :node_module_id
     add_index :system_node_assignment_clearances, :expires_at
+  end
+
+  def down
+    drop_table :system_node_assignment_clearances, if_exists: true
   end
 end
