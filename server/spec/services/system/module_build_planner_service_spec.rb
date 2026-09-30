@@ -65,6 +65,12 @@ RSpec.describe System::ModuleBuildPlannerService do
     allow(fake_client).to receive(:get_commit)
       .with(owner, repo, head_sha)
       .and_return(files: paths.map { |p| { filename: p } })
+    # A scripts/module-build/* path makes the planner read stage15.sh to attribute
+    # it to modules (IMP-24d473c6f448); nil = unreadable, which falls back to
+    # module-forge only — what every case in this file that touches those paths
+    # asserts. The attribution itself is covered in
+    # module_build_planner_service_arm_attribution_spec.rb.
+    allow(fake_client).to receive(:get_file_content).and_return(nil)
     fake_client
   end
 

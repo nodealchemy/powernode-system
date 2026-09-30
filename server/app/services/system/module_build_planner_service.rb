@@ -89,8 +89,19 @@ module System
     # silently never reached any builder. The manifest's "every module-forge
     # rebuild re-syncs those scripts with zero drift risk" holds only if a
     # rebuild is actually triggered.
+    #
+    # module-forge stays in the plan for EVERY such change. What was missing
+    # (IMP-24d473c6f448) is the module the change is actually FOR: a change
+    # confined to one module's stage15 arm, or to a helper that arm calls, could
+    # not target that module. #build_script_modules adds those, derived from the
+    # scripts' own case arms by System::ModuleBuildScriptAttribution.
     BUILD_SCRIPTS_PATH_RX = %r{\Ascripts/module-build/}.freeze
     BUILD_SCRIPTS_FORCED_MODULE = "module-forge"
+
+    # Upper bound on a stage15.sh copy fetched for attribution (the real one is
+    # ~100 KB). Past it the copy is not parsed and planning falls back to
+    # module-forge only, so a hostile or corrupted blob cannot cost unbounded work.
+    BUILD_SCRIPT_MAX_BYTES = 512 * 1024
 
     # Mirrors the bash script's `^agent/` special case.
     AGENT_PATH_RX = %r{\Aagent/}.freeze
@@ -288,6 +299,7 @@ module System
       changed_file_count = 0
       repo_full_name = nil
       unmapped_core = []
+      build_script_paths = []
 
       unless catch_all
         repo_full_name = source_repo.presence || ci_build_source_repo
@@ -316,6 +328,7 @@ module System
 
           if path.match?(BUILD_SCRIPTS_PATH_RX)
             dirty << BUILD_SCRIPTS_FORCED_MODULE
+            build_script_paths << path
             next
           end
 
@@ -339,6 +352,10 @@ module System
           end
 
           dirty << MANIFEST_EXTENSION_MODULE if path.match?(MANIFEST_EXTENSION_PATH_RX)
+        end
+
+        unless build_script_paths.empty?
+          dirty.merge(build_script_modules(account, repo_full_name, base_sha, head_sha, build_script_paths))
         end
       end
 
@@ -638,10 +655,7 @@ module System
     # Takes the ALREADY-RESOLVED repo name — the caller resolves it so the path
     # rules can branch on which repo is being diffed.
     def changed_paths_for(account, base_sha, head_sha, repo_full_name)
-      credential = ::System::CiRunnerRegistrationResolver.new(account: account).credential
-      raise PlanningError, "no active Gitea credential resolvable for account #{account.id}" unless credential
-
-      client = ::Devops::Git::ApiClient.for(credential)
+      client = gitea_client_for(account)
       owner, repo = repo_full_name.split("/", 2)
 
       comparison = client.compare_commits(owner, repo, base_sha, head_sha)
@@ -692,6 +706,53 @@ module System
             "Gitea compare of #{repo_full_name} #{base_sha}..#{head_sha} failed: status #{e.status} " \
             "— if these shas live in a different repo, pass source_repo (core changes need " \
             "source_repo: #{CORE_SOURCE_REPO_DEFAULT})"
+    end
+
+    def gitea_client_for(account)
+      credential = ::System::CiRunnerRegistrationResolver.new(account: account).credential
+      raise PlanningError, "no active Gitea credential resolvable for account #{account.id}" unless credential
+
+      ::Devops::Git::ApiClient.for(credential)
+    end
+
+    # IMP-24d473c6f448 — the modules a scripts/module-build/* change is FOR, on top
+    # of module-forge. What the planner receives from Gitea is a list of changed
+    # FILE NAMES (the compare API returns commits only; each commit's detail
+    # carries filename/status with no patch), so a hunk-level attribution has
+    # nothing to read. Instead the range's two copies of stage15.sh are fetched
+    # through the existing contents call (#get_file_content, a bounded read of one
+    # file at one ref) and compared arm by arm — which is also the NET change
+    # across a multi-commit range, where per-commit hunks could cancel out.
+    #
+    # Never raises: any failure (unfetchable copy, oversize copy, a script the
+    # attribution cannot read) is logged and returns no extra modules, which is
+    # exactly the module-forge-only plan this rule produced before it existed.
+    def build_script_modules(account, repo_full_name, base_sha, head_sha, script_paths)
+      client = gitea_client_for(account)
+      owner, repo = repo_full_name.split("/", 2)
+      stage15 = ::System::ModuleBuildScriptAttribution::STAGE15_PATH
+
+      head_script = fetch_build_script(client, owner, repo, stage15, head_sha)
+      base_script = script_paths.include?(stage15) ? fetch_build_script(client, owner, repo, stage15, base_sha) : nil
+
+      ::System::ModuleBuildScriptAttribution
+        .modules_for(changed_paths: script_paths, base_stage15: base_script, head_stage15: head_script)
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[ModuleBuildPlannerService] build-script attribution failed for #{repo_full_name} " \
+        "#{base_sha.to_s[0, 7]}..#{head_sha.to_s[0, 7]} (#{e.class}: #{e.message}); " \
+        "planning #{BUILD_SCRIPTS_FORCED_MODULE} only for the build-script change"
+      )
+      Set.new
+    end
+
+    def fetch_build_script(client, owner, repo, path, ref)
+      content = client.get_file_content(owner, repo, path, ref)
+      text = content && content[:content]
+      raise PlanningError, "#{path} at #{ref.to_s[0, 7]} could not be read" if text.nil?
+      raise PlanningError, "#{path} at #{ref.to_s[0, 7]} is #{text.bytesize} bytes (limit #{BUILD_SCRIPT_MAX_BYTES})" if text.bytesize > BUILD_SCRIPT_MAX_BYTES
+
+      text
     end
 
     def ci_build_source_repo
