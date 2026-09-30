@@ -91,4 +91,23 @@ RSpec.describe System::PrivilegedModuleAllowlist do
       expect(described_class.configured_ids).to eq([])
     end
   end
+
+  # A sibling registration raising must not leave this key unregistered: the REST
+  # door would then take it as an ordinary setting, with no value check.
+  describe "registration isolation" do
+    it "is registered by its own to_prepare block, ahead of the block that registers the other keys" do
+      source = File.read(PowernodeSystem::Engine.root.join("lib/powernode_system/engine.rb"))
+      own = source.index("::System::PrivilegedModuleAllowlist::SETTING_KEY,\n          setting_type")
+      other = source.index("::System::SshExecutionService::REQUIRE_HOST_KEY_SETTING")
+      blocks = source[0...own].scan("config.to_prepare do").size
+      other_blocks = source[0...other].scan("config.to_prepare do").size
+
+      expect(own).to be_present
+      expect(blocks).to be < other_blocks, "the allowlist key shares a to_prepare block with a sibling registration"
+    end
+
+    it "registers the value check with SiteSetting" do
+      expect(SiteSetting.value_checks).to include(key)
+    end
+  end
 end
