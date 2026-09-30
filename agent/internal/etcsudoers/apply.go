@@ -1,9 +1,9 @@
 package etcsudoers
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -43,19 +43,34 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 
 	kept := map[string]struct{}{}
 	var firstWriteErr error
+	// refused holds one error per grant refused by the filename rule, so an
+	// operator sees every bad grant rather than only the first.
+	var refused []error
 
 	for _, g := range grants {
-		body := Render(g, now())
-		path := filepath.Join(dir, g.Filename())
-		// The directory check above is not enough: Filename() embeds the
-		// module name and grant id, so a ".." in either would put the file
-		// outside dir. Judge the path actually written.
+		// Validate the name BEFORE anything is rendered or written: Filename()
+		// embeds the module name and grant id, so a "/" or ".." in either would
+		// put the file outside dir, and a "." or "~" would leave a drop-in sudo
+		// silently ignores. Refuse this grant alone and keep applying the rest;
+		// the returned error reaches the reconciler's OnError hook.
+		path, err := g.PathIn(dir)
+		if err != nil {
+			refused = append(refused, fmt.Errorf("refusing sudoers grant: %w", err))
+			continue
+		}
+		if _, dup := kept[path]; dup {
+			// "-" is legal in both components, so (a-b, c) and (a, b-c) join to
+			// the same basename; the later must not silently replace the earlier.
+			refused = append(refused, fmt.Errorf("refusing sudoers grant: module %q grant %q renders to %s, already written by an earlier grant", g.ModuleName, g.Grant.ID, g.Filename()))
+			continue
+		}
 		if err := writeguard.Check(path); err != nil {
 			if firstWriteErr == nil {
 				firstWriteErr = err
 			}
 			continue
 		}
+		body := Render(g, now())
 		if err := Validate(body); err != nil {
 			// Skip this grant but keep going — one bad file shouldn't
 			// invalidate every other module's sudo grants. The orphan
@@ -79,13 +94,11 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 		kept[path] = struct{}{}
 	}
 
-	if err := sweep(dir, kept); err != nil {
-		if firstWriteErr == nil {
-			return err
-		}
+	sweepErr := sweep(dir, kept)
+	if firstWriteErr == nil && len(refused) == 0 {
+		return sweepErr
 	}
-
-	return firstWriteErr
+	return errors.Join(append(refused, firstWriteErr)...)
 }
 
 // sweep removes any /etc/sudoers.d/powernode-* file whose path is not
@@ -116,7 +129,15 @@ func sweep(dir string, kept map[string]struct{}) error {
 		if name == OperatorBreakGlassFilename {
 			continue
 		}
-		path := filepath.Join(dir, name)
+		// A ReadDir name cannot carry a separator, but the unlink still goes
+		// through the same direct-child assertion as the writer. A present
+		// powernode-* entry whose name would no longer validate (stale, or
+		// inert to sudo because of a dot/tilde) is an ordinary orphan: it is
+		// never in `kept`, so it is removed here, as a direct child only.
+		path, err := childOf(dir, name)
+		if err != nil {
+			continue
+		}
 		if _, want := kept[path]; want {
 			continue
 		}

@@ -28,8 +28,9 @@ func TestDefaultTargetsAreRefusedUnderTheGuard(t *testing.T) {
 }
 
 // F5: the directory passes, but a grant whose module name or id carries ".."
-// renders to a path OUTSIDE it. ApplyAt must judge each file it writes, and no
-// file may appear outside the sandbox.
+// renders to a path OUTSIDE it. The filename rule now refuses the grant before
+// any path is built (so the guard is never reached, and Capture records
+// nothing); no file may appear outside the sandbox either way.
 func TestApplyAtRefusesAGrantThatEscapesItsDirectory(t *testing.T) {
 	base := t.TempDir()
 	dir := filepath.Join(base, "sudoers.d")
@@ -46,8 +47,11 @@ func TestApplyAtRefusesAGrantThatEscapesItsDirectory(t *testing.T) {
 	g := Grant{ModuleName: "a", Grant: manifest.ManifestSudoer{ID: "/../../evil", User: "u", RunasUser: "root", Commands: []string{"/bin/true"}}}
 	var err error
 	rec := writeguard.Capture(func() { err = ApplyAt([]Grant{g}, dir, staticClock()) })
-	if err == nil || len(rec) == 0 {
-		t.Fatalf("escaping grant was not refused: err=%v recorded=%v", err, rec)
+	if err == nil {
+		t.Fatalf("escaping grant was not refused: recorded=%v", rec)
+	}
+	if len(rec) != 0 {
+		t.Errorf("the filename rule should refuse before the guard is reached; recorded %v", rec)
 	}
 	entries, _ := os.ReadDir(base)
 	for _, e := range entries {
