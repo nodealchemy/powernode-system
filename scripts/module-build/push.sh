@@ -255,8 +255,16 @@ mapfile -t _core_args < <(core_ref_hash_args "$MODULE" "${CORE_REF:-}")
 # again for every module without a pinned snapshot.
 _push_snapshot=$(jq -r '.build.apt_snapshot // "none"' /tmp/manifest.json 2>/dev/null || echo "none")
 BUILD_INPUTS_ARGS+=(--apt-snapshot "$_push_snapshot")
+# Keep the hash script's stderr: a failure (python3 missing, an unparseable
+# stage15.sh dispatch) publishes no annotation, so the NEXT build of this module
+# cannot skip. Say so here rather than let it read as an ordinary empty hash.
+_push_hash_err=$(mktemp 2>/dev/null || echo /dev/null)
 BUILD_INPUTS_HASH=$(bash "$PUSH_SCRIPT_DIR/compute-build-inputs-hash.sh" \
-  "${BUILD_INPUTS_ARGS[@]}" 2>/dev/null || true)
+  "${BUILD_INPUTS_ARGS[@]}" 2>"$_push_hash_err" || true)
+if [ -z "$BUILD_INPUTS_HASH" ]; then
+  echo "[push] WARNING: build-inputs hash failed for $MODULE; no annotation will be published, so its next build cannot skip: $(tr '\n' ' ' <"$_push_hash_err" | head -c 500)" >&2
+fi
+[ "$_push_hash_err" = /dev/null ] || rm -f "$_push_hash_err"
 echo "[push] build-inputs sha256 for $MODULE: ${BUILD_INPUTS_HASH:-<empty>}"
 
 # oras complains about absolute paths in source operands.

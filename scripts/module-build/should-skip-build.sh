@@ -221,8 +221,16 @@ local_args=(--module "$MODULE" --repo "$REPO" --ref "$REF" "${HASH_ARGS[@]+"${HA
 mapfile -t _core_args < <(core_ref_hash_args "$MODULE" "$CORE_REF_ARG")
 [ ${#_core_args[@]} -gt 0 ] && local_args+=("${_core_args[@]}")
 
-local_hash=$(bash "$SCRIPT_DIR/compute-build-inputs-hash.sh" "${local_args[@]}" 2>/dev/null) \
-  || build "could not compute local inputs hash for $MODULE"
+# The hash script's stderr says WHY it failed (python3 missing, an unparseable
+# stage15.sh dispatch, a missing helper). Discarding it made every such failure
+# look like an ordinary BUILD, silently turning the skip off for every module.
+_hash_err=$(mktemp 2>/dev/null || echo /dev/null)
+local_hash=$(bash "$SCRIPT_DIR/compute-build-inputs-hash.sh" "${local_args[@]}" 2>"$_hash_err") || {
+  note "WARNING: inputs hash failed for $MODULE, falling back to BUILD: $(tr '\n' ' ' <"$_hash_err" | head -c 500)"
+  [ "$_hash_err" = /dev/null ] || rm -f "$_hash_err"
+  build "could not compute local inputs hash for $MODULE"
+}
+[ "$_hash_err" = /dev/null ] || rm -f "$_hash_err"
 [ -n "$local_hash" ] || build "local inputs hash empty for $MODULE"
 
 # 2. What was the last published artifact built from? A first-ever publish has
