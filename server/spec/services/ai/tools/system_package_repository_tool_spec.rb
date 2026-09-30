@@ -369,4 +369,37 @@ RSpec.describe Ai::Tools::SystemPackageRepositoryTool do
       expect(r[:success]).to be false
     end
   end
+
+  # IMP-156eb1a7bdbc — link_repository_platform looked the platform up
+  # UNSCOPED, so for an account-scoped repo a foreign platform id reached
+  # PackageRepositoryPlatform's account_consistency validation, whose message
+  # named the other tenant's account id — and even without the id, "not
+  # found" vs "must belong to the same account" told the caller the foreign
+  # platform exists. For an account-scoped repo the lookup is now the repo's
+  # own account, so a foreign platform reads exactly like a nonexistent one.
+  describe "system_link_repository_platform across tenants" do
+    let(:other_account) { create(:account) }
+    let(:repo)          { create(:system_package_repository, account: account) }
+    let(:foreign)       { create(:system_node_platform, account: other_account) }
+
+    it "answers a foreign platform exactly as it answers a nonexistent one, naming no account" do
+      foreign_result = call("system_link_repository_platform", repository_id: repo.id, node_platform_id: foreign.id)
+      missing_id     = SecureRandom.uuid
+      missing_result = call("system_link_repository_platform", repository_id: repo.id, node_platform_id: missing_id)
+
+      expect(foreign_result[:success]).to be false
+      expect(foreign_result.to_s).not_to include(other_account.id)
+      expect(foreign_result[:error].sub(foreign.id, "<id>")).to eq(missing_result[:error].sub(missing_id, "<id>"))
+      expect(::System::PackageRepositoryPlatform.where(package_repository: repo)).to be_empty
+    end
+
+    it "still links a same-account platform" do
+      own = create(:system_node_platform, account: account)
+
+      r = call("system_link_repository_platform", repository_id: repo.id, node_platform_id: own.id)
+
+      expect(r[:success]).to be true
+      expect(r[:data][:linked]).to be true
+    end
+  end
 end

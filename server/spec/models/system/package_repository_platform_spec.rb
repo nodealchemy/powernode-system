@@ -27,6 +27,19 @@ RSpec.describe System::PackageRepositoryPlatform do
         expect(link).not_to be_valid
         expect(link.errors[:node_platform].first).to match(/same account/i)
       end
+
+      # IMP-156eb1a7bdbc — the message is rendered to the caller (the
+      # controller's render_validation_error, the MCP tool's full_messages),
+      # so it must not name the OTHER tenant's account id — nor, for
+      # symmetry, the caller's own.
+      it "does not name either account id in the rejection" do
+        link = described_class.new(package_repository: repo, node_platform: platform_b)
+        link.valid?
+
+        text = link.errors.full_messages.join(" ")
+        expect(text).not_to include(account_b.id)
+        expect(text).not_to include(account_a.id)
+      end
     end
 
     context "with a shared repository" do

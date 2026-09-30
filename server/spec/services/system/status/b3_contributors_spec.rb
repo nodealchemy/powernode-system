@@ -447,6 +447,24 @@ RSpec.describe "B3 status contributors" do
       expect(components(contributor).map(&:id)).to include(own.id)
       expect(components(contributor).map(&:id)).not_to include(other.id)
     end
+
+    # IMP-156eb1a7bdbc — last_renewal_error is CertificateManager's raw
+    # `e.message` (ACME/DNS/driver text), persisted. Condition evidence is read
+    # back by core platform_status_tool, i.e. by the model provider, so it
+    # carries only whether a renewal error is recorded — the same boolean
+    # SystemAcmeTool#serialize_certificate already reduces it to.
+    it "reduces a persisted renewal error to a boolean in the Lifecycle evidence" do
+      record = cert!(status: "failed")
+      record.update_columns(last_renewal_error: "MARKER-156eb1 lego stderr /var/lib/acme/account.key")
+
+      evidence = condition(contributor, record, "Lifecycle")["evidence"]
+
+      expect(evidence.to_s).not_to include("MARKER-156eb1")
+      expect(evidence).not_to have_key("last_renewal_error")
+      expect(evidence["last_renewal_error_present"]).to be(true)
+      expect(condition(contributor, cert!(status: "valid", expires_at: 90.days.from_now), "Lifecycle")
+               .dig("evidence", "last_renewal_error_present")).to be(false)
+    end
   end
 
   # ── federation_peer ──────────────────────────────────────────────────────

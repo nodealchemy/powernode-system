@@ -286,6 +286,46 @@ RSpec.describe System::Ai::Skills::AcmeCertificateProvisionExecutor do
       end
     end
 
+    # IMP-156eb1a7bdbc — the check was `caller_safe == false`, which FAILS
+    # OPEN: a Result built without the key (caller_safe nil) forwarded its
+    # error verbatim. Forwarding requires an explicit truthy annotation, the
+    # same rule SystemAcmeTool#renew_certificate/#revoke_certificate apply.
+    context "when issuance fails with a Result that carries no caller_safe annotation (nil)" do
+      before do
+        allow(::Acme::CertificateManager).to receive(:issue!) do |certificate:|
+          ::Acme::CertificateManager::Result.new(
+            ok?: false, certificate: certificate,
+            error: "MARKER-156eb1 unannotated internal detail"
+          )
+        end
+      end
+
+      it "withholds the text, as it does for caller_safe: false" do
+        r = exec.execute(common_name: "ops3.example.com", issuer: "letsencrypt-prod", challenge_type: "http-01")
+
+        expect(r[:success]).to be false
+        expect(r[:error]).to eq("Certificate issuance failed")
+        expect(deep_values(r).map(&:to_s).join(" ")).not_to include("MARKER-156eb1")
+      end
+    end
+
+    context "when issuance fails with a Result marked caller_safe: true" do
+      before do
+        allow(::Acme::CertificateManager).to receive(:issue!) do |certificate:|
+          ::Acme::CertificateManager::Result.new(
+            ok?: false, certificate: certificate, caller_safe: true,
+            error: "certificate was revoked mid-issuance; issue result discarded"
+          )
+        end
+      end
+
+      it "forwards the authored text" do
+        r = exec.execute(common_name: "ops4.example.com", issuer: "letsencrypt-prod", challenge_type: "http-01")
+
+        expect(r[:error]).to eq("Certificate issuance failed: certificate was revoked mid-issuance; issue result discarded")
+      end
+    end
+
     # Re-provision idempotency. The model scopes common_name uniqueness to
     # NON-terminal rows (only `revoked` is terminal), so a leftover `failed`
     # / `pending` / `issuing` row blocks a fresh `create!` for the same CN.

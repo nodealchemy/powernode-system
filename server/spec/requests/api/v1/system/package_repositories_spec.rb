@@ -200,6 +200,29 @@ RSpec.describe "/api/v1/system/package_repositories", type: :request do
                                                            "a cross-tenant platform link was created behind the 403"
       expect(foreign_repo.reload.package_repository_platforms.count).to eq(0)
     end
+
+    # IMP-156eb1a7bdbc — the platform lookup was unscoped, so an own-account
+    # repo + a FOREIGN platform id reached account_consistency, whose 422 named
+    # the other tenant's account id; and 422-vs-404 was an existence oracle on
+    # its own. The lookup is now the repo's account for an account-scoped repo.
+    it "answers a foreign platform with the same 404 as a nonexistent one, naming no account" do
+      own_repo = create(:system_package_repository, account: account_a)
+      headers  = auth_headers_for(user_a).merge("Content-Type" => "application/json")
+
+      post "/api/v1/system/package_repositories/#{own_repo.id}/link_platform",
+           params: { node_platform_id: platform.id }.to_json, headers: headers
+      foreign_status = response.status
+      foreign_body   = response.body
+
+      post "/api/v1/system/package_repositories/#{own_repo.id}/link_platform",
+           params: { node_platform_id: SecureRandom.uuid }.to_json, headers: headers
+
+      expect(foreign_status).to eq(404)
+      expect(response.status).to eq(404)
+      expect(foreign_body).not_to include(account_b.id)
+      expect(foreign_body).to eq(response.body)
+      expect(own_repo.reload.package_repository_platforms.count).to eq(0)
+    end
   end
 
   # IMP-c90ba4ec46da — `sync` was gated on a FLAT
