@@ -214,7 +214,15 @@ the reconcile continues — one failure never aborts the rest of the tick.
 |------------|----------------------------------|
 | `https://...` (anonymous OK) | optional |
 | `https://...` (private repo) | `{ username: "...", password: "..." }` in Vault KV |
-| `git@...` / `ssh://...` | `{ ssh_key: "----BEGIN..." }` in Vault KV |
+| `[user@]host:path` / `ssh://[user@]host[:port]/path` | `{ ssh_key: "----BEGIN..." }` in Vault KV |
+
+These are the only accepted `repo_url` forms. `git+ssh://` and `ssh+git://`
+(git-builtin ssh schemes the host-key pin does not cover), `git://` and
+`http://` (cleartext), `file://` and bare local paths are refused at
+registration, and a pre-existing row with such a URL fails its sync with
+`unsupported_remote` before git runs. An IPv6 literal must use the
+`ssh://[user@][addr]:port/path` form. `branch` must be a valid git branch
+name and must not start with `-`.
 
 **Important**: URLs with embedded credentials (e.g.,
 `https://user:pass@host/repo`) are rejected at validation time — they
@@ -240,8 +248,8 @@ up the rest as the operator approves the first batch.
 ### Host key verification
 
 Every SSH clone/pull runs `ssh` with `StrictHostKeyChecking=yes` against a
-per-call, mode-0600 `known_hosts` file holding only this repository's
-recorded host key(s) (`GitopsRepository#ssh_host_keys`, validated by
+per-call, unique, mode-0600 temporary `known_hosts` file holding only this
+repository's recorded host key(s) (`GitopsRepository#ssh_host_keys`, validated by
 `System::SshHostKeys` — the same validator and option set
 `System::SshExecutionService` uses for node connections: `-F /dev/null`,
 `GlobalKnownHostsFile=/dev/null`, `HostKeyAlias`, `CheckHostIP=no`,
@@ -253,7 +261,11 @@ on the path to the git host could serve manifests the reconciler applies.
   the URL's host and port, records what validates as source `tofu` (trust on
   first use) and emits `system.gitops.host_key_recorded` (low). If the scan
   returns nothing the sync fails with `host_key_unavailable` rather than
-  connect unverified.
+  connect unverified; a missing `ssh-keyscan` binary on the hub is named as
+  such in the same reason. Trust on first use applies only when **no**
+  record exists: a recorded key that no longer validates also fails with
+  `host_key_unavailable`, is never scanned over, and must be re-recorded by
+  an operator (`PATCH` with `ssh_host_key`).
 - **Changed key**: the sync fails with the named reason
   `host_key_mismatch` (the sync run's `error_message` and the repository's
   `last_error` start with it), emits `system.gitops.host_key_mismatch`
