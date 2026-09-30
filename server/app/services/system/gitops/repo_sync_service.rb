@@ -258,16 +258,29 @@ module System
         creds
       end
 
-      # The recorded host keys, or — when none are recorded — the keys a live
+      # The recorded host keys, or — when NO record exists — the keys a live
       # scan of the remote returns, recorded as trust-on-first-use and
       # announced. Memoized per sync: fetch + reset share one answer, and a
       # first-use scan happens once. Raises HostKeyUnavailableError when there
       # is nothing to verify against; this service never connects unverified.
+      #
+      # Trust on first use is keyed on the ABSENCE of a record, not on the
+      # record yielding no usable key: a present document whose entries no
+      # longer validate (corrupt column, a key type since dropped) refuses
+      # and is left alone — scanning would replace an explicit pin with
+      # whatever the network said.
       def host_keys
         return @host_keys if defined?(@host_keys)
 
-        recorded = ::System::Gitops::RepositoryHostKey.recorded_for(@repository)
-        return @host_keys = recorded if recorded.any?
+        if ::System::Gitops::RepositoryHostKey.recorded?(@repository)
+          recorded = ::System::Gitops::RepositoryHostKey.recorded_for(@repository)
+          if recorded.empty?
+            raise HostKeyUnavailableError,
+                  "the recorded host key for this repository is unreadable (no entry validates); it was NOT " \
+                  "replaced. Re-record the host's key on the repository (ssh_host_key) after confirming it out of band."
+          end
+          return @host_keys = recorded
+        end
 
         endpoint = ::System::Gitops::SshRemote.parse(@repository.repo_url)
         raise HostKeyUnavailableError, "#{@repository.repo_url} is not a parseable ssh remote" unless endpoint

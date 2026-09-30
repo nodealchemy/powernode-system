@@ -62,6 +62,15 @@ module System
         ::System::SshHostKeys.recorded_for(repository)
       end
 
+      # Whether a record EXISTS: a document holding at least one entry,
+      # validated or not. This, not recorded_for's emptiness, is what the
+      # sync keys trust-on-first-use on — a present record that no longer
+      # validates must refuse, never be scanned over.
+      def recorded?(repository)
+        document = repository.ssh_host_keys
+        document.is_a?(Hash) && document["keys"].is_a?(Array) && document["keys"].any?
+      end
+
       def fingerprints_for(repository)
         ::System::SshHostKeys.fingerprints(recorded_for(repository))
       end
