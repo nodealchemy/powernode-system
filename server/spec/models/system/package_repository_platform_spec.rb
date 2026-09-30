@@ -25,7 +25,21 @@ RSpec.describe System::PackageRepositoryPlatform do
       it "rejects linking to a different-account platform" do
         link = described_class.new(package_repository: repo, node_platform: platform_b)
         expect(link).not_to be_valid
-        expect(link.errors[:node_platform].first).to match(/same account/i)
+        expect(link.errors.details[:node_platform]).to include(error: :required)
+      end
+
+      # IMP-156eb1a7bdbc fix round (critic A M2) — the create/update doors
+      # pass a raw node_platform_id to create!. A foreign id must fail with
+      # the SAME error the required belongs_to gives a nonexistent id, or the
+      # difference tells a tenant another tenant's platform exists.
+      it "rejects a foreign platform exactly as it rejects a nonexistent one" do
+        foreign = described_class.new(package_repository: repo, node_platform_id: platform_b.id)
+        missing = described_class.new(package_repository: repo, node_platform_id: SecureRandom.uuid)
+
+        expect(foreign).not_to be_valid
+        expect(missing).not_to be_valid
+        expect(foreign.errors.full_messages).to eq(missing.errors.full_messages)
+        expect(foreign.errors.details).to eq(missing.errors.details)
       end
 
       # IMP-156eb1a7bdbc — the message is rendered to the caller (the

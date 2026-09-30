@@ -63,6 +63,25 @@ RSpec.describe "/api/v1/system/package_repositories", type: :request do
       }
     end
 
+    # IMP-156eb1a7bdbc fix round (critic A M2) — create links platforms by
+    # raw id. A foreign platform id and a nonexistent one must produce the
+    # same response, or POST create is an existence probe on another tenant.
+    it "answers a foreign node_platform_id exactly as a nonexistent one" do
+      foreign = create(:system_node_platform, account: account_b)
+      bodies = [ foreign.id, SecureRandom.uuid ].map do |pid|
+        params = create_params.deep_dup
+        params[:package_repository][:node_platform_ids] = [ pid ]
+        post "/api/v1/system/package_repositories", params: params.to_json,
+                                                     headers: auth_headers_for(user_a)
+        [ response.status, response.body ]
+      end
+
+      expect(bodies.first).to eq(bodies.last)
+      expect(bodies.first.first).to eq(422)
+      expect(bodies.first.last).not_to include(account_b.id)
+      expect(System::PackageRepository.where(name: "test-apt")).to be_empty
+    end
+
     it "creates an account-scoped repo for any operator with .create" do
       post "/api/v1/system/package_repositories", params: create_params.to_json,
                                                    headers: auth_headers_for(user_a)
