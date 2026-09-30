@@ -688,6 +688,7 @@ module PowernodeSystem
             ::System::SshHostKeyWriter::AUDITED_ACTIONS +
             ::System::UnitRestartService::AUDITED_ACTIONS +
             ::System::UnitDropinService::AUDITED_ACTIONS +
+            ::System::AssignmentClearanceService::AUDITED_ACTIONS +
             ::Sdwan::PeerKeyRotationService::AUDITED_ACTIONS +
             ::System::Storage::RotatingCredentialSweeper::AUDITED_ACTIONS
         )

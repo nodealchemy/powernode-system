@@ -45,9 +45,52 @@ module System
     # short-circuits via `canary?`).
     after_commit :observe_canary_access, on: :create
 
+    # IMP-9f4e162d9ed1 — the agent fails closed on an assignment list naming no
+    # data-bearing module, so a removal must be RECORDED for it to be honoured
+    # (System::AssignmentClearanceService). In the transaction, not after_commit:
+    # the clearance commits or rolls back with the removal (system_update_node's
+    # explicit rollback included), and a failed write is contained by the
+    # service's savepoint rather than blocking the operator's action.
+    after_create :revoke_clearance, if: :enabled?
+    after_update :sync_clearance_with_enabled, if: :saved_change_to_enabled?
+    after_destroy :issue_clearance_for_destroyed_assignment, if: :enabled?
+
     # === Methods ===
 
     private
+
+    def revoke_clearance
+      ::System::AssignmentClearanceService.guarded("assignment #{id} enabled") do
+        ::System::AssignmentClearanceService.revoke!(node_id: node_id, node_module_ids: [ node_module_id ])
+      end
+    end
+
+    def sync_clearance_with_enabled
+      return revoke_clearance if enabled
+
+      ::System::AssignmentClearanceService.guarded("assignment #{id} disabled") do
+        ::System::AssignmentClearanceService.issue!(
+          node: node, node_module_ids: [ node_module_id ], reason: "assignment_disabled",
+          trigger: { "assignment_id" => id }
+        )
+      end
+    end
+
+    # Not when the NODE is what is going away (decommission, destroy): its
+    # instances and its served list go with it, so there is nothing to confirm.
+    # A destroyed MODULE is a real unassignment on every node that served it.
+    def issue_clearance_for_destroyed_assignment
+      owner = destroyed_by_association&.active_record
+      return if owner == ::System::Node
+
+      ::System::AssignmentClearanceService.guarded("assignment #{id} destroyed") do
+        ::System::AssignmentClearanceService.issue!(
+          node: node, node_module_ids: [ node_module_id ],
+          reason: owner == ::System::NodeModule ? "module_destroyed" : "assignment_destroyed",
+          trigger: { "assignment_id" => id, "source_template_module_id" => source_template_module_id }.compact
+        )
+      end
+    end
 
     def register_module_skills
       return unless defined?(::System::ModuleSkillRegistrar)

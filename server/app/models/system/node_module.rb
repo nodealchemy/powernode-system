@@ -284,6 +284,11 @@ module System
     before_validation :encode_specs
     before_update :check_lock_status, if: :will_save_change_to_versioned_attributes?
     after_update :auto_create_version, if: :saved_change_to_versioned_attributes?
+    # IMP-9f4e162d9ed1 — a module that stops being served, or is served again,
+    # changes every serving node's confirmed_unassigned set. IN the transaction,
+    # so the clearance and the removal commit or roll back together.
+    after_update :sync_assignment_clearances, if: :saved_change_to_enabled?
+    after_destroy :clear_dependant_on_destroy, if: :dependant?
     # Keep the denormalized current_version_number in lockstep with
     # current_version_id on every save/update path that touches the version
     # linkage, so the two can never drift (the drift sensor, fleet reconciler,
@@ -743,6 +748,25 @@ module System
     class LadderError < StandardError; end
 
     private
+
+    def sync_assignment_clearances
+      ::System::AssignmentClearanceService.guarded("module #{id} enabled=#{enabled}") do
+        if enabled
+          ::System::AssignmentClearanceService.revoke!(node_module_ids: [ id ])
+        else
+          ::System::AssignmentClearanceService.issue_for_module!(node_module: self, reason: "module_disabled")
+        end
+      end
+    end
+
+    # A dependant child is served to the one node it is bound to and has no
+    # assignment row, so nothing else records its removal. A BASE module's
+    # destruction is recorded by its assignments (NodeModuleAssignment#after_destroy).
+    def clear_dependant_on_destroy
+      ::System::AssignmentClearanceService.guarded("dependant #{id} destroyed") do
+        ::System::AssignmentClearanceService.issue_for_module!(node_module: self, reason: "module_destroyed")
+      end
+    end
 
     # A persisted base module being renamed while it still has active grants: the
     # only case where the name becomes part of a rendered drop-in path.

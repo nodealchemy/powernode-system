@@ -94,7 +94,13 @@ module Api
               # poll like #protected_egress_hosts so an operator approval (or
               # revocation) takes effect on the next reconcile with no agent
               # restart. Values are module ids.
-              privileged_module_ids: privileged_module_ids(resolved_modules)
+              privileged_module_ids: privileged_module_ids(resolved_modules),
+              # The platform's per-module statement that it UNASSIGNED a module
+              # from this node (IMP-9f4e162d9ed1). The agent fails closed on an
+              # assignment list naming no data-bearing module, so this is what
+              # lets it honour a real unassignment; it detaches on such a list
+              # only a module named here. See #confirmed_unassigned.
+              confirmed_unassigned: confirmed_unassigned(resolved_modules)
             )
           end
 
@@ -248,6 +254,20 @@ module Api
               modules: ::System::PrivilegedModuleAllowlist.unapproved_privileged(resolved_modules, approved)
             )
             approved
+          end
+
+          # Live clearances for this node (System::AssignmentClearanceService),
+          # minus anything this same response serves: a module cannot be both
+          # assigned and unassigned, so a stale row (a write path that missed its
+          # revoke) is dropped here instead of being trusted. A failing lookup is
+          # an EMPTY set, never an error and never a guess: the list is still
+          # served and the agent stays fail-closed.
+          def confirmed_unassigned(resolved_modules)
+            served = resolved_modules.map { |m| m.id.to_s }.to_set
+            ::System::AssignmentClearanceService.served_for(current_node).reject { |entry| served.include?(entry[:module_id].to_s) }
+          rescue StandardError => e
+            ::Rails.logger.error("[NodeApi::Modules] confirmed_unassigned lookup failed for node #{current_node&.id}: #{e.class}: #{e.message}")
+            []
           end
 
           def set_module
