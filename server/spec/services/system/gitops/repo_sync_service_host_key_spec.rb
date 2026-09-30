@@ -129,11 +129,16 @@ RSpec.describe System::Gitops::RepoSyncService, "host key verification" do
     end
   end
 
+  # The spawned process is GIT, not ssh: git relays ssh's stderr and then
+  # dies with its own exit code, 128 — ssh's 255 never reaches this service.
+  # An earlier draft of the guard keyed on 255 and passed only because the
+  # fixture said so; the fixture now says what git says.
   describe "a CHANGED host key (mismatch)" do
+    let(:git_exit) { 128 }
     let(:git_response) do
       stderr = "Host key for #{host_alias} has changed and you have requested strict checking.\r\n" \
                "Host key verification failed.\r\nfatal: Could not read from remote repository.\n"
-      [ "", stderr, instance_double(Process::Status, success?: false, exitstatus: 255) ]
+      [ "", stderr, instance_double(Process::Status, success?: false, exitstatus: git_exit) ]
     end
 
     before { record_key! }
@@ -179,13 +184,37 @@ RSpec.describe System::Gitops::RepoSyncService, "host key verification" do
       expect(repository.reload.last_status).to eq("failed")
     end
 
-    # A different exit-255 failure that merely mentions the text (a hook on
-    # the remote printing it, say) is not a mismatch about THIS host.
+    # A host that presents only key TYPES the recorded set lacks fails strict
+    # checking with different wording; it still did not present a recorded key.
+    it "classifies an unknown-type refusal as a mismatch too" do
+      allow(Open3).to receive(:capture3) do |*args, **_kwargs|
+        argv = (args.first.is_a?(Hash) ? args[1..] : args).map(&:to_s)
+        invocations << { env: args.first.is_a?(Hash) ? args.first : {}, argv: argv }
+        stderr = "No RSA host key is known for #{host_alias} and you have requested strict checking.\r\n" \
+                 "Host key verification failed.\r\n"
+        [ "", stderr, instance_double(Process::Status, success?: false, exitstatus: 128) ]
+      end
+
+      expect(described_class.sync!(repository).reason).to eq(described_class::HOST_KEY_MISMATCH_REASON)
+    end
+
+    it "is not keyed on the exit code (ssh's 255 would classify the same way)" do
+      allow(Open3).to receive(:capture3) do |*args, **_kwargs|
+        argv = (args.first.is_a?(Hash) ? args[1..] : args).map(&:to_s)
+        invocations << { env: args.first.is_a?(Hash) ? args.first : {}, argv: argv }
+        [ git_response[0], git_response[1], instance_double(Process::Status, success?: false, exitstatus: 255) ]
+      end
+
+      expect(described_class.sync!(repository).reason).to eq(described_class::HOST_KEY_MISMATCH_REASON)
+    end
+
+    # A different failure that merely mentions the text (a hook on the
+    # remote printing it, say) is not a mismatch about THIS host.
     it "does not report a mismatch when the alias is absent from stderr" do
       allow(Open3).to receive(:capture3) do |*args, **_kwargs|
         argv = (args.first.is_a?(Hash) ? args[1..] : args).map(&:to_s)
         invocations << { env: args.first.is_a?(Hash) ? args.first : {}, argv: argv }
-        [ "", "Host key verification failed.\n", instance_double(Process::Status, success?: false, exitstatus: 255) ]
+        [ "", "Host key verification failed.\n", instance_double(Process::Status, success?: false, exitstatus: 128) ]
       end
 
       result = described_class.sync!(repository)

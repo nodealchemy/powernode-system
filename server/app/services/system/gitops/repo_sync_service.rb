@@ -126,7 +126,7 @@ module System
         env = build_git_env
         out, err, status = Open3.capture3(env, "git", *args, chdir: cwd)
         unless status.success?
-          host_key_mismatch!(err, status) if host_key_mismatch?(err, status)
+          host_key_mismatch! if host_key_mismatch?(err)
           # Two-pass sanitization. The git-specific regex catches the
           # exact `https://user:pat@host/` URL shape git's own error
           # output emits. ShellOutputSanitizer then catches the
@@ -276,17 +276,24 @@ module System
         FileUtils.chmod(0o600, known_hosts_path)
       end
 
-      # Mirrors SshExecutionService#host_key_mismatch?: exit 255, ssh's own
-      # strict-checking text, AND this repository's alias in stderr (ssh names
-      # the alias), so a remote hook printing the same words is not read as a
-      # mismatch about this host.
-      def host_key_mismatch?(err, status)
+      # Mirrors SshExecutionService#host_key_mismatch? MINUS its exit-code
+      # clause: that service spawns ssh itself and sees ssh's 255, whereas
+      # this one spawns git, which relays ssh's stderr and then dies with its
+      # OWN code (128) — ssh's 255 never reaches here. Called only on a failed
+      # status. The discriminator is: keys were verified against, ssh's own
+      # strict-checking text, AND this repository's alias in that text (ssh
+      # names the alias), so a remote hook printing the same words is not
+      # read as a mismatch about this host. A host presenting only key TYPES
+      # absent from the recorded set ("No ED25519 host key is known for
+      # <alias> ... Host key verification failed") is classified the same
+      # way, deliberately: it did not present a recorded key.
+      def host_key_mismatch?(err)
         stderr = err.to_s
-        status.exitstatus == 255 && defined?(@host_keys) && @host_keys.present? &&
+        defined?(@host_keys) && @host_keys.present? &&
           stderr.include?(HOST_KEY_VERIFICATION_FAILED) && stderr.include?(host_alias)
       end
 
-      def host_key_mismatch!(_err, _status)
+      def host_key_mismatch!
         endpoint = ::System::Gitops::SshRemote.parse(@repository.repo_url)
         fingerprints = ::System::SshHostKeys.fingerprints(@host_keys)
         raise HostKeyMismatchError,
