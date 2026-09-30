@@ -302,6 +302,9 @@ func TestRunOnce_DigestlessNeverAttachedModuleIsNotRendered(t *testing.T) {
 			if sig == "reconciler:identity_render_stale_manifest" {
 				t.Errorf("tick %d: a digestless module must not raise identity_render_stale_manifest", tick)
 			}
+			if sig == "reconciler:identity_render_unresolved" {
+				t.Errorf("tick %d: a digestless module must not be resolved as an unresolved candidate (identity_render_unresolved names m9): it is not a render candidate at all", tick)
+			}
 		}
 	}
 }
@@ -328,5 +331,42 @@ func TestRunOnce_ConfigOnlyAssignmentListRetainsEveryAttachedDataModule(t *testi
 	}
 	if hasSystemctlOp(runner.Invocations[pre:], "stop", appUnit) {
 		t.Errorf("a list with no data modules must not stop %s: %v", appUnit, runner.Invocations[pre:])
+	}
+}
+
+// The two defences behind the digestless fix each hide the other: keeping the
+// module out of manifestFetchFailed (noDigest) and rejecting an empty-digest
+// fallback in resolveRenderCandidates. This drives the path only the second
+// one covers: a never-attached module caches a digestless manifest, then its
+// NEXT fetch fails, which does put it in manifestFetchFailed, so its cached
+// digestless copy is offered as a fallback and must be refused.
+func TestRunOnce_FetchFailureAfterDigestlessDoesNotRenderTheCachedGhost(t *testing.T) {
+	r, client, _, _, _, manifestRoot, _ := upgradeTestReconciler(t)
+	var rendered *etcidentity.Set
+	origApply := applyIdentity
+	applyIdentity = func(set *etcidentity.Set) error { rendered = set; return nil }
+	t.Cleanup(func() { applyIdentity = origApply })
+
+	client.responses["/api/v1/system/node_api/modules"] = `{"success": true,"data": {"modules": [
+		{"id":"m9", "name":"ghost", "priority":100, "effective_priority":100, "has_data_file":true}]}}`
+	client.responses["/api/v1/system/node_api/modules/m9"] = `{"success": true,"data": {"id":"m9","name":"ghost","priority":100,"effective_priority":100,"digest":"",
+		"users": [{"name":"ghostuser","uid":6009,"primary_gid":6009,"primary_group":"ghostuser","shell":"/bin/false","home":"/home/ghostuser"}],
+		"groups": [{"name":"ghostuser","gid":6009}], "services": []}}`
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 1 (digestless m9 cached): %v", err)
+	}
+
+	client.statuses = map[string]int{"/api/v1/system/node_api/modules/m9": 502}
+	delete(client.responses, "/api/v1/system/node_api/modules/m9")
+	backdateManifestCache(t, manifestRoot, "m9")
+	rendered = nil
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("pass 2 (m9 fetch fails): %v", err)
+	}
+	if rendered == nil {
+		t.Fatal("pass 2 must still render (m9 was never attached, so its absence is harmless)")
+	}
+	if hasUser(rendered, "ghostuser") {
+		t.Error("a fetch-failed tick rendered a never-attached module's user from its cached digestless manifest")
 	}
 }
