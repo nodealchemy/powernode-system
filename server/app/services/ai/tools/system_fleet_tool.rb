@@ -5174,7 +5174,10 @@ module Ai
       # its descriptor declares them — BaseSkillExecutor.execute symbolizes the
       # stored hash and hands it to #perform, so a key this tool invents would
       # be dropped by #acceptable_inputs and the approved operation would
-      # perform a DIFFERENT call from the one the card described.
+      # perform a DIFFERENT call from the one the card described. The one key
+      # that is NOT an input, `principal`, is stamped onto every park by
+      # BaseTool#run_through_autonomy_gate (IMP-a33f7a833313) and is
+      # record-only: BaseSkillExecutor.execute strips it before #perform.
 
       def replace_instance_gate_context(params)
         instance = dr_lane_instance(params)

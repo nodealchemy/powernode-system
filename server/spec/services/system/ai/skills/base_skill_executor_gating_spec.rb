@@ -170,7 +170,12 @@ RSpec.describe "System::Ai::Skills::BaseSkillExecutor policy gate" do
       expect(op).to be_present
       expect(op.action_category).to eq("system.zz_gated_fixture")
       expect(op.executor_class).to eq("ZzGatedFixtureExecutor")
-      expect(op.params.deep_symbolize_keys).to eq(widget_id: "w-1")
+      # The inputs, plus the principal block every park records
+      # (IMP-a33f7a833313) — a person's park here, with no door recorded.
+      expect(op.params.deep_symbolize_keys).to eq(
+        widget_id: "w-1",
+        principal: { kind: "user", user_id: user.id, agent_id: nil, internal: false, origin: nil }
+      )
     end
 
     it "refuses outright when policy blocks, without reaching #perform" do

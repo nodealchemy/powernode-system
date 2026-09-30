@@ -200,7 +200,13 @@ module System
             # posture the ORIGINAL call had.
             built.instance_authorized = true if requested_by.nil?
 
-            outcome = built.execute(gated: true, **(params || {}).to_h.symbolize_keys)
+            # The stored params carry the principal block #gate_action! stamped
+            # (IMP-a33f7a833313). It is a record of who asked, not an input:
+            # #acceptable_inputs would drop it for a strict #perform, but a
+            # keyrest one would receive it, so it is stripped here for every
+            # executor alike.
+            inputs = (params || {}).to_h.symbolize_keys.except(::Ai::Approvals::ParkPrincipal::KEY.to_sym)
+            outcome = built.execute(gated: true, **inputs)
             resume_composed_plan(deferred_operation, outcome)
             outcome
           end
@@ -451,7 +457,13 @@ module System
           result = ::Ai::AutonomyGate.evaluate(
             action_category: category,
             executor_class: self.class.name,
-            params: inputs,
+            # Who asked, recorded the way every tool park records it
+            # (IMP-a33f7a833313), from THIS executor's own state — the instance
+            # provenance BaseTool#build_skill_executor handed it included. The
+            # block is record-only: .execute strips it before #perform, so a
+            # keyrest #perform never sees it. No door is recorded: this gate
+            # does not know which surface built the executor.
+            params: ::Ai::Approvals::ParkPrincipal.stamp(inputs, park_principal_descriptor),
             account: @account,
             agent: @agent,
             requested_by: @user,
@@ -732,6 +744,19 @@ module System
         # the wrong test. (IMP-0e6b216de843)
         def internal_caller?
           @user.nil? && !instance_authorized?
+        end
+
+        # The principal block this executor's own park records — the same
+        # builder and shape as a tool's (Ai::Approvals::ParkPrincipal), from
+        # the caller context this executor was built with. `internal` is what
+        # #internal_caller? answers, so a reconciler's park records
+        # kind "internal" and an instance's records the node instance
+        # #mark_instance_provenance carried across the hop.
+        def park_principal_descriptor
+          ::Ai::Approvals::ParkPrincipal.descriptor(
+            user: @user, agent: @agent, internal: internal_caller?,
+            instance_authorized: instance_authorized?, node_instance: @node_instance
+          )
         end
 
         # Standardized tool construction. Replaces the 40 sites that built
