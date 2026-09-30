@@ -57,5 +57,16 @@ RSpec.describe System::Gitops::SshRemote do
       expect(described_class.ssh?("ssh://git.example.test/fleet.git")).to be(true)
       expect(described_class.ssh?("https://git.example.test/fleet.git")).to be(false)
     end
+
+    # ssh? is "an endpoint this module can pin": the git-builtin ssh schemes
+    # are not taught to the parser (no legacy spellings) and an unparseable
+    # host is not an ssh remote either, so the sync refuses both instead of
+    # handing git a URL it would route to the PATH ssh on its own.
+    it "is false for git+ssh://, ssh+git:// and an unparseable ssh host" do
+      expect(described_class.ssh?("git+ssh://git.example.test/fleet.git")).to be(false)
+      expect(described_class.ssh?("ssh+git://git.example.test/fleet.git")).to be(false)
+      expect(described_class.ssh?("git@-evil:fleet.git")).to be(false)
+      expect(described_class.ssh?("ssh://git.example.test:0/fleet.git")).to be(false)
+    end
   end
 end

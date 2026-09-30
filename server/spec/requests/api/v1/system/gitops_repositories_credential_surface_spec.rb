@@ -65,13 +65,19 @@ RSpec.describe "Operator API — GitOps credential surface", type: :request do
         .to eq(%w[password])
     end
 
-    # Distinct from []. A repository configured WITH a credential path whose
-    # scheme matches neither auth branch is silently cloned anonymously — the
-    # path is dropped. Reporting [] would label the one repo whose credentials
-    # ARE being ignored as the one needing none.
-    it "reports nil, not [], for a configured path on an unsupported scheme" do
-      expect(repo_with(url: "rsync://git.example.test/fleet.git").required_credential_keys)
-        .to be_nil
+    # Distinct from []. A remote whose scheme matches neither auth branch is
+    # refused at registration (IMP-1e5db5e6aefb) and by the sync, so the
+    # only rows that can reach this arm predate that rule. Reporting [] would
+    # label the one repo whose credentials ARE being ignored as needing none.
+    it "reports nil, not [], for a configured path on an unsupported scheme, which is not registrable" do
+      record = ::System::GitopsRepository.new(
+        account: account, name: "fleet-#{SecureRandom.hex(4)}", branch: "main", path_prefix: "",
+        repo_url: "rsync://git.example.test/fleet.git", vault_credential_path: "secret/data/powernode/gitops/deploy"
+      )
+
+      expect(record.required_credential_keys).to be_nil
+      expect(record).not_to be_valid
+      expect(record.errors[:repo_url]).to be_present
     end
   end
 

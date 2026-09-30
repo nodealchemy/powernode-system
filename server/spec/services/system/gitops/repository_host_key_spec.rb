@@ -110,10 +110,45 @@ RSpec.describe System::Gitops::RepositoryHostKey do
       end
     end
 
-    it "returns nothing and never raises when the binary is missing" do
+    # A missing binary is a hub deploy defect, distinct from a host that
+    # answered with nothing; the sync names it (F2).
+    it "raises ScannerUnavailable, naming the binary, when it is not installed" do
       allow(Open3).to receive(:capture3).and_raise(Errno::ENOENT, "ssh-keyscan")
 
+      expect { described_class.scan(host: "git.example.test", port: 22) }
+        .to raise_error(described_class::ScannerUnavailable, /ssh-keyscan.*(not installed|not found|missing)/i)
+    end
+
+    it "returns nothing and never raises on any other failure" do
+      allow(Open3).to receive(:capture3).and_raise(IOError, "pipe closed")
+
       expect(described_class.scan(host: "git.example.test", port: 22)).to eq([])
+    end
+  end
+
+  describe ".recorded?" do
+    it "is false with no document and true once a document holds an entry" do
+      expect(described_class.recorded?(repository)).to be(false)
+
+      described_class.record!(repository, [ entry ], source: "explicit")
+
+      expect(described_class.recorded?(repository)).to be(true)
+    end
+
+    # The distinction TOFU is keyed on: a present record that no longer
+    # VALIDATES is still a record (recorded_for is [] but recorded? is true).
+    it "is true for a present document whose entries do not validate" do
+      repository.update_columns(ssh_host_keys: { "keys" => [ { "type" => "ssh-ed25519", "key" => "!!" } ],
+                                                 "recorded_at" => Time.current.utc.iso8601, "source" => "explicit" })
+
+      expect(described_class.recorded?(repository)).to be(true)
+      expect(described_class.recorded_for(repository)).to eq([])
+    end
+
+    it "is false for a document with no entries" do
+      repository.update_columns(ssh_host_keys: { "keys" => [], "source" => "explicit" })
+
+      expect(described_class.recorded?(repository)).to be(false)
     end
   end
 

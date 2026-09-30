@@ -70,6 +70,20 @@ RSpec.describe "Operator API — GitOps repository host key", type: :request do
     end
   end
 
+  # git would route these to the PATH ssh itself, outside the per-repository
+  # pin; the sync refuses them, so registration refuses them first.
+  describe "POST with a remote the sync cannot pin" do
+    it "refuses git+ssh:// as a validation error and never scans" do
+      expect {
+        register(repo_url: "git+ssh://git.example.test/fleet.git")
+      }.not_to change(::System::GitopsRepository, :count)
+
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(response.body).to include("repo_url")
+      expect(scans).to be_empty
+    end
+  end
+
   describe "POST without ssh_host_key" do
     context "for an ssh remote" do
       let(:keyscan_stdout) { "[git.example.test]:2222 #{entry['type']} #{entry['key']}\n" }

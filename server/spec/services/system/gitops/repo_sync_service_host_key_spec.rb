@@ -311,4 +311,168 @@ RSpec.describe System::Gitops::RepoSyncService, "host key verification" do
       expect(argv).not_to include("-i")
     end
   end
+
+  # git, not this service, picks the transport: git+ssh:// and ssh+git:// are
+  # git-builtin ssh schemes, git:// is cleartext, file:// and a bare path
+  # clone a hub-local directory. None of them is an environment this
+  # service built, so none may reach git. The model refuses them at
+  # registration; a row that predates that rule is refused here.
+  describe "a remote that is neither https nor a parseable ssh endpoint" do
+    before { record_key! }
+
+    [ "git+ssh://git.example.test/powernode/fleet-config.git", "/srv/git/fleet-config.git" ].each do |url|
+      it "refuses #{url} with a named reason before git runs" do
+        repository.update_columns(repo_url: url)
+
+        result = described_class.sync!(repository)
+
+        expect(result.ok?).to be(false)
+        expect(result.reason).to eq(described_class::UNSUPPORTED_REMOTE_REASON)
+        expect(result.error).to start_with("#{described_class::UNSUPPORTED_REMOTE_REASON}:")
+        expect(git_invocations).to be_empty
+        expect(keyscan_invocations).to be_empty
+      end
+    end
+  end
+
+  # The pinned known_hosts is a per-call unique tempfile: the cron tick and an
+  # operator's sync_now run the same repository inline with no lock, and a
+  # shared, deterministic path let one call's cleanup delete the other's file
+  # mid-connection — which ssh reports as "No ... host key is known for
+  # <alias> ... Host key verification failed", a FALSE mismatch event.
+  describe "the per-call known_hosts file" do
+    let(:work_tree) { described_class::WORK_TREE_ROOT.join(account.id.to_s, repository.id.to_s).to_s }
+
+    before { record_key! }
+
+    after { FileUtils.rm_rf(work_tree) }
+
+    def known_hosts_paths
+      git_invocations.select { |inv| inv[:env]["GIT_SSH_COMMAND"] }.map do |inv|
+        ssh_argv(inv).find { |a| a.start_with?("UserKnownHostsFile=") }.delete_prefix("UserKnownHostsFile=")
+      end
+    end
+
+    it "is a distinct 0600 file for every git invocation, each removed after its own call" do
+      FileUtils.mkdir_p(File.join(work_tree, ".git")) # fetch + reset: two run_git! calls in one sync
+
+      expect(described_class.sync!(repository).ok?).to be(true)
+
+      expect(known_hosts_paths.size).to eq(2)
+      expect(known_hosts_paths.uniq.size).to eq(2)
+      expect(known_hosts_seen[:mode]).to eq(0o600)
+      known_hosts_paths.each { |path| expect(File.exist?(path)).to be(false) }
+    end
+
+    it "survives a concurrent sync of the same repository finishing first" do
+      outer_path = nil
+      outer_survived = nil
+      nested = false
+      allow(Open3).to receive(:capture3) do |*args, **_kwargs|
+        env = args.first.is_a?(Hash) ? args.first : {}
+        argv = (args.first.is_a?(Hash) ? args[1..] : args).map(&:to_s)
+        invocations << { env: env, argv: argv }
+        if env["GIT_SSH_COMMAND"] && !nested
+          nested = true
+          outer_path = ssh_argv(env: env).find { |a| a.start_with?("UserKnownHostsFile=") }
+                                         .delete_prefix("UserKnownHostsFile=")
+          described_class.sync!(repository) # the interleaved sync runs git and cleans up while we are "connected"
+          outer_survived = File.exist?(outer_path)
+        end
+        git_response
+      end
+
+      expect(described_class.sync!(repository).ok?).to be(true)
+
+      expect(outer_survived).to be(true)
+      expect(File.exist?(outer_path)).to be(false)
+    end
+  end
+
+  # Trust on first use is for the NO-record state only. A record that is
+  # present but yields no usable entry (a corrupt column, a key type since
+  # dropped from ALLOWED_TYPES) must refuse, never scan, and never be
+  # overwritten: overwriting would turn an explicit pin into whatever the
+  # network said.
+  describe "a recorded key that does not validate" do
+    let(:keyscan_stdout) { "[git.example.test]:2222 #{entry['type']} #{entry['key']}\n" }
+    let(:unreadable) do
+      { "keys" => [ { "type" => "ssh-ed25519", "key" => "not-base64-at-all!!", "fingerprint" => "SHA256:x" } ],
+        "recorded_at" => 1.day.ago.utc.iso8601, "source" => "explicit" }
+    end
+
+    before { repository.update_columns(ssh_host_keys: unreadable) }
+
+    it "refuses with a named reason, never scans, and leaves the record untouched" do
+      result = described_class.sync!(repository)
+
+      expect(result.ok?).to be(false)
+      expect(result.reason).to eq(described_class::HOST_KEY_UNAVAILABLE_REASON)
+      expect(result.error).to match(/unreadable/i)
+      expect(keyscan_invocations).to be_empty
+      expect(git_invocations).to be_empty
+      expect(repository.reload.ssh_host_keys).to eq(unreadable)
+    end
+
+    it "scans only once the record is actually absent" do
+      repository.update_columns(ssh_host_keys: nil)
+
+      expect(described_class.sync!(repository).ok?).to be(true)
+
+      expect(keyscan_invocations.size).to eq(1)
+      expect(repository.reload.ssh_host_keys["source"]).to eq("tofu")
+    end
+  end
+
+  # A missing ssh-keyscan binary is a deploy defect on the hub, not "the host
+  # returned no key"; the refusal must say which.
+  describe "when ssh-keyscan is not installed" do
+    before do
+      allow(Open3).to receive(:capture3) do |*args, **_kwargs|
+        argv = (args.first.is_a?(Hash) ? args[1..] : args).map(&:to_s)
+        invocations << { env: args.first.is_a?(Hash) ? args.first : {}, argv: argv }
+        raise Errno::ENOENT, "ssh-keyscan" if argv.first == "ssh-keyscan"
+
+        git_response
+      end
+    end
+
+    it "refuses with a reason that names the missing binary" do
+      result = described_class.sync!(repository)
+
+      expect(result.ok?).to be(false)
+      expect(result.reason).to eq(described_class::HOST_KEY_UNAVAILABLE_REASON)
+      expect(result.error).to match(/ssh-keyscan/)
+      expect(result.error).to match(/not installed|not found|missing/i)
+      expect(result.error).not_to include("returned none")
+      expect(git_invocations).to be_empty
+      expect(repository.reload.ssh_host_keys).to be_nil
+    end
+  end
+
+  # branch and repo_url are operator input; `--` keeps git from reading
+  # either as an option (the model refuses a dash-prefixed branch as well).
+  describe "git argv" do
+    let(:work_tree) { described_class::WORK_TREE_ROOT.join(account.id.to_s, repository.id.to_s).to_s }
+
+    before { record_key! }
+
+    after { FileUtils.rm_rf(work_tree) }
+
+    it "ends clone's options with -- before the url and work tree" do
+      described_class.sync!(repository)
+
+      argv = git_invocations.first[:argv]
+      expect(argv.first(2)).to eq(%w[git clone])
+      expect(argv.last(3)).to eq([ "--", repository.repo_url, work_tree ])
+    end
+
+    it "ends fetch's options with -- before the remote and branch" do
+      FileUtils.mkdir_p(File.join(work_tree, ".git"))
+
+      described_class.sync!(repository)
+
+      expect(git_invocations.map { |inv| inv[:argv] }).to include(%w[git fetch -- origin main])
+    end
+  end
 end
