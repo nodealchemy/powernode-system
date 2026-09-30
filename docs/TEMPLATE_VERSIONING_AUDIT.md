@@ -113,6 +113,9 @@ first node exists.
 write surfaces document "prefer `enabled: false`"), but the guidance is advisory: `DELETE
 /node_templates/:id/modules/:id` and `system_unassign_module_from_template` remain reachable and
 destructive. Combined with D2, the resulting null is indistinguishable from a transitive pull.
+**Status (IMP-5fa3c8d0e2f7):** both doors now purge the derived assignments with the join in one
+transaction (`System::TemplateModuleUnassignService`), so a join destroy no longer leaves a
+nullified row behind. Rows orphaned before that change are not repaired by it.
 
 ### F4 — `LifecycleAuditable` has the accountless blind spot again
 `record_lifecycle_audit!` opens with `return unless account.present?`. A NodeInstance that cannot

@@ -57,10 +57,13 @@ Two facts that catch people out:
   (`system_get_template`, the export bundle, the modules index). To change
   effective ordering on a node, edit the module's priority or the resulting
   assignment — not the join.
-- **`enabled: false` on a join is the correct removal, not `DELETE`.**
-  Destroying the join nullifies `source_template_module_id` on every derived
-  `NodeModuleAssignment` and orphans them permanently. A disabled join keeps the
-  row and the back-reference ([`template_modules_controller.rb:96-102`](../../server/app/controllers/api/v1/system/template_modules_controller.rb)).
+- **`enabled: false` on a join is the reversible removal; `DELETE` is the
+  irreversible one.** A disabled join keeps the row and the back-reference, so
+  the derived `NodeModuleAssignment` rows stay until a purging apply reaps them
+  and re-enabling restores the module. Unassigning (`DELETE` /
+  `system_unassign_module_from_template`) destroys the join and purges the
+  derived rows in the same transaction
+  ([`template_module_unassign_service.rb`](../../server/app/services/system/template_module_unassign_service.rb)).
 
 ## Phase 0 — Does a template already exist for this? ✅
 
@@ -325,8 +328,14 @@ merge. Omitted fields are untouched. An update naming none of
 `priority`/`enabled`/`config`/`recommends_override` is a 422 ("nothing to
 update") rather than a silent no-op.
 
-`system_unassign_module_from_template` (REST `DELETE`) destroys the join. Reach
-for it only when you genuinely want the derived assignments orphaned.
+`system_unassign_module_from_template` (REST `DELETE`) destroys the join and, in
+the same transaction, purges every `NodeModuleAssignment` it produced (rows whose
+`source_template_module_id` is the join). A derived row whose module another join
+on the node's template still brings in is re-pointed at that join rather than
+destroyed; hand-authored rows (null source) are never touched. The reply names the
+purged node ids and count (`purged_assignments`). Nothing is pushed: each agent
+drops the module on its next module sync, and pivot-booted instances at their
+next reboot. Use `enabled: false` when you want the removal to be reversible.
 
 ## Phase 5 — Apply the template to a node ✅
 

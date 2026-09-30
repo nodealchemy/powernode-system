@@ -98,12 +98,11 @@ module Api
         end
 
         # PATCH /api/v1/system/node_templates/:node_template_id/modules/:id
-        # Edits an existing join in place. `enabled: false` is the
-        # documented-correct removal — the row survives, so
-        # source_template_module_id on every derived NodeModuleAssignment
-        # survives with it. DELETE nullifies that column and orphans them
-        # permanently, and until this action existed it was the only reachable
-        # way to take a module out of a template.
+        # Edits an existing join in place. `enabled: false` is the reversible
+        # removal — the row survives, so source_template_module_id on every
+        # derived NodeModuleAssignment survives with it, and a purging apply
+        # reaps those rows. DELETE is the irreversible one: it purges the
+        # derived rows at once.
         #
         # Permission: `system.templates.update`, same as create/destroy.
         def update
@@ -139,11 +138,16 @@ module Api
         end
 
         # DELETE /api/v1/system/node_templates/:node_template_id/modules/:id
-        # Detaches a NodeModule from this template by destroying its
-        # TemplateModule join row. The member `:id` is the NODE_MODULE id
-        # (matches create's use of node_module_id and the MCP
-        # `unassign_module_from_template` action). Idempotent-shaped: a missing
-        # assignment 404s rather than erroring.
+        # Detaches a NodeModule from this template: destroys its TemplateModule
+        # join AND purges the NodeModuleAssignments the join produced, in one
+        # transaction, through the same System::TemplateModuleUnassignService
+        # as the MCP `unassign_module_from_template` action (IMP-5fa3c8d0e2f7).
+        # Destroying the join alone nullified those rows' source and orphaned
+        # them. Hand-authored rows and rows from other joins are untouched; a
+        # derived row whose module another join still brings in is re-pointed
+        # at that join, not destroyed. The response names the purged node ids
+        # and count. The member `:id` is the NODE_MODULE id (matches create's
+        # use of node_module_id). A missing assignment 404s.
         #
         # Permission: `system.templates.update` (same as attaching — both
         # mutate the template's composition).
@@ -153,8 +157,10 @@ module Api
           join = @template.template_modules.find_by(node_module_id: params[:id])
           return render_not_found("Template Module assignment") unless join
 
-          join.destroy
-          render_success(message: "Module removed from template")
+          result = ::System::TemplateModuleUnassignService.new(join).call!
+          render_success(data: { message: "Module removed from template", **result.to_payload })
+        rescue ActiveRecord::RecordNotDestroyed, ActiveRecord::RecordInvalid => e
+          render_error("Module removal failed: #{e.message}", status: :unprocessable_content)
         end
 
         private

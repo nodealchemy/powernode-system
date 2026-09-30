@@ -1790,7 +1790,7 @@ module Ai
             }
           },
           "system_update_template_module" => {
-            description: "Update an EXISTING TemplateModule join in place: priority, enabled, config, recommends_override. This is the non-destructive way to take a module out of a template — set enabled=false rather than unassigning, because destroying the join nullifies source_template_module_id on every derived NodeModuleAssignment and permanently orphans them. Enabling a disabled join runs the same composition-conflict check as system_assign_module_to_template and refuses when it would introduce an error-severity conflict. Any edit to a join that ships (before or after the edit) on a template with live nodes reports `blast_radius` and records a `system.template_mutation` FleetEvent — disabling included, since that takes the module off live fleet. Omitted fields are left untouched; `config` and `recommends_override` REPLACE the stored hash rather than merging into it.",
+            description: "Update an EXISTING TemplateModule join in place: priority, enabled, config, recommends_override. This is the reversible way to take a module out of a template — set enabled=false rather than unassigning: the join survives with its settings, the derived NodeModuleAssignments stay on the nodes until a purging apply reaps them, and re-enabling restores it. system_unassign_module_from_template is the irreversible removal: it destroys the join and purges the derived assignments at once. Enabling a disabled join runs the same composition-conflict check as system_assign_module_to_template and refuses when it would introduce an error-severity conflict. Any edit to a join that ships (before or after the edit) on a template with live nodes reports `blast_radius` and records a `system.template_mutation` FleetEvent — disabling included, since that takes the module off live fleet. Omitted fields are left untouched; `config` and `recommends_override` REPLACE the stored hash rather than merging into it.",
             parameters: {
               template_id: { type: "string", required: true, description: "UUID of the NodeTemplate holding the join (account-scoped)" },
               module_id: { type: "string", required: true, description: "UUID of the assigned NodeModule — the join is addressed by (template, module), matching system_assign_module_to_template" },
@@ -2428,7 +2428,7 @@ module Ai
             parameters: { cve_id: { type: "string", required: true, description: "Canonical CVE id (e.g. CVE-2026-12345) of the global Cve row to delete" } }
           },
           "system_unassign_module_from_template" => {
-            description: "Remove a NodeModule from a NodeTemplate (destroys the TemplateModule join). Inverse of system_assign_module_to_template. Idempotent — returns success even when the join doesn't exist. Removing a SHIPPING join from a template with live nodes reports `blast_radius` and records a `system.template_mutation` FleetEvent — it takes the module off every node on the template on next apply. Prefer system_update_template_module with enabled=false: destroying the join nullifies source_template_module_id on derived assignments and orphans them.",
+            description: "Remove a NodeModule from a NodeTemplate. In ONE transaction it destroys the TemplateModule join AND purges the NodeModuleAssignments that join produced (rows whose source_template_module_id is the join), so no node keeps the module as an orphan no apply would reap. A derived row whose module another join on the node's template still brings in (a shared dependency) is re-pointed at that join instead of destroyed. Hand-authored assignments (null source) and rows derived from other joins are never touched. The reply carries `purged_assignments` {count, node_ids, assignments} and `repointed_assignments`. When the join was shipping, or it purged any row, on a template with live nodes, the reply reports `blast_radius` with `purged_assignment_count` and `purged_node_ids` — counted before any row is written — and records a `system.template_mutation` FleetEvent. Nothing is pushed to the nodes: each agent drops the module on its next module sync (a running instance then reports it as drift, which the fleet drift lane converges); pivot-booted instances drop it at their next reboot. Irreversible — for a reversible removal use system_update_template_module with enabled=false. Idempotent — returns success with already_absent when the join doesn't exist.",
             parameters: {
               template_id: { type: "string", required: true, description: "UUID of the NodeTemplate to remove the module from" },
               module_id:   { type: "string", required: true, description: "UUID of the NodeModule to unassign from the template" }
@@ -5611,7 +5611,7 @@ module Ai
       # every other TemplateModule action. This is the reachable form of the
       # documented-correct removal: enabled=false keeps the row, so
       # source_template_module_id on the derived NodeModuleAssignments survives
-      # — unassigning nullifies it and orphans them permanently.
+      # — unassigning purges them (System::TemplateModuleUnassignService).
       def update_template_module(params)
         template = account_templates.find(params[:template_id])
         node_module = account_modules.find(params[:module_id])
@@ -5723,7 +5723,10 @@ module Ai
       # `correlation_id: "template_mutation:<template_id>"`, so
       # system_inspect_correlation walks one template's mutation history in
       # emission order.
-      def record_template_blast_radius(template, node_module, change)
+      # `extra` is merged into both the returned radius and the event payload —
+      # the unassign verb's purge count and node ids. Empty for every other
+      # caller, whose radius is unchanged.
+      def record_template_blast_radius(template, node_module, change, extra: {})
         classification = ::System::Ai::Skills::TemplateApprovalPolicy.for(template: template)
         return nil unless classification.requires_approval?
 
@@ -5731,7 +5734,7 @@ module Ai
           requires_approval: true,
           provisioned_node_count: classification.provisioned_node_count,
           reason: classification.reason
-        }
+        }.merge(extra)
 
         ::System::Fleet::EventBroadcaster.emit!(
           account: @account,
@@ -8875,21 +8878,31 @@ module Ai
           )
         end
 
-        join_id = join.id
         shipped = join.enabled
-        join.destroy!
+        # IMP-5fa3c8d0e2f7 — the join and the assignments it produced go
+        # together (System::TemplateModuleUnassignService, shared with the REST
+        # DELETE). Destroying the join alone nullified their source and
+        # orphaned them where no purging apply would ever reap them.
+        result = ::System::TemplateModuleUnassignService.new(join).call!
 
         payload = {
           unassigned: true,
-          template_module_id: join_id,
+          template_module_id: result.template_module_id,
           template_id: template.id,
           module_id: node_module.id
-        }
+        }.merge(result.to_payload)
         # Removing a SHIPPING join is the highest-blast-radius join mutation
-        # there is — it takes a module off every node on the template. Gating
-        # only the assign would have left the more destructive door open.
-        if shipped && (radius = record_template_blast_radius(template, node_module, "module_unassigned"))
-          payload[:blast_radius] = radius
+        # there is — it takes a module off every node on the template. A
+        # DISABLED join counts too when it still had derived rows: disabling
+        # kept them, and this purge is what takes the module off those nodes.
+        # The count comes from the service's plan, read under the join's lock
+        # before any row was written.
+        if shipped || result.purged_count.positive?
+          radius = record_template_blast_radius(
+            template, node_module, "module_unassigned",
+            extra: { purged_assignment_count: result.purged_count, purged_node_ids: result.purged_node_ids }
+          )
+          payload[:blast_radius] = radius if radius
         end
         success_result(payload)
       end
