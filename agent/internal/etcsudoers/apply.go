@@ -57,11 +57,16 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 	// in the reconciler. Every identity in such a collision group is refused,
 	// independent of order. The SAME identity arriving twice is not a
 	// collision: the reconciler's old-union-new set legitimately carries a
-	// grant from both manifests, and only the later (the new manifest) is
-	// rendered, validated and written.
+	// grant from both manifests. The occurrences are tried last to first and
+	// the first body visudo accepts is written, so an invalid old body cannot
+	// block the upgrade that replaces it, and an invalid NEW body cannot make
+	// the sweep delete the stable grant the still-running old process needs.
+	// The error returned is the LAST occurrence's, so that failure stays fatal
+	// and visible.
 	type identity struct{ module, id string }
 	paths := make([]string, len(grants))
 	lastOf := map[identity]int{}
+	occurrences := map[identity][]int{}
 	idsByPath := map[string]map[identity]struct{}{}
 	for n, g := range grants {
 		path, err := g.PathIn(dir)
@@ -75,6 +80,7 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 		}
 		idsByPath[path][identity{g.ModuleName, g.Grant.ID}] = struct{}{}
 		lastOf[identity{g.ModuleName, g.Grant.ID}] = n
+		occurrences[identity{g.ModuleName, g.Grant.ID}] = append(occurrences[identity{g.ModuleName, g.Grant.ID}], n)
 	}
 
 	for n, g := range grants {
@@ -84,9 +90,7 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 		if path == "" {
 			continue
 		}
-		// The same identity from several manifests (old-union-new): only the
-		// last is rendered and visudo-checked, so an old body that no longer
-		// validates cannot block the upgrade that replaces it.
+		// Handled once, at the identity's last occurrence (below).
 		if lastOf[identity{g.ModuleName, g.Grant.ID}] != n {
 			continue
 		}
@@ -101,14 +105,29 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 			}
 			continue
 		}
-		body := Render(g, now())
-		if err := validateBody(body); err != nil {
-			// Skip this grant but keep going — one bad file shouldn't
-			// invalidate every other module's sudo grants. The orphan
-			// from a previous successful render gets swept below.
-			if firstWriteErr == nil {
-				firstWriteErr = fmt.Errorf("validate %s: %w", g.Filename(), err)
+		var body []byte
+		var lastErr error
+		occ := occurrences[identity{g.ModuleName, g.Grant.ID}]
+		for k := len(occ) - 1; k >= 0; k-- {
+			cand := Render(grants[occ[k]], now())
+			err := validateBody(cand)
+			if err == nil {
+				body = cand
+				break
 			}
+			if k == len(occ)-1 {
+				lastErr = fmt.Errorf("validate %s: %w", g.Filename(), err)
+			}
+		}
+		if lastErr != nil && firstWriteErr == nil {
+			// Reported even when an earlier occurrence validated and is
+			// written below: the new manifest's grant did not apply.
+			firstWriteErr = lastErr
+		}
+		if body == nil {
+			// No occurrence validates: skip this grant but keep going — one
+			// bad file shouldn't invalidate every other module's sudo grants.
+			// The orphan from a previous successful render gets swept below.
 			continue
 		}
 		if err := fsutil.AtomicWrite(path, body, 0440); err != nil {

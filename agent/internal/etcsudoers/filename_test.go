@@ -327,45 +327,89 @@ func TestChildOfRefusesNamesThatAreNotDirectChildren(t *testing.T) {
 	}
 }
 
-// R2-2: when the same (module, id) arrives more than once (the upgrade's
-// old-union-new set), only the LAST occurrence is rendered and visudo-checked.
-// An old body that no longer validates must not fail the apply nor be written.
-func TestApplyAtValidatesOnlyTheLastOccurrenceOfAnIdentity(t *testing.T) {
+// R2-2 / R3-1: when the same (module, id) arrives more than once (the upgrade's
+// old-union-new set, or a revert's departing digest last), the occurrences are
+// tried from LAST to FIRST and the first one visudo accepts is written. The
+// error returned is the LAST occurrence's, so a failing new body stays fatal
+// and visible; nothing is written only if no occurrence validates.
+func TestApplyAtTriesOccurrencesLastToFirst(t *testing.T) {
 	orig := validateBody
 	t.Cleanup(func() { validateBody = orig })
 	var validated []string
 	validateBody = func(body []byte) error {
 		validated = append(validated, string(body))
-		if strings.Contains(string(body), "/bin/old") {
-			return errors.New("visudo rejected the old body")
+		for _, bad := range []string{"/bin/bad-old", "/bin/bad-new"} {
+			if strings.Contains(string(body), bad) {
+				return errors.New("visudo rejected " + bad)
+			}
 		}
 		return nil
 	}
-
-	dir := t.TempDir()
-	oldG := grantOf("postgres-primary", "reload")
-	oldG.Grant.Commands = []string{"/bin/old"}
-	newG := grantOf("postgres-primary", "reload")
-	newG.Grant.Commands = []string{"/bin/new"}
-
-	if err := ApplyAt([]Grant{oldG, newG}, dir, staticClock()); err != nil {
-		t.Fatalf("an invalid OLD body blocked the apply: %v", err)
+	mk := func(cmd string) Grant {
+		g := grantOf("postgres-primary", "reload")
+		g.Grant.Commands = []string{cmd}
+		return g
 	}
-	if len(validated) != 1 || !strings.Contains(validated[0], "/bin/new") {
-		t.Errorf("only the last occurrence may be validated, got %d validations: %q", len(validated), validated)
-	}
-	body, err := os.ReadFile(filepath.Join(dir, "powernode-postgres-primary-reload"))
-	if err != nil || !strings.Contains(string(body), "/bin/new") {
-		t.Errorf("new body did not land: %q, %v", body, err)
+	on := func(dir string) string {
+		b, err := os.ReadFile(filepath.Join(dir, "powernode-postgres-primary-reload"))
+		if err != nil {
+			return ""
+		}
+		return string(b)
 	}
 
-	// A genuinely invalid LAST occurrence is still reported and not written.
-	validated = nil
-	dir2 := t.TempDir()
-	if err := ApplyAt([]Grant{newG, oldG}, dir2, staticClock()); err == nil {
-		t.Error("an invalid last body must still be reported")
-	}
-	if got := listDir(t, dir2); len(got) != 0 {
-		t.Errorf("an invalid body was written: %v", got)
-	}
+	t.Run("invalid OLD then valid new: new lands, no error, the old body is never checked", func(t *testing.T) {
+		validated = nil
+		dir := t.TempDir()
+		if err := ApplyAt([]Grant{mk("/bin/bad-old"), mk("/bin/new")}, dir, staticClock()); err != nil {
+			t.Fatalf("an invalid OLD body blocked the apply: %v", err)
+		}
+		if len(validated) != 1 || !strings.Contains(validated[0], "/bin/new") {
+			t.Errorf("validations = %q", validated)
+		}
+		if !strings.Contains(on(dir), "/bin/new") {
+			t.Errorf("new body did not land:\n%s", on(dir))
+		}
+	})
+
+	t.Run("valid stable then invalid new: the stable body stays on disk and the new error is returned", func(t *testing.T) {
+		validated = nil
+		dir := t.TempDir()
+		err := ApplyAt([]Grant{mk("/bin/stable"), mk("/bin/bad-new")}, dir, staticClock())
+		if err == nil || !strings.Contains(err.Error(), "/bin/bad-new") {
+			t.Fatalf("the LAST occurrence's visudo error must be returned, got %v", err)
+		}
+		if RefusalsOnly(err) {
+			t.Error("a visudo failure must stay fatal")
+		}
+		if !strings.Contains(on(dir), "/bin/stable") {
+			t.Errorf("the stable grant was not kept:\n%s", on(dir))
+		}
+	})
+
+	t.Run("a stable file already on disk survives an invalid new body across ticks", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := ApplyAt([]Grant{mk("/bin/stable")}, dir, staticClock()); err != nil {
+			t.Fatal(err)
+		}
+		for tick := 0; tick < 2; tick++ {
+			if err := ApplyAt([]Grant{mk("/bin/stable"), mk("/bin/bad-new")}, dir, staticClock()); err == nil {
+				t.Fatal("expected the invalid new body to be reported")
+			}
+			if !strings.Contains(on(dir), "/bin/stable") {
+				t.Fatalf("tick %d: the stable grant was swept", tick)
+			}
+		}
+	})
+
+	t.Run("no occurrence validates: nothing written and the last error is returned", func(t *testing.T) {
+		dir := t.TempDir()
+		err := ApplyAt([]Grant{mk("/bin/bad-old"), mk("/bin/bad-new")}, dir, staticClock())
+		if err == nil || !strings.Contains(err.Error(), "/bin/bad-new") {
+			t.Fatalf("want the last occurrence's error, got %v", err)
+		}
+		if got := listDir(t, dir); len(got) != 0 {
+			t.Errorf("an invalid body was written: %v", got)
+		}
+	})
 }
