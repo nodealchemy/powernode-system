@@ -140,6 +140,14 @@ RSpec.describe System::ModuleBuildPlannerService, "build-script attribution" do
     expect(fake_client).not_to have_received(:get_file_content)
   end
 
+  # F5: a catch-all already plans every module, so reading stage15.sh is wasted work.
+  it "does not read stage15.sh once a catch-all trigger has fired" do
+    fake_client = stub_range([ ".gitea/workflows/build-platform-modules.yaml", "scripts/module-build/push.sh" ])
+
+    expect(plan_names).to eq(%w[hub-backend hub-frontend hub-worker module-forge redis])
+    expect(fake_client).not_to have_received(:get_file_content)
+  end
+
   describe "fallback to module-forge only" do
     before { allow(Rails.logger).to receive(:warn) }
 

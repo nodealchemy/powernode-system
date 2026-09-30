@@ -74,6 +74,80 @@ RSpec.describe System::ModuleBuildScriptAttribution do
       expect(parsed.arms.flat_map(&:slugs)).not_to include("amd64")
     end
 
+    # F2: `esac ;;` on one line ends the nested case AND the arm. Before the fix the
+    # arm stayed open and arm b was swallowed into arm a, so an edit to b was
+    # attributed to a with no ParseError.
+    it "closes an arm whose nested case ends with `esac ;;` on one line" do
+      script = <<~'SH'
+        case "$MODULE" in
+          a)
+            case "$ARCH" in
+              amd64) x=1 ;;
+            esac ;;
+          b) echo b ;;
+        esac
+      SH
+      expect(described_class.parse(script).arms.map(&:slugs)).to eq([ [ "a" ], [ "b" ] ])
+    end
+
+    it "closes an arm whose nested one-line case ends with `esac ;;`" do
+      script = <<~'SH'
+        case "$MODULE" in
+          a)
+            case "$ARCH" in amd64) x=1 ;;
+            esac ;;
+          b) echo b ;;
+        esac
+      SH
+      expect(described_class.parse(script).arms.map(&:slugs)).to eq([ [ "a" ], [ "b" ] ])
+    end
+
+    # F4: a spaced heredoc opener is still a heredoc, so its body is not read as
+    # structure; a spaced `<<` that is an append is still not.
+    it "skips the body of a spaced `<< WORD` heredoc" do
+      script = <<~'SH'
+        case "$MODULE" in
+          a)
+            cat << EOF
+          b) not an arm ;;
+        EOF
+            ;;
+          c) echo c ;;
+        esac
+      SH
+      arms = described_class.parse(script).arms
+      expect(arms.map(&:slugs)).to eq([ [ "a" ], [ "c" ] ])
+      expect(arms.first.text.lines.last.strip).to eq(";;") # the arm ran to ITS terminator, not the heredoc body's
+    end
+
+    it "skips the body of a spaced quoted `<< 'WORD'` heredoc" do
+      script = <<~'SH'
+        case "$MODULE" in
+          a)
+            cat << 'EOF'
+          b) not an arm ;;
+        EOF
+            ;;
+          c) echo c ;;
+        esac
+      SH
+      arms = described_class.parse(script).arms
+      expect(arms.map(&:slugs)).to eq([ [ "a" ], [ "c" ] ])
+      expect(arms.first.text.lines.last.strip).to eq(";;") # the arm ran to ITS terminator, not the heredoc body's
+    end
+
+    it "does not read a spaced append (`list << item.name`) as a heredoc" do
+      script = <<~'SH'
+        case "$MODULE" in
+          a)
+            ruby -e 'missing << spec.full_name'
+            ;;
+          c) echo c ;;
+        esac
+      SH
+      expect(described_class.parse(script).arms.map(&:slugs)).to eq([ [ "a" ], [ "c" ] ])
+    end
+
     it "raises ParseError on an unbalanced case/esac" do
       expect { described_class.parse(base_stage15.sub(/^esac\necho done/, "echo done")) }
         .to raise_error(described_class::ParseError)

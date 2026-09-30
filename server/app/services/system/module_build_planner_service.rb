@@ -354,7 +354,8 @@ module System
           dirty << MANIFEST_EXTENSION_MODULE if path.match?(MANIFEST_EXTENSION_PATH_RX)
         end
 
-        unless build_script_paths.empty?
+        # A catch-all already plans every module; reading stage15.sh would add nothing.
+        unless build_script_paths.empty? || catch_all
           dirty.merge(build_script_modules(account, repo_full_name, base_sha, head_sha, build_script_paths))
         end
       end

@@ -37,17 +37,32 @@ module System
       end
     end
 
-    Parsed = Struct.new(:arms, keyword_init: true)
+    Parsed = Struct.new(:arms, keyword_init: true) do
+      def slugs
+        arms.flat_map(&:slugs).to_set
+      end
+
+      # Every arm that names the slug, in file order, so a slug reached through
+      # both the needs_parent dispatch and the build dispatch compares as one unit.
+      def text_for(slug)
+        arms.select { |a| a.slugs.include?(slug) }.map(&:text).join
+      end
+    end
 
     MODULE_SCRUTINEE_RX = /\A"?\$\{?MODULE\}?"?\z/
     CASE_OPEN_RX        = /\A\s*case\s+(.+?)\s+in\b(.*)\z/
     ESAC_RX             = /\A\s*esac\b/
     ARM_START_RX        = /\A\s*\(?\s*((?:"[^"]*"|'[^']*'|[^\s)|"'])+(?:\s*\|\s*(?:"[^"]*"|'[^']*'|[^\s)|"'])+)*)\s*\)(.*)\z/
     ARM_END_RX          = /;;&?\s*(?:#.*)?\z|;&\s*(?:#.*)?\z/
-    # `<<WORD` / `<<-WORD` / `<<'WORD'`, with no space before the delimiter: a
-    # spaced `<<` is a Ruby append or an arithmetic shift in a script this size
-    # far more often than a heredoc (`missing << spec.full_name` in stage15.sh).
+    # `<<WORD` / `<<-WORD` / `<<'WORD'`, with no space before the delimiter.
     HEREDOC_RX          = /(?<!<)<<-?(["']?)([A-Za-z_]\w*)\1/
+    # A SPACED opener is accepted only when it cannot be a Ruby append or an
+    # arithmetic shift, which a script this size holds far more of than spaced
+    # heredocs (`missing << spec.full_name` in stage15.sh): a quoted delimiter
+    # (`<< 'EOF'`) or an all-caps word ending the token (`<< EOF`). A caps
+    # append (`list << CONST`) misread as a heredoc swallows the rest of the
+    # script and ends in a ParseError, i.e. the safe fallback.
+    HEREDOC_SPACED_RX   = /(?<!<)<<-?\s+(?:(["'])([A-Za-z_]\w*)\1|([A-Z][A-Z0-9_]*)(?=\s|;|\)|\z))/
     COMMENT_RX          = /\A\s*#/
     LITERAL_SLUG_RX     = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
 
@@ -68,8 +83,8 @@ module System
           raise ParseError, "stage15.sh changed but no base copy is available to compare arms against" if base_stage15.nil?
 
           base = parse(base_stage15)
-          (slug_set(head) | slug_set(base)).each do |slug|
-            slugs << slug unless arm_text(head, slug) == arm_text(base, slug)
+          (head.slugs | base.slugs).each do |slug|
+            slugs << slug unless head.text_for(slug) == base.text_for(slug)
           end
         end
 
@@ -122,6 +137,11 @@ module System
               current = nil
             elsif current
               current[:text] << raw
+              # `esac ;;` ends the nested case AND the arm around it.
+              if stack.size == 1 && stack.first && line.match?(ARM_END_RX)
+                arms << finish(current)
+                current = nil
+              end
             end
           elsif stack.size == 1 && stack.first
             # Directly inside the MODULE dispatch: an arm boundary is possible here.
@@ -145,7 +165,11 @@ module System
           end
 
           hm = line.match(HEREDOC_RX)
-          heredoc = hm[2] if hm
+          if hm
+            heredoc = hm[2]
+          elsif (sm = line.match(HEREDOC_SPACED_RX))
+            heredoc = sm[2] || sm[3]
+          end
         end
 
         raise ParseError, "unterminated case (#{stack.size} open at end of script)" unless stack.empty?
@@ -159,16 +183,6 @@ module System
       def finish(current)
         literal, glob = current[:patterns].partition { |p| p.match?(LITERAL_SLUG_RX) }
         Arm.new(slugs: literal, wildcard: !glob.empty?, text: current[:text])
-      end
-
-      def slug_set(parsed)
-        parsed.arms.flat_map(&:slugs).to_set
-      end
-
-      # Every arm that names the slug, in file order, so a slug reached through
-      # both the needs_parent dispatch and the build dispatch compares as one unit.
-      def arm_text(parsed, slug)
-        parsed.arms.select { |a| a.slugs.include?(slug) }.map(&:text).join
       end
 
       # Does the arm invoke the helper? A whole-name match on non-comment lines: a
