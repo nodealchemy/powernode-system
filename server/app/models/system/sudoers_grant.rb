@@ -23,6 +23,15 @@ module System
     STATES      = %w[active removed].freeze
     GRANT_ID_RX = /\A[a-z0-9_-]+\z/  # sudoers.d filename safe (no dots, no tildes)
 
+    # What the on-node agent (etcsudoers.Grant.CheckFilename) accepts for EACH of
+    # the module name and grant id in powernode-<module>-<id>, plus its cap on the
+    # whole basename and the break-glass drop-in it will never let a grant replace.
+    # GRANT_ID_RX above is the lowercase subset; the module name has no such
+    # model-level rule, so the manifest import applies this one to it.
+    FILENAME_COMPONENT_RX = /\A[a-zA-Z0-9_-]+\z/
+    MAX_FILENAME_LENGTH   = 200
+    BREAK_GLASS_FILENAME  = "powernode-operator-break-glass"
+
     belongs_to :node_module,  class_name: "System::NodeModule"
     belongs_to :service_user, class_name: "System::ServiceUser"
 
@@ -42,8 +51,12 @@ module System
       update!(state: "removed")
     end
 
-    def sudoers_filename(module_name)
+    def self.filename_for(module_name, grant_id)
       "powernode-#{module_name}-#{grant_id}"
+    end
+
+    def sudoers_filename(module_name)
+      self.class.filename_for(module_name, grant_id)
     end
 
     private

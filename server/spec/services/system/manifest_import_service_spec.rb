@@ -1016,6 +1016,69 @@ RSpec.describe System::ManifestImportService, type: :service do
         expect(result.validation_errors.join).to include("ALL")
       end
 
+      # IMP-3f6c2f35c50d: the agent writes /etc/sudoers.d/powernode-<module>-<id>
+      # as root and refuses a name outside [a-zA-Z0-9_-]+; the import must say so
+      # first, or the grant lands in the DB and is silently never applied.
+      context "sudoers drop-in filename components" do
+        def grant_yaml(id)
+          manifest_yaml + <<~YAML
+            sudoers:
+              - id: #{id}
+                user: postgres
+                commands: ["/usr/bin/systemctl reload postgresql.service"]
+          YAML
+        end
+
+        [ "../x", "a/b", "a.b", "a~", "caf\u00e9" ].each do |bad_id|
+          it "rejects the grant id #{bad_id.inspect}" do
+            result = described_class.import!(node_module: mod, yaml: grant_yaml(bad_id.to_json))
+            expect(result.ok?).to be false
+            expect(result.validation_errors.join).to match(/sudoers\[0\]\.id/)
+          end
+        end
+
+        it "rejects a grant on a module whose name is not a plain [a-zA-Z0-9_-]+ token" do
+          dotted = create(:system_node_module, account: account, node_platform: platform,
+                          category: category, variety: "subscription", name: "demo.mod")
+          result = described_class.import!(node_module: dotted, yaml: grant_yaml("reload").sub("name: demo-mod", "name: demo.mod"))
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("module name").and include("sudoers")
+        end
+
+        it "does not object to the module name when the manifest declares no sudoers" do
+          dotted = create(:system_node_module, account: account, node_platform: platform,
+                          category: category, variety: "subscription", name: "demo.mod")
+          result = described_class.import!(node_module: dotted, yaml: manifest_yaml.sub("name: demo-mod", "name: demo.mod"))
+          expect(result.validation_errors.to_a.join).not_to include("sudoers")
+        end
+
+        it "rejects a grant whose drop-in name is over the agent's length cap" do
+          long_mod = create(:system_node_module, account: account, node_platform: platform,
+                            category: category, variety: "subscription", name: "m" * 150)
+          result = described_class.import!(node_module: long_mod,
+                                           yaml: grant_yaml("i" * 60).sub("name: demo-mod", "name: #{'m' * 150}"))
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("over the")
+        end
+
+        it "rejects a grant that would replace the break-glass drop-in" do
+          op = create(:system_node_module, account: account, node_platform: platform,
+                      category: category, variety: "subscription", name: "operator")
+          result = described_class.import!(node_module: op,
+                                           yaml: grant_yaml("break-glass").sub("name: demo-mod", "name: operator"))
+          expect(result.ok?).to be false
+          expect(result.validation_errors.join).to include("break-glass")
+        end
+
+        it "accepts the seeded postgres-primary reload grant" do
+          pg = create(:system_node_module, account: account, node_platform: platform,
+                      category: category, variety: "subscription", name: "postgres-primary")
+          result = described_class.import!(node_module: pg,
+                                           yaml: grant_yaml("reload").sub("name: demo-mod", "name: postgres-primary"))
+          expect(result.validation_errors.to_a.join).not_to include("sudoers")
+        end
+      end
+
       it "rejects a user name that doesn't match the POSIX format regex" do
         bad = manifest_yaml + <<~YAML
           users:

@@ -320,7 +320,7 @@ module System
       validate_security(manifest, errors)
       validate_groups(manifest, errors)
       validate_users(manifest, errors)
-      validate_sudoers(manifest, errors)
+      validate_sudoers(manifest, errors, node_module)
       validate_no_shipped_home_paths(manifest, errors)
       validate_capability_requirements(manifest, errors)
 
@@ -479,13 +479,22 @@ module System
       end
     end
 
-    def validate_sudoers(manifest, errors)
+    def validate_sudoers(manifest, errors, node_module)
       grants = manifest["sudoers"]
       return if grants.nil?
 
       unless grants.is_a?(Array)
         errors << "sudoers must be an array"
         return
+      end
+
+      # The agent renders /etc/sudoers.d/powernode-<module>-<id> and refuses a
+      # module name outside [a-zA-Z0-9_-]+. NodeModule#name has no such rule, so
+      # a grant on a dotted/slashed module would import cleanly and never apply.
+      module_name_ok = node_module.name.to_s.match?(::System::SudoersGrant::FILENAME_COMPONENT_RX)
+      if grants.any? && !module_name_ok
+        errors << "sudoers: module name #{node_module.name.inspect} must match " \
+                  "#{::System::SudoersGrant::FILENAME_COMPONENT_RX.inspect} (it is part of the /etc/sudoers.d file name)"
       end
 
       user_names = Array(manifest["users"]).filter_map { |u| u.is_a?(Hash) ? u["name"] : nil }.to_set
@@ -506,6 +515,7 @@ module System
           errors << "#{prefix}.id #{gid.inspect} duplicates an earlier grant"
         else
           seen_ids << gid
+          validate_sudoers_filename(node_module, gid, prefix, errors) if module_name_ok
         end
 
         u = entry["user"]
@@ -532,6 +542,16 @@ module System
             end
           end
         end
+      end
+    end
+
+    def validate_sudoers_filename(node_module, gid, prefix, errors)
+      name = ::System::SudoersGrant.filename_for(node_module.name, gid)
+      if name.bytesize > ::System::SudoersGrant::MAX_FILENAME_LENGTH
+        errors << "#{prefix}.id: drop-in file name #{name.bytesize} bytes is over the " \
+                  "#{::System::SudoersGrant::MAX_FILENAME_LENGTH}-byte cap the agent enforces"
+      elsif name == ::System::SudoersGrant::BREAK_GLASS_FILENAME
+        errors << "#{prefix}.id: would render to the reserved break-glass drop-in #{name}"
       end
     end
 
