@@ -82,7 +82,7 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index privileged_module_ids", 
   end
 
   it "no longer reads the legacy account-settings value: one source of truth" do
-    account.update!(settings: (account.settings || {}).merge("privileged_module_ids" => [ dev_cell.id ]))
+    account.update_columns(settings: (account.settings || {}).merge("privileged_module_ids" => [ dev_cell.id ]))
     expect(fetch).to eq([])
   end
 
@@ -127,18 +127,37 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index privileged_module_ids", 
     def pending_events = System::FleetEvent.by_kind(System::PrivilegedModuleAllowlist::LEGACY_PENDING_EVENT_KIND)
 
     it "raises a critical fleet event and does NOT honour the legacy value" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
       allow(Rails.logger).to receive(:error)
 
       expect { expect(fetch).to eq([]) }.to change { pending_events.count }.by(1)
 
       expect(pending_events.last.severity).to eq("critical")
+      expect(pending_events.last.account_id).to eq(account.id)
       expect(pending_events.last.payload["remedy"]).to include("system:privileged_allowlist:migrate_legacy")
       expect(Rails.logger).to have_received(:error).with(/legacy privileged_module_ids grant is still present/)
     end
 
+    it "is NOT raised under an account that holds no legacy key (another tenant's stranded grant is not its alert)" do
+      other = create(:account)
+      other.update_columns(settings: other.settings.merge("privileged_module_ids" => [ "x" ]))
+
+      expect { fetch }.not_to(change { pending_events.count })
+    end
+
+    it "reports a platform-wide legacy SiteSetting only under the platform (oldest) account" do
+      SiteSetting.set("privileged_module_ids", [ dev_cell.id ].to_json, setting_type: "json")
+      create(:account).update_columns(created_at: 5.years.ago)
+
+      expect { fetch }.not_to(change { pending_events.count })
+
+      account.update_columns(created_at: 10.years.ago)
+      expect { fetch }.to change { pending_events.where(account_id: account.id).count }.by(1)
+    end
+
     it "also fires for the legacy SiteSetting, and is not repeated on every poll" do
       SiteSetting.set("privileged_module_ids", [ dev_cell.id ].to_json, setting_type: "json")
+      account.update_columns(created_at: 10.years.ago)
       fetch
 
       expect { fetch }.not_to(change { pending_events.count })
@@ -146,7 +165,7 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index privileged_module_ids", 
     end
 
     it "stops once the migration has moved the grant" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
       System::PrivilegedAllowlistLegacyMigration.call
 
       expect { expect(fetch).to eq([ dev_cell.id.to_s ]) }.not_to(change { pending_events.count })

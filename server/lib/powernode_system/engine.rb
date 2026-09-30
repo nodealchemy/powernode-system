@@ -679,6 +679,41 @@ module PowernodeSystem
     # registration below raised, a shared block would skip this one, leaving the
     # key unregistered, so the REST door would accept it as an ordinary setting
     # with no value check and no protection.
+    config.to_prepare do
+      begin
+        next unless defined?(::Ai::Tools::SiteSettingTool) &&
+                    ::Ai::Tools::SiteSettingTool.respond_to?(:register_key)
+
+        ::SiteSetting.register_value_check(::System::PrivilegedModuleAllowlist::SETTING_KEY) do |value|
+          ::System::PrivilegedModuleAllowlist.declaration_problem(value)
+        end
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::PrivilegedModuleAllowlist::SETTING_KEY,
+          setting_type: "json",
+          description: "JSON list of NodeModule ids the operator permits to run with " \
+                       "security.privileged=true (ALL on-node confinement off). A module manifest can " \
+                       "only request it; the agent refuses to attach, and compose refuses to enable, a " \
+                       "privileged module not listed here. Ids only, never names. Unset or [] grants none.",
+          protected: true
+        )
+        # The grant used to live in Account#settings, which any tenant admin can
+        # write. Reserve the old key there so it cannot be refilled: it would be
+        # a tenant-written source for a platform-wide privilege grant. Guarded so
+        # an extension promoted ahead of its core still boots.
+        if ::Account.respond_to?(:register_reserved_setting_key)
+          ::Account.register_reserved_setting_key(
+            ::System::PrivilegedAllowlistLegacyMigration::LEGACY_KEY,
+            reason: "the privileged-module grant is a platform-operator decision; " \
+                    "it is written only through the protected site setting #{::System::PrivilegedModuleAllowlist::SETTING_KEY}"
+          )
+        end
+      rescue ArgumentError
+        raise
+      rescue StandardError => e
+        Rails.logger.error "[PowernodeSystem] Could not register the privileged-module allowlist key: #{e.class}: #{e.message}"
+      end
+    end
+
     # IMP-7723206bc137 — declare this extension's operator-configurable
     # SiteSetting keys on core's MCP settings verb. Core owns the verb and the
     # allowlist mechanism; it must not know this extension's configuration
@@ -699,30 +734,6 @@ module PowernodeSystem
     # to_prepare for exactly this reason (IMP-8d444c6437a3). Latent today only
     # because enable_reloading is false in every environment here; relying on
     # that is not a design.
-    config.to_prepare do
-      begin
-        next unless defined?(::Ai::Tools::SiteSettingTool) &&
-                    ::Ai::Tools::SiteSettingTool.respond_to?(:register_key)
-
-        ::SiteSetting.register_value_check(::System::PrivilegedModuleAllowlist::SETTING_KEY) do |value|
-          ::System::PrivilegedModuleAllowlist.declaration_problem(value)
-        end
-        ::Ai::Tools::SiteSettingTool.register_key(
-          ::System::PrivilegedModuleAllowlist::SETTING_KEY,
-          setting_type: "json",
-          description: "JSON list of NodeModule ids the operator permits to run with " \
-                       "security.privileged=true (ALL on-node confinement off). A module manifest can " \
-                       "only request it; the agent refuses to attach, and compose refuses to enable, a " \
-                       "privileged module not listed here. Ids only, never names. Unset or [] grants none.",
-          protected: true
-        )
-      rescue ArgumentError
-        raise
-      rescue StandardError => e
-        Rails.logger.error "[PowernodeSystem] Could not register the privileged-module allowlist key: #{e.class}: #{e.message}"
-      end
-    end
-
     config.to_prepare do
       begin
         next unless defined?(::Ai::Tools::SiteSettingTool) &&

@@ -127,20 +127,20 @@ module System
     # interval, naming the remedy. Stops by itself once the migration has moved
     # the grant. Never raises into the poll.
     def report_legacy_pending!(account:, instance:)
-      return unless ::System::PrivilegedAllowlistLegacyMigration.legacy_present?
+      return unless ::System::PrivilegedAllowlistLegacyMigration.legacy_present_for?(account)
       return if ::System::FleetEvent.by_kind(LEGACY_PENDING_EVENT_KIND).where(account_id: account&.id)
                                     .where("emitted_at >= ?", UNAPPROVED_EVENT_INTERVAL.ago).exists?
 
       ::Rails.logger.error(
         "[PrivilegedModuleAllowlist] a legacy privileged_module_ids grant is still present and NOT in force; " \
-        "run: rake system:privileged_allowlist:migrate_legacy"
+        "run: rake system:privileged_allowlist:migrate_legacy (prints the plan; CONFIRM=1 OPERATOR=<user> applies it)"
       )
       ::System::Fleet::EventBroadcaster.emit!(
         account: account,
         kind: LEGACY_PENDING_EVENT_KIND,
         severity: :critical,
         payload: { "setting_key" => SETTING_KEY,
-                   "remedy" => "run rake system:privileged_allowlist:migrate_legacy (or grant the module ids through the protected site setting #{SETTING_KEY})" },
+                   "remedy" => "run rake system:privileged_allowlist:migrate_legacy to see the plan, CONFIRM=1 OPERATOR=<user> to apply it (or grant the module ids through the protected site setting #{SETTING_KEY}); an unreadable legacy value needs SQL" },
         source: "node_api.modules",
         node_instance_id: instance&.id
       )

@@ -110,4 +110,21 @@ RSpec.describe System::PrivilegedModuleAllowlist do
       expect(SiteSetting.value_checks).to include(key)
     end
   end
+
+  # The grant used to live in Account#settings, which any tenant admin can write.
+  describe "the legacy account-settings key" do
+    it "is reserved on Account, so it cannot be refilled by a tenant-level writer" do
+      expect(Account.reserved_setting_keys).to include("privileged_module_ids")
+    end
+
+    it "is refused through the account-settings service" do
+      user = create(:user, account: account, permissions: [ "admin.settings.update" ])
+      result = SettingsUpdateService.new(user: user, account: account,
+                                         params: { account_settings: { "privileged_module_ids" => [ node_module.id ] } }).call
+
+      expect(result[:success]).to be(false)
+      expect(result.to_json).to include("privileged_module_ids").and include(described_class::SETTING_KEY)
+      expect(account.reload.settings).not_to have_key("privileged_module_ids")
+    end
+  end
 end

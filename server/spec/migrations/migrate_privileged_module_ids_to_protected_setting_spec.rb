@@ -39,7 +39,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
 
   describe "the account-settings source" do
     it "moves an id into the protected setting and removes the legacy value" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
 
       run!
 
@@ -49,7 +49,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
     end
 
     it "RESOLVES a module name to its id, as the node API used to at read time" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.name ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.name ]))
 
       run!
 
@@ -58,7 +58,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
 
     it "resolves a name only among the modules its account can see, and KEEPS the legacy key for one it cannot" do
       foreign
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ "foreign-m" ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ "foreign-m" ]))
 
       run!
 
@@ -66,33 +66,45 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
       expect(legacy_account_value(account)).to eq([ "foreign-m" ])
     end
 
-    # The old reader matched against every module RESOLVED for the node, which
-    # is not account-scoped: an assignment can put another account's (public)
-    # module on this account's node.
-    it "migrates a grant naming ANOTHER account's module by id, intact" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ foreign.id ]))
+    # The protected setting is GLOBAL. The old reader ran as the node's account,
+    # so a grant in account A's settings only ever unconfined A's nodes; moving
+    # an entry naming B's module would make it privileged on B's own nodes, which
+    # B never granted. Only entries naming a module the granting account OWNS
+    # migrate automatically.
+    it "does NOT migrate a grant naming ANOTHER account's module by id: kept, logged, left for the operator" do
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ foreign.id ]))
+      allow(Rails.logger).to receive(:error)
 
       run!
 
-      expect(stored_ids).to eq([ foreign.id.to_s ])
-      expect(legacy_account_value(account)).to be_nil
-      expect(audit_rows.last.account_id).to eq(account.id)
+      expect(stored_ids).to be_nil, "one tenant's grant must never become another tenant's privilege"
+      expect(legacy_account_value(account)).to eq([ foreign.id ])
+      expect(Rails.logger).to have_received(:error).with(/not auto-migrated/)
     end
 
-    it "resolves a name to a module of another account that is assigned to one of THIS account's nodes" do
+    it "does NOT migrate a name resolving to another account's module even when it is assigned to this account's node" do
       shared = create(:system_node_module, account: other_account, name: "shared-public-m", public: true)
       node = create(:system_node, account: account)
       System::NodeModuleAssignment.create!(node: node, node_module: shared, enabled: true, priority: 0)
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ "shared-public-m" ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ "shared-public-m" ]))
 
       run!
 
-      expect(stored_ids).to eq([ shared.id.to_s ])
-      expect(legacy_account_value(account)).to be_nil
+      expect(stored_ids).to be_nil
+      expect(legacy_account_value(account)).to eq([ "shared-public-m" ])
+    end
+
+    it "moves the entries the account owns and keeps the rest, in one account" do
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id, foreign.id ]))
+
+      run!
+
+      expect(stored_ids).to eq([ dev_cell.id.to_s ])
+      expect(legacy_account_value(account)).to eq([ dev_cell.id, foreign.id ])
     end
 
     it "leaves the other keys of accounts.settings alone" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ], "keep" => "me"))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ], "keep" => "me"))
 
       run!
 
@@ -100,8 +112,8 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
     end
 
     it "unions grants across accounts" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
-      other_account.update!(settings: other_account.settings.merge("privileged_module_ids" => [ foreign.id ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
+      other_account.update_columns(settings: other_account.settings.merge("privileged_module_ids" => [ foreign.id ]))
 
       run!
 
@@ -131,7 +143,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
   describe "an existing protected value" do
     it "is kept: the migration only ever adds what a person has not already granted" do
       SiteSetting.set(key, [ second.id ].to_json, setting_type: "json")
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
 
       run!
 
@@ -141,7 +153,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
 
   describe "the audit trail" do
     it "records one row per account touched, naming the key and the ids, in the audit chain" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
 
       expect { run! }.to change { audit_rows.count }.by(1)
 
@@ -153,7 +165,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
     end
 
     it "moves what it CAN resolve, names what it could not, and KEEPS the legacy key so nothing is dropped" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id, "no-such-module" ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id, "no-such-module" ]))
       allow(Rails.logger).to receive(:error)
 
       run!
@@ -165,7 +177,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
     end
 
     it "keeps an all-unresolved legacy grant untouched and writes neither setting nor audit row" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ "no-such-module" ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ "no-such-module" ]))
 
       expect { run! }.not_to(change { audit_rows.count })
 
@@ -174,19 +186,20 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
     end
 
     it "does not audit again on a re-run that moves nothing new" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id, "no-such-module" ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id, "no-such-module" ]))
       run!
 
       expect { run! }.not_to(change { audit_rows.count })
     end
 
-    it "does not put a global setting's unresolved names into a tenant's audit row" do
-      SiteSetting.set("privileged_module_ids", [ dev_cell.id, "no-such-module" ].to_json, setting_type: "json")
+    it "audits a global-setting source under the platform (oldest) account, not the account that owns the module" do
+      SiteSetting.set("privileged_module_ids", [ foreign.id ].to_json, setting_type: "json")
+      platform = Account.order(:created_at, :id).first
 
       run!
 
-      expect(audit_rows.map { |r| r.metadata["unresolved_entries"] }.flatten.compact).to be_empty
-      expect(SiteSetting.find_by(key: "privileged_module_ids")).to be_present
+      expect(stored_ids).to eq([ foreign.id.to_s ])
+      expect(audit_rows.map(&:account_id)).to eq([ platform.id ])
     end
   end
 
@@ -197,14 +210,14 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
     end
 
     it "is idempotent" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
       run!
 
       expect { run! }.not_to(change { [ stored_ids, audit_rows.count ] })
     end
 
     it "ignores an empty or blank legacy value without granting anything" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ "", nil ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ "", nil ]))
 
       expect { run! }.not_to raise_error
       expect(stored_ids).to be_nil
@@ -213,7 +226,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
 
   describe "failure" do
     before do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
     end
 
     it "never raises, and leaves the legacy grant in place when the write fails" do
@@ -228,7 +241,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
     end
 
     it "survives a malformed legacy value of an unexpected shape" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => { "a" => 1 }))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => { "a" => 1 }))
 
       expect { run! }.not_to raise_error
       expect(stored_ids).to be_nil
@@ -254,7 +267,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
     end
 
     it "skips an account whose settings is not an object, and still moves the others" do
-      other_account.update!(settings: other_account.settings.merge("privileged_module_ids" => [ foreign.id ]))
+      other_account.update_columns(settings: other_account.settings.merge("privileged_module_ids" => [ foreign.id ]))
       ActiveRecord::Base.connection.execute(
         "UPDATE accounts SET settings = '[\"privileged_module_ids\"]'::jsonb WHERE id = '#{account.id}'"
       )
@@ -271,27 +284,139 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
     end
   end
 
+  describe "every removal of a legacy source is audited" do
+    it "writes an audit row for a discard run even when nothing new moved" do
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id, "no-such-module" ]))
+      run!
+      expect(audit_rows.count).to eq(1)
+
+      System::PrivilegedAllowlistLegacyMigration.call(discard_unresolved: true)
+
+      expect(legacy_account_value(account)).to be_nil
+      expect(audit_rows.count).to eq(2), "a discard that removed a source left no audit row"
+      expect(audit_rows.last.metadata).to include("unresolved_entries" => [ "no-such-module" ],
+                                                  "unresolved_discarded" => true, "legacy_source_removed" => true)
+    end
+
+    it "audits a discard when nothing at all resolved (no setting row exists to point at)" do
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ "no-such-module" ]))
+
+      System::PrivilegedAllowlistLegacyMigration.call(discard_unresolved: true)
+
+      row = AuditLog.where(action: "update_site_setting", account_id: account.id).last
+      expect(row).to be_present
+      expect(row.metadata).to include("unresolved_discarded" => true, "legacy_source_removed" => true)
+      expect(legacy_account_value(account)).to be_nil
+    end
+
+    it "audits removing a source whose ids were already granted" do
+      SiteSetting.set(key, [ dev_cell.id ].to_json, setting_type: "json")
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
+
+      expect { run! }.to change { audit_rows.count }.by(1)
+
+      expect(audit_rows.last.metadata).to include("legacy_source_removed" => true, "migrated_module_ids" => [])
+    end
+  end
+
+  describe "a stale id already in the protected value" do
+    it "is dropped while merging, and recorded, instead of failing every retry" do
+      gone = create(:system_node_module, account: account, name: "gone-m")
+      SiteSetting.set(key, [ gone.id ].to_json, setting_type: "json")
+      gone.destroy!
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
+
+      result = System::PrivilegedAllowlistLegacyMigration.call
+
+      expect(result).to be_ok
+      expect(stored_ids).to eq([ dev_cell.id.to_s ])
+      expect(audit_rows.last.metadata).to include("dropped_stale_ids" => [ gone.id.to_s ])
+    end
+  end
+
+  describe "the plan and the rake task" do
+    before(:all) { Rails.application.load_tasks unless Rake::Task.task_defined?("system:privileged_allowlist:migrate_legacy") }
+    after { Rake::Task["system:privileged_allowlist:migrate_legacy"].reenable }
+
+    let(:operator) { create(:user, account: account, email: "operator-#{SecureRandom.hex(3)}@example.test") }
+
+    # [stdout, stderr, exit status or nil]
+    def rake!(env = {})
+      old = env.keys.to_h { |k| [ k, ENV[k] ] }
+      env.each { |k, v| ENV[k] = v }
+      out = StringIO.new
+      err = StringIO.new
+      status = nil
+      original = [ $stdout, $stderr ]
+      $stdout = out
+      $stderr = err
+      begin
+        Rake::Task["system:privileged_allowlist:migrate_legacy"].reenable
+        Rake::Task["system:privileged_allowlist:migrate_legacy"].execute
+      rescue SystemExit => e
+        status = e.status
+      ensure
+        $stdout, $stderr = original
+        old.each { |k, v| ENV[k] = v }
+      end
+      [ out.string, err.string, status ]
+    end
+
+    before do
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id, foreign.id ]))
+    end
+
+    it "PRINTS the plan (entry, module id and name, owning account, disposition) and writes nothing without CONFIRM=1" do
+      out, = rake!("CONFIRM" => nil)
+
+      expect(out).to match(/#{dev_cell.id} "dev-cell-m" owned by account #{account.id} => migrate/)
+      expect(out).to match(/#{foreign.id} "foreign-m" owned by account #{other_account.id} => foreign/)
+      expect(out).to include("dry run: nothing written")
+      expect(stored_ids).to be_nil
+      expect(legacy_account_value(account)).to eq([ dev_cell.id, foreign.id ])
+    end
+
+    it "REFUSES to write with CONFIRM=1 but no OPERATOR" do
+      _, err, status = rake!("CONFIRM" => "1", "OPERATOR" => nil)
+
+      expect(err).to match(/OPERATOR/)
+      expect(status).to eq(1)
+      expect(stored_ids).to be_nil
+    end
+
+    it "REFUSES an OPERATOR that names no user" do
+      _, err, status = rake!("CONFIRM" => "1", "OPERATOR" => "nobody@example.test")
+
+      expect(err).to match(/OPERATOR/)
+      expect(status).to eq(1)
+      expect(stored_ids).to be_nil
+    end
+
+    it "writes with CONFIRM=1 and a resolvable OPERATOR (email or id), and the audit row names that operator" do
+      rake!("CONFIRM" => "1", "OPERATOR" => operator.email)
+
+      expect(stored_ids).to eq([ dev_cell.id.to_s ])
+      row = audit_rows.last
+      expect(row.user_id).to eq(operator.id)
+      expect(row.metadata).to include("actor" => "operator", "operator_id" => operator.id)
+    end
+
+    it "accepts a user id as OPERATOR" do
+      rake!("CONFIRM" => "1", "OPERATOR" => operator.id.to_s)
+
+      expect(audit_rows.last.user_id).to eq(operator.id)
+    end
+  end
+
   describe "System::PrivilegedAllowlistLegacyMigration.call(discard_unresolved: true)" do
     it "removes the unresolved legacy entries after recording them in the audit row" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id, "no-such-module" ]))
+      account.update_columns(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id, "no-such-module" ]))
 
       System::PrivilegedAllowlistLegacyMigration.call(discard_unresolved: true)
 
       expect(stored_ids).to eq([ dev_cell.id.to_s ])
       expect(legacy_account_value(account)).to be_nil
       expect(audit_rows.last.metadata).to include("unresolved_entries" => [ "no-such-module" ], "unresolved_discarded" => true)
-    end
-  end
-
-  describe "rake system:privileged_allowlist:migrate_legacy" do
-    before(:all) { Rails.application.load_tasks unless Rake::Task.task_defined?("system:privileged_allowlist:migrate_legacy") }
-
-    it "re-runs the move" do
-      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
-
-      expect { Rake::Task["system:privileged_allowlist:migrate_legacy"].execute }.to output(/moved 1 module id/).to_stdout
-
-      expect(stored_ids).to eq([ dev_cell.id.to_s ])
     end
   end
 
