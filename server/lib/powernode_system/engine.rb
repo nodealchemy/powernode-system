@@ -751,6 +751,23 @@ module PowernodeSystem
       end
     end
 
+    # IMP-78bc3b20ee94 — the approval card for the privileged-module grant reads
+    # each id as the module's name and owning account. Its OWN to_prepare block,
+    # after the key's, so a failure here costs only the nicer card and never the
+    # key's registration; guarded so an extension promoted ahead of its core
+    # (no presenter seam yet) still boots and the card shows the raw value.
+    config.to_prepare do
+      begin
+        next unless ::SiteSetting.respond_to?(:register_value_presenter)
+
+        ::SiteSetting.register_value_presenter(::System::PrivilegedModuleAllowlist::SETTING_KEY) do |value|
+          ::System::PrivilegedModuleAllowlist.present(value)
+        end
+      rescue StandardError => e
+        Rails.logger.error "[PowernodeSystem] Could not register the privileged-module allowlist presenter: #{e.class}: #{e.message}"
+      end
+    end
+
     # IMP-7723206bc137 — declare this extension's operator-configurable
     # SiteSetting keys on core's MCP settings verb. Core owns the verb and the
     # allowlist mechanism; it must not know this extension's configuration
