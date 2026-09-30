@@ -20,6 +20,10 @@ const SudoersDir = "/etc/sudoers.d"
 // files (operator-authored 90-admins, etc.) are never touched.
 const ManagedPrefix = "powernode-"
 
+// validateBody is the visudo gate for a rendered grant; a var so a spec can
+// observe which bodies are checked.
+var validateBody = Validate
+
 // Apply renders, validates, and atomically writes one file per Grant
 // under /etc/sudoers.d/, then sweeps any orphaned powernode-* files
 // whose backing grant is gone.
@@ -53,10 +57,11 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 	// in the reconciler. Every identity in such a collision group is refused,
 	// independent of order. The SAME identity arriving twice is not a
 	// collision: the reconciler's old-union-new set legitimately carries a
-	// grant from both manifests, and the later (the new manifest) wins by
-	// being written last.
+	// grant from both manifests, and only the later (the new manifest) is
+	// rendered, validated and written.
 	type identity struct{ module, id string }
 	paths := make([]string, len(grants))
+	lastOf := map[identity]int{}
 	idsByPath := map[string]map[identity]struct{}{}
 	for n, g := range grants {
 		path, err := g.PathIn(dir)
@@ -69,6 +74,7 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 			idsByPath[path] = map[identity]struct{}{}
 		}
 		idsByPath[path][identity{g.ModuleName, g.Grant.ID}] = struct{}{}
+		lastOf[identity{g.ModuleName, g.Grant.ID}] = n
 	}
 
 	for n, g := range grants {
@@ -76,6 +82,12 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 		// nothing is rendered, written or removed for it, and the rest apply.
 		path := paths[n]
 		if path == "" {
+			continue
+		}
+		// The same identity from several manifests (old-union-new): only the
+		// last is rendered and visudo-checked, so an old body that no longer
+		// validates cannot block the upgrade that replaces it.
+		if lastOf[identity{g.ModuleName, g.Grant.ID}] != n {
 			continue
 		}
 		if len(idsByPath[path]) > 1 {
@@ -90,7 +102,7 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 			continue
 		}
 		body := Render(g, now())
-		if err := Validate(body); err != nil {
+		if err := validateBody(body); err != nil {
 			// Skip this grant but keep going — one bad file shouldn't
 			// invalidate every other module's sudo grants. The orphan
 			// from a previous successful render gets swept below.

@@ -326,3 +326,46 @@ func TestChildOfRefusesNamesThatAreNotDirectChildren(t *testing.T) {
 		t.Errorf("childOf valid = %q, %v", p, err)
 	}
 }
+
+// R2-2: when the same (module, id) arrives more than once (the upgrade's
+// old-union-new set), only the LAST occurrence is rendered and visudo-checked.
+// An old body that no longer validates must not fail the apply nor be written.
+func TestApplyAtValidatesOnlyTheLastOccurrenceOfAnIdentity(t *testing.T) {
+	orig := validateBody
+	t.Cleanup(func() { validateBody = orig })
+	var validated []string
+	validateBody = func(body []byte) error {
+		validated = append(validated, string(body))
+		if strings.Contains(string(body), "/bin/old") {
+			return errors.New("visudo rejected the old body")
+		}
+		return nil
+	}
+
+	dir := t.TempDir()
+	oldG := grantOf("postgres-primary", "reload")
+	oldG.Grant.Commands = []string{"/bin/old"}
+	newG := grantOf("postgres-primary", "reload")
+	newG.Grant.Commands = []string{"/bin/new"}
+
+	if err := ApplyAt([]Grant{oldG, newG}, dir, staticClock()); err != nil {
+		t.Fatalf("an invalid OLD body blocked the apply: %v", err)
+	}
+	if len(validated) != 1 || !strings.Contains(validated[0], "/bin/new") {
+		t.Errorf("only the last occurrence may be validated, got %d validations: %q", len(validated), validated)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "powernode-postgres-primary-reload"))
+	if err != nil || !strings.Contains(string(body), "/bin/new") {
+		t.Errorf("new body did not land: %q, %v", body, err)
+	}
+
+	// A genuinely invalid LAST occurrence is still reported and not written.
+	validated = nil
+	dir2 := t.TempDir()
+	if err := ApplyAt([]Grant{newG, oldG}, dir2, staticClock()); err == nil {
+		t.Error("an invalid last body must still be reported")
+	}
+	if got := listDir(t, dir2); len(got) != 0 {
+		t.Errorf("an invalid body was written: %v", got)
+	}
+}
