@@ -78,6 +78,11 @@ module System
 
     scope :active, -> { where(status: %w[issued active]) }
     scope :rotating, -> { where(status: "rotating") }
+
+    # "rotating" and past the cutoff, or "rotating" with no clock at all (a row
+    # written before rotating_since existed, or by a process still running the
+    # previous release): the sweeper stamps those rather than retiring them.
+    scope :rotating_overdue, ->(cutoff) { rotating.where("rotating_since IS NULL OR rotating_since <= ?", cutoff) }
     scope :expired_or_failed, -> { where(status: %w[expired failed revoked]) }
 
     def expired?
@@ -92,8 +97,12 @@ module System
       update!(status: "active")
     end
 
+    # rotating_since is the clock System::Storage::RotatingCredentialSweeper
+    # bounds a deferred SMB retirement with (IMP-a366d6fb6b80): a credential
+    # that stays "rotating" because its consumer never confirmed a remount is
+    # retired once it has been rotating longer than the operator's window.
     def mark_rotating!
-      update!(status: "rotating")
+      update!(status: "rotating", rotating_since: Time.current)
     end
 
     def revoke!

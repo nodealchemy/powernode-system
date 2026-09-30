@@ -257,7 +257,13 @@ Issues, rotates, and revokes per-instance `StorageCredential`s. Flow: resolve
 `StorageCredential` and seal the payload in Vault; then materialize the backend
 side via `NfsExportManager#grant!` or `SmbUserManager#provision_user!` depending
 on `provider_type`. `rotate!` issues a new credential then revokes the old;
-`revoke!` tears down the backend grant/user and revokes the provider handle. It
+`revoke!` tears down the backend grant/user and revokes the provider handle. A
+scheme-crossing SMB rotation leaves the outgoing credential `rotating` until the
+consumer confirms a remount; `rotating_since` records when that began, and
+`RotatingCredentialSweeper` retires one that has waited past the operator's
+window (`system.storage.smb_rotation_retire_window_hours`, default 24h) through
+the same `CredentialIssuer` path, with an audit row and a fleet event naming the
+node. It
 deliberately re-fetches the credential via `Model.find(id)` (not `reload`) after
 `store_in_vault` to dodge a known vault-credential cache reload bug.
 

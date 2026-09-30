@@ -473,16 +473,58 @@ module System
 
         @assignment.storage_credentials.where(status: "rotating")
                    .where.not(id: confirmed_credential.id).find_each do |old_credential|
-          old_credential.with_lock do
-            next unless old_credential.status == "rotating"
-
-            deprovision!(old_credential, successor: confirmed_credential)
-            old_credential.revoke!
-          end
+          retire_rotating!(old_credential, successor: confirmed_credential)
         end
       end
 
+      # IMP-a366d6fb6b80 - the OTHER caller of the retirement above: a
+      # credential that has been "rotating" past its window because the
+      # consumer never confirmed a remount (offline, wedged, deleted without
+      # teardown, or deliberately silent). Called by
+      # System::Storage::RotatingCredentialSweeper, one credential at a time.
+      #
+      # It is the SAME retirement as a confirmation's - #retire_rotating! runs
+      # the identical deprovision! + revoke! - so there is exactly one
+      # revocation path. What differs is only the gate: the credential must
+      # still be "rotating" AND still overdue when the row lock is held, so a
+      # confirmation that lands between the sweeper's read and this call wins
+      # (this returns false and does nothing), and a credential whose clock was
+      # restarted since is left alone. Whichever of the two takes the lock
+      # first retires it; the other finds it revoked. The successor is the
+      # assignment's CURRENT active credential (it may be nil if that has since
+      # lapsed, which retiring the old one does not need).
+      #
+      # A block, if given, runs INSIDE the same transaction, after the revoke,
+      # with the delete task deprovision! dispatched (nil when a sibling still
+      # needs the username): the sweeper writes its audit row there, so a
+      # retirement and its audit record commit or roll back together.
+      #
+      # Returns true only when THIS call retired the credential.
+      def retire_overdue_rotating_smb_credential!(credential, cutoff:, &on_retired)
+        return false unless @storage&.smb?
+        return false unless credential.storage_assignment_id == @assignment.id
+
+        overdue = ->(row) { row.rotating_since.present? && row.rotating_since <= cutoff }
+        retire_rotating!(credential, successor: @assignment.active_credential, only_if: overdue, &on_retired)
+      end
+
       private
+
+      # The one retirement of a still-"rotating" credential. The status (and,
+      # for the forced path, the overdue test) is re-checked UNDER THE ROW LOCK
+      # - see #retire_rotating_smb_credentials!'s COALESCING note - so exactly
+      # one racing caller acts. Returns true when this call retired it.
+      def retire_rotating!(old_credential, successor:, only_if: nil)
+        old_credential.with_lock do
+          next false unless old_credential.status == "rotating"
+          next false if only_if && !only_if.call(old_credential)
+
+          delete_task = deprovision!(old_credential, successor: successor)
+          old_credential.revoke!
+          yield old_credential, delete_task if block_given?
+          true
+        end
+      end
     end
   end
 end

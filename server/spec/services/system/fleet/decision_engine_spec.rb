@@ -1298,6 +1298,72 @@ RSpec.describe System::Fleet::DecisionEngine do
         expect(::System::Storage::AssignmentReconciliationService)
           .to have_received(:reconcile_assignment!).with(assignment)
       end
+
+      # IMP-a366d6fb6b80 - the applier of the storage_assignment_drift lane also
+      # bounds SMB credentials a consumer never confirmed the remount for.
+      context "with an SMB credential rotating past the retire window" do
+        let(:platform) { create(:system_node_platform, account: account) }
+        let(:template) { create(:system_node_template, account: account, node_platform: platform) }
+        let(:node) { create(:system_node, account: account, node_template: template) }
+        let(:inst) { create(:system_node_instance, :running, node: node) }
+        let(:backend) { create(:system_node_instance, account: account) }
+        let(:smb_storage) do
+          create(:file_storage, :smb, :node_mountable, account: account,
+            configuration: {
+              "mount_path" => "/mnt/engine-smb", "server_address" => "192.168.1.210",
+              "share_name" => "engine-smb", "export_host_node_instance_id" => backend.id
+            })
+        end
+        let(:assignment) do
+          create(:system_storage_assignment, account: account, node_instance: inst,
+                 file_storage_id: smb_storage.id, mount_path: "/mnt/engine-smb")
+        end
+
+        before do
+          policy!("system.storage_assignment_reconcile", "notify_and_proceed")
+          allow_any_instance_of(System::StorageCredential)
+            .to receive(:vault_credentials) { |row| row.metadata.slice("username") }
+          assignment.storage_credentials.update_all(status: "revoked")
+          issuer = System::Storage::CredentialIssuer.new(assignment: assignment)
+          @old = issuer.issue!
+          @old.update_columns(metadata: @old.metadata.merge("username" => "n-legacy-engine"))
+          issuer.rotate!(@old)
+          @old.reload.update_columns(rotating_since: 30.hours.ago)
+          allow(::System::Storage::AssignmentReconciliationService).to receive(:reconcile_assignment!)
+        end
+
+        def decide_drift(payload_extra = {})
+          engine.decide(kind: "system.storage_assignment_drift", severity: :medium,
+                        payload: { "storage_assignment_id" => assignment.id }.merge(payload_extra),
+                        fingerprint: "storage_assignment_drift:#{assignment.id}")
+        end
+
+        it "retires it, reports it, and still reconciles a drifting assignment" do
+          d = decide_drift
+
+          expect(d[:decision]).to eq(:proceed)
+          expect(d[:remediation]).to include(applied: true, smb_credentials_retired: [ @old.id ])
+          expect(@old.reload.status).to eq("revoked")
+          expect(::System::Storage::AssignmentReconciliationService).to have_received(:reconcile_assignment!).with(assignment)
+        end
+
+        it "sweeps without re-driving a mount when the signal is only about the overdue credential" do
+          d = decide_drift("reconcile" => false)
+
+          expect(d[:remediation]).to include(applied: true, smb_credentials_retired: [ @old.id ])
+          expect(::System::Storage::AssignmentReconciliationService).not_to have_received(:reconcile_assignment!)
+        end
+
+        it "reports applied: false when a retirement raised, and still reconciles" do
+          allow_any_instance_of(System::Storage::SmbUserManager).to receive(:deprovision_user!).and_raise("backend unreachable")
+
+          d = decide_drift
+
+          expect(d[:remediation]).to include(applied: false, smb_credentials_failed: [ @old.id ])
+          expect(@old.reload.status).to eq("rotating")
+          expect(::System::Storage::AssignmentReconciliationService).to have_received(:reconcile_assignment!)
+        end
+      end
     end
 
     # Audit finding F3-04: invoke_skill's class-name case statement silently

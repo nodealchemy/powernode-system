@@ -110,6 +110,98 @@ RSpec.describe System::Fleet::Sensors::StorageAssignmentDriftSensor do
     expect(sensor.sense).to be_empty
   end
 
+  # IMP-a366d6fb6b80 - the second population: an SMB credential left
+  # "rotating" past the window because the consumer never confirmed a remount.
+  # It rides the SAME signal kind (so the lane's existing applier sweeps it),
+  # is independent of the staleness window, and names the node.
+  describe "an SMB credential rotating past the retire window" do
+    let(:backend) { create(:system_node_instance, account: account) }
+    let(:smb_storage) do
+      create(:file_storage, :smb, :node_mountable, account: account,
+        configuration: {
+          "mount_path" => "/mnt/drift-smb", "server_address" => "192.168.1.210",
+          "share_name" => "drift-smb", "export_host_node_instance_id" => backend.id
+        })
+    end
+
+    before do
+      allow_any_instance_of(System::StorageCredential)
+        .to receive(:vault_credentials) { |row| row.metadata.slice("username") }
+    end
+
+    # A MOUNTED, healthy assignment whose rotation crossed schemes: the old
+    # credential stays rotating with rotating_since = `since`.
+    def healthy_assignment_with_rotating!(since:)
+      assignment = create(:system_storage_assignment, account: account, node_instance: instance,
+                           file_storage_id: smb_storage.id, mount_path: "/mnt/drift-smb")
+      assignment.storage_credentials.update_all(status: "revoked")
+      issuer = System::Storage::CredentialIssuer.new(assignment: assignment)
+      old = issuer.issue!
+      old.update_columns(metadata: old.metadata.merge("username" => "n-legacy-drift"))
+      successor = issuer.rotate!(old)
+      old.reload.update_columns(rotating_since: since)
+      assignment.update_columns(status: "mounted", mounted_credential_id: successor.id, last_status_at: 1.minute.ago)
+      [ assignment, old ]
+    end
+
+    it "emits a signal naming the node, even for a healthy mounted assignment inside the staleness window" do
+      assignment, old = healthy_assignment_with_rotating!(since: 30.hours.ago)
+
+      signals = sensor.sense
+
+      expect(signals.size).to eq(1)
+      signal = signals.first
+      expect(signal.kind).to eq("system.storage_assignment_drift")
+      expect(signal.fingerprint).to eq("storage_assignment_drift:#{assignment.id}")
+      expect(signal.payload).to include(
+        "storage_assignment_id" => assignment.id,
+        "node_instance_id" => instance.id,
+        "node_instance_name" => instance.name,
+        "smb_rotation_overdue_credential_ids" => [ old.id ],
+        "smb_rotation_window_hours" => 24,
+        "reconcile" => false
+      )
+    end
+
+    it "does not emit while the credential is inside the window" do
+      healthy_assignment_with_rotating!(since: 2.hours.ago)
+
+      expect(sensor.sense).to be_empty
+    end
+
+    it "emits for a rotating credential with no clock, so the sweep can stamp it" do
+      assignment, old = healthy_assignment_with_rotating!(since: 30.hours.ago)
+      old.update_columns(rotating_since: nil)
+
+      expect(sensor.sense.map { |sig| sig.payload["storage_assignment_id"] }).to eq([ assignment.id ])
+    end
+
+    it "emits ONE signal for an assignment that is both drifting and holding an overdue credential, and does not suppress reconcile" do
+      assignment, = healthy_assignment_with_rotating!(since: 30.hours.ago)
+      assignment.update_columns(status: "degraded", last_status_at: 10.minutes.ago)
+
+      signals = sensor.sense
+
+      expect(signals.size).to eq(1)
+      expect(signals.first.payload).to include("smb_rotation_overdue_credential_ids" => be_present)
+      expect(signals.first.payload).not_to have_key("reconcile")
+    end
+
+    it "does not emit for another account's credential" do
+      healthy_assignment_with_rotating!(since: 30.hours.ago)
+
+      expect(described_class.new(account: create(:account)).sense).to be_empty
+    end
+
+    it "is pure read-side: sensing retires nothing" do
+      _assignment, old = healthy_assignment_with_rotating!(since: 30.hours.ago)
+
+      sensor.sense
+
+      expect(old.reload.status).to eq("rotating")
+    end
+  end
+
   # IMP-8d444c6437a3: system.storage_assignment_reconcile seeds fine but was
   # never added to the core autonomy registry in the Engine, so
   # Ai::InterventionPolicies::BulkUpdate rejects any operator disposition change for it

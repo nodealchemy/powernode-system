@@ -206,6 +206,31 @@ module PowernodeSystem
       end
     end
 
+    # IMP-a366d6fb6b80: the SMB rotation retire window is checked when written
+    # too, with the sweeper's own rule (zero, negative, non-numeric and
+    # over-bound values are refused by name; an unset or bad stored value falls
+    # back to the default at read time). Its own to_prepare block, like the
+    # sibling checks above, so a reload registers it again and a failure in a
+    # neighbour cannot skip it.
+    config.to_prepare do
+      ::SiteSetting.register_value_check(::System::Storage::RotatingCredentialSweeper::SETTING_KEY) do |value|
+        ::System::Storage::RotatingCredentialSweeper.window_problem(value)
+      end
+
+      if defined?(::Ai::Tools::SiteSettingTool) && ::Ai::Tools::SiteSettingTool.respond_to?(:register_key)
+        ::Ai::Tools::SiteSettingTool.register_key(
+          ::System::Storage::RotatingCredentialSweeper::SETTING_KEY,
+          setting_type: "integer",
+          description: "Hours a rotated-out SMB credential may stay valid while its consumer node has " \
+                       "not confirmed a remount, before the platform retires it anyway (deletes the " \
+                       "samba user, audits it and raises a fleet alert naming the node). Whole hours, " \
+                       "#{::System::Storage::RotatingCredentialSweeper::MIN_WINDOW_HOURS} to " \
+                       "#{::System::Storage::RotatingCredentialSweeper::MAX_WINDOW_HOURS}. Unset or invalid " \
+                       "falls back to #{::System::Storage::RotatingCredentialSweeper::DEFAULT_WINDOW_HOURS}."
+        )
+      end
+    end
+
     # Register feature flags with Flipper.
     initializer "powernode_system.feature_flags", after: :load_config_initializers do
       config.after_initialize do
@@ -660,7 +685,8 @@ module PowernodeSystem
             ::System::SshHostKeyWriter::AUDITED_ACTIONS +
             ::System::UnitRestartService::AUDITED_ACTIONS +
             ::System::UnitDropinService::AUDITED_ACTIONS +
-            ::Sdwan::PeerKeyRotationService::AUDITED_ACTIONS
+            ::Sdwan::PeerKeyRotationService::AUDITED_ACTIONS +
+            ::System::Storage::RotatingCredentialSweeper::AUDITED_ACTIONS
         )
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not register audit actions: #{e.message}"

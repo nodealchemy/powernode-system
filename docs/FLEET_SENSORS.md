@@ -475,6 +475,7 @@ The utilization samplers' staleness window — how recent a `runtime_metrics` ob
 **Source:** `storage_assignment_drift_sensor.rb`
 **Watches:** Volume / NFS export assignment freshness; 5-minute stale window.
 **Threshold:** Stale assignment data → `system.storage_assignment_drift` signal
+**Also watches (IMP-a366d6fb6b80):** an assignment holding an SMB credential left `rotating` past the retire window (SiteSetting `system.storage.smb_rotation_retire_window_hours`, whole hours 1-168, default 24) because its consumer never confirmed the remount. Same signal kind, one signal per assignment; an assignment that is only in this population carries `reconcile: false` and the applier sweeps without re-driving its mount. The applier (`DecisionEngine#reconcile_storage_assignment`) retires the credential through `CredentialIssuer` (samba delete task), writes a `system.storage.smb_credential.force_retire` audit row and emits a `system.storage.smb_credential_force_retired` fleet event naming the node.
 **Signals:** `system.storage_assignment_drift`
 **Recommended remediation:** `attach_storage` / `detach_storage` (operator-approved). Owner since HIER-P2DECL: the **Storage Manager** (`PolicyDeclarations::STORAGE_MANAGER_POLICIES`; the binding declares `owner: "storage-manager"`).
 

@@ -2846,8 +2846,25 @@ module System
         assignment = ::System::StorageAssignment.where(account_id: account.id).find_by(id: id)
         return { applied: false, reason: "storage assignment not found" } unless assignment
 
-        ::System::Storage::AssignmentReconciliationService.reconcile_assignment!(assignment)
-        { applied: true, storage_assignment_id: assignment.id }
+        # IMP-a366d6fb6b80 - first bound any SMB credential this assignment has
+        # left "rotating" past the operator's window (its consumer never
+        # confirmed the remount). Independent of the reconcile below: a sweep
+        # that could not retire one is reported and must not stop it.
+        swept = ::System::Storage::RotatingCredentialSweeper.sweep_assignment!(assignment)
+
+        # A signal that is ONLY about an overdue credential describes an
+        # otherwise healthy assignment (payload "reconcile" => false); re-driving
+        # its mount would be a needless restart of a working share.
+        unless signal.payload["reconcile"] == false
+          ::System::Storage::AssignmentReconciliationService.reconcile_assignment!(assignment)
+        end
+
+        # applied stays true unless a retirement raised: the rest of the lane
+        # ran, but the operator's signal must not read as resolved.
+        result = { applied: swept[:failed].empty?, storage_assignment_id: assignment.id }
+        { smb_credentials_retired: swept[:retired], smb_credentials_stamped: swept[:stamped],
+          smb_credentials_failed: swept[:failed] }.each { |key, ids| result[key] = ids if ids.any? }
+        result
       end
 
       # IMP-c22215ae9546 (APO-5 door 2) — the DUE applier.
