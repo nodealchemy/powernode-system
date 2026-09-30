@@ -239,7 +239,9 @@ module Api
             approved = resolved_modules.filter_map { |m| m.id.to_s if granted.include?(m.id.to_s) }.uniq
 
             # A module that declares privileged and is not granted is refused by
-            # the agent; say so where an operator will see it.
+            # the agent; say so where an operator will see it. The same goes for a
+            # legacy grant the migration has not moved (and so is not in force).
+            ::System::PrivilegedModuleAllowlist.report_legacy_pending!(account: current_account, instance: current_instance)
             ::System::PrivilegedModuleAllowlist.report_unapproved!(
               account: current_account,
               instance: current_instance,

@@ -36,6 +36,12 @@ module System
     UNAPPROVED_EVENT_KIND = "system.privileged_module_unapproved"
     UNAPPROVED_EVENT_INTERVAL = 1.hour
 
+    # Kept alive, critical, for as long as a legacy source of the grant remains
+    # after the migration ran: the setting above is the ONLY source the reader
+    # honours, so a grant stranded in accounts.settings is a grant that is not in
+    # force. See System::PrivilegedAllowlistLegacyMigration.
+    LEGACY_PENDING_EVENT_KIND = "system.privileged_allowlist_migration_pending"
+
     module_function
 
     # Ids the operator has granted, as strings. [] when unset (deny), and [] when
@@ -111,6 +117,35 @@ module System
       end
     rescue StandardError => e
       ::Rails.logger.warn("[PrivilegedModuleAllowlist] could not report unapproved privileged modules: #{e.class}: #{e.message}")
+    end
+
+    # The reader deliberately does NOT honour a legacy source while the
+    # migration is pending: that would keep an unaudited, SQL-only privilege path
+    # live exactly when the move has failed, and a stuck failure would make the
+    # dual source permanent. The cost of not honouring it is a visible refusal,
+    # so make that loud instead: a critical event and an ERROR log, once per
+    # interval, naming the remedy. Stops by itself once the migration has moved
+    # the grant. Never raises into the poll.
+    def report_legacy_pending!(account:, instance:)
+      return unless ::System::PrivilegedAllowlistLegacyMigration.legacy_present?
+      return if ::System::FleetEvent.by_kind(LEGACY_PENDING_EVENT_KIND).where(account_id: account&.id)
+                                    .where("emitted_at >= ?", UNAPPROVED_EVENT_INTERVAL.ago).exists?
+
+      ::Rails.logger.error(
+        "[PrivilegedModuleAllowlist] a legacy privileged_module_ids grant is still present and NOT in force; " \
+        "run: rake system:privileged_allowlist:migrate_legacy"
+      )
+      ::System::Fleet::EventBroadcaster.emit!(
+        account: account,
+        kind: LEGACY_PENDING_EVENT_KIND,
+        severity: :critical,
+        payload: { "setting_key" => SETTING_KEY,
+                   "remedy" => "run rake system:privileged_allowlist:migrate_legacy (or grant the module ids through the protected site setting #{SETTING_KEY})" },
+        source: "node_api.modules",
+        node_instance_id: instance&.id
+      )
+    rescue StandardError => e
+      ::Rails.logger.warn("[PrivilegedModuleAllowlist] could not check for a pending legacy grant: #{e.class}: #{e.message}")
     end
 
     def recently_reported?(instance, mod)

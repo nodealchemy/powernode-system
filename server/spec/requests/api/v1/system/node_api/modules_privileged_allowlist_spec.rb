@@ -122,4 +122,46 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index privileged_module_ids", 
       expect(fetch).to eq([])
     end
   end
+
+  describe "a legacy grant the migration has not moved" do
+    def pending_events = System::FleetEvent.by_kind(System::PrivilegedModuleAllowlist::LEGACY_PENDING_EVENT_KIND)
+
+    it "raises a critical fleet event and does NOT honour the legacy value" do
+      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
+      allow(Rails.logger).to receive(:error)
+
+      expect { expect(fetch).to eq([]) }.to change { pending_events.count }.by(1)
+
+      expect(pending_events.last.severity).to eq("critical")
+      expect(pending_events.last.payload["remedy"]).to include("system:privileged_allowlist:migrate_legacy")
+      expect(Rails.logger).to have_received(:error).with(/legacy privileged_module_ids grant is still present/)
+    end
+
+    it "also fires for the legacy SiteSetting, and is not repeated on every poll" do
+      SiteSetting.set("privileged_module_ids", [ dev_cell.id ].to_json, setting_type: "json")
+      fetch
+
+      expect { fetch }.not_to(change { pending_events.count })
+      expect(pending_events.count).to eq(1)
+    end
+
+    it "stops once the migration has moved the grant" do
+      account.update!(settings: account.settings.merge("privileged_module_ids" => [ dev_cell.id ]))
+      System::PrivilegedAllowlistLegacyMigration.call
+
+      expect { expect(fetch).to eq([ dev_cell.id.to_s ]) }.not_to(change { pending_events.count })
+    end
+
+    it "is silent when there is no legacy source" do
+      expect { fetch }.not_to(change { pending_events.count })
+    end
+
+    it "does not fire for an account whose settings is not an object" do
+      odd = create(:account)
+      ActiveRecord::Base.connection.execute(
+        "UPDATE accounts SET settings = '[\"privileged_module_ids\"]'::jsonb WHERE id = '#{odd.id}'"
+      )
+      expect { fetch }.not_to(change { pending_events.count })
+    end
+  end
 end
