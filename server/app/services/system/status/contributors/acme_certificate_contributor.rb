@@ -83,12 +83,17 @@ module System
 
         def actions_for(_record) = []
 
+        # last_renewal_error is CertificateManager's raw `e.message` (ACME,
+        # DNS, driver text), and condition evidence is read back by core
+        # platform_status_tool — the model provider. Only its presence goes
+        # out, the same boolean SystemAcmeTool#serialize_certificate reduces
+        # it to (IMP-156eb1a7bdbc).
         def conditions_for(record)
           now = Time.current
           [
             enum_condition(type: "Lifecycle", mapping: LIFECYCLE, value: record.status,
                            evidence: { "issuer" => record.issuer.to_s,
-                                       "last_renewal_error" => record.last_renewal_error },
+                                       "last_renewal_error_present" => record.last_renewal_error.present? },
                            now: now),
             progressing_condition(cause: PROGRESSING[record.status.to_s], now: now),
             expiry_condition(record, now)
