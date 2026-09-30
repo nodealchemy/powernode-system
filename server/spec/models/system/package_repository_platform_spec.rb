@@ -25,7 +25,7 @@ RSpec.describe System::PackageRepositoryPlatform do
       it "rejects linking to a different-account platform" do
         link = described_class.new(package_repository: repo, node_platform: platform_b)
         expect(link).not_to be_valid
-        expect(link.errors.details[:node_platform]).to include(error: :required)
+        expect(link.errors[:node_platform]).to eq([ "must exist" ])
       end
 
       # IMP-156eb1a7bdbc fix round (critic A M2) — the create/update doors

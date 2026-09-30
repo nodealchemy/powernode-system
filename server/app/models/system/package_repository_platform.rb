@@ -31,10 +31,16 @@ module System
       # Account-scoped repos: platform must belong to the same account.
       return if package_repository.account_id == node_platform.account_id
 
-      # IMP-156eb1a7bdbc — no account ids in the message: it is rendered to
-      # the caller (render_validation_error, the MCP tool's full_messages),
-      # and the platform's account is some OTHER tenant's.
-      errors.add(:node_platform, "must belong to the same account as the repository")
+      # IMP-156eb1a7bdbc — the SAME error the required belongs_to adds for a
+      # nonexistent platform ("must exist"). The message is rendered to the
+      # caller (render_validation_error, the MCP tool's full_messages) on the
+      # create/update doors, which pass a raw node_platform_id; a distinct
+      # "same account" message would tell a tenant that another tenant's
+      # platform id exists. To this repository, a foreign platform does not.
+      # Rails records a required belongs_to as a presence error (`:blank`)
+      # carrying the `:required` message; mirror both, so even
+      # errors.details matches.
+      errors.add(:node_platform, :blank, message: :required)
     end
   end
 end
