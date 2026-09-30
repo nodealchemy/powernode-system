@@ -377,3 +377,24 @@ func TestRunOnce_ConfirmedUnassignmentStillPassesTheSelfHostFence(t *testing.T) 
 		t.Errorf("the refusal must be surfaced, got %v", *signals)
 	}
 }
+
+// A response with no `modules` key at all is malformed or degraded, not an empty
+// assignment: confirmations riding on it are ignored and the tick fails closed.
+func TestRunOnce_ConfirmationWithoutAModulesKeyIsIgnored(t *testing.T) {
+	for name, body := range map[string]string{
+		"key absent": `{"success": true, "data": {"confirmed_unassigned": [{"module_id":"m1"}]}}`,
+		"key null":   `{"success": true, "data": {"modules": null, "confirmed_unassigned": [{"module_id":"m1"}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, client, _, statePath, _ := attachM1(t)
+			client.responses["/api/v1/system/node_api/modules"] = body
+
+			if err := r.RunOnce(context.Background()); err != nil {
+				t.Fatalf("pass 2: %v", err)
+			}
+			if digest, ok := attachedDigest(t, statePath, "m1"); !ok || digest != "d1" {
+				t.Errorf("confirmations on a response without a modules array must not detach m1: digest=%q ok=%v", digest, ok)
+			}
+		})
+	}
+}

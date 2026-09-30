@@ -99,15 +99,15 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 		Success bool   `json:"success"`
 		Error   string `json:"error,omitempty"`
 		Data    struct {
-			Modules                   []AssignedModule `json:"modules"`
-			Hostname                  string           `json:"hostname,omitempty"`
-			LKGStalenessThresholdSecs int64            `json:"lkg_staleness_threshold_seconds,omitempty"`
-			LKGAppHealthURL           string           `json:"lkg_app_health_url,omitempty"`
-			LKGAppHealthRequiredN     int              `json:"lkg_app_health_required_consecutive,omitempty"`
-			LKGAppHealthPollSecs      int              `json:"lkg_app_health_poll_interval_seconds,omitempty"`
-			ProtectedEgressHosts      []string         `json:"protected_egress_hosts,omitempty"`
-			PrivilegedModuleIDs       []string         `json:"privileged_module_ids,omitempty"`
-			ConfirmedUnassigned       json.RawMessage  `json:"confirmed_unassigned,omitempty"`
+			Modules                   *[]AssignedModule `json:"modules"`
+			Hostname                  string            `json:"hostname,omitempty"`
+			LKGStalenessThresholdSecs int64             `json:"lkg_staleness_threshold_seconds,omitempty"`
+			LKGAppHealthURL           string            `json:"lkg_app_health_url,omitempty"`
+			LKGAppHealthRequiredN     int               `json:"lkg_app_health_required_consecutive,omitempty"`
+			LKGAppHealthPollSecs      int               `json:"lkg_app_health_poll_interval_seconds,omitempty"`
+			ProtectedEgressHosts      []string          `json:"protected_egress_hosts,omitempty"`
+			PrivilegedModuleIDs       []string          `json:"privileged_module_ids,omitempty"`
+			ConfirmedUnassigned       json.RawMessage   `json:"confirmed_unassigned,omitempty"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
@@ -124,7 +124,19 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 	// a no-op.
 	persistAssignedHostname(env.Data.Hostname)
 	_ = ctx // ctx reserved for future cancellation hook in the GetJSON impl
-	return env.Data.Modules, AssignmentMeta{
+
+	// A confirmation authorises a detach only alongside a list the platform
+	// actually stated. A response with no `modules` array at all (key absent or
+	// null) is malformed or degraded, not "nothing assigned", so confirmations
+	// riding on it are ignored and the tick stays fail-closed.
+	var modules []AssignedModule
+	confirmedRaw := env.Data.ConfirmedUnassigned
+	if env.Data.Modules != nil {
+		modules = *env.Data.Modules
+	} else {
+		confirmedRaw = nil
+	}
+	return modules, AssignmentMeta{
 		Hostname:                     env.Data.Hostname,
 		StalenessThresholdSeconds:    env.Data.LKGStalenessThresholdSecs,
 		AppHealthURL:                 env.Data.LKGAppHealthURL,
@@ -132,7 +144,7 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 		AppHealthPollIntervalSeconds: env.Data.LKGAppHealthPollSecs,
 		ProtectedEgressHosts:         env.Data.ProtectedEgressHosts,
 		PrivilegedModuleIDs:          env.Data.PrivilegedModuleIDs,
-		ConfirmedUnassigned:          parseConfirmedUnassigned(env.Data.ConfirmedUnassigned),
+		ConfirmedUnassigned:          parseConfirmedUnassigned(confirmedRaw),
 	}, nil
 }
 
