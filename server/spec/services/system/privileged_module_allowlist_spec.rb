@@ -127,4 +127,32 @@ RSpec.describe System::PrivilegedModuleAllowlist do
       expect(account.reload.settings).not_to have_key("privileged_module_ids")
     end
   end
+
+  # The old PLATFORM-wide name. Nothing reads it any more, and the reserved
+  # account-settings key only covers accounts.settings, so without this a
+  # tenant-level settings writer could still recreate the legacy row over REST
+  # and trip the pending event (and, once a person ran the rake, be migrated).
+  describe "the legacy platform-wide SiteSetting key" do
+    let(:legacy_key) { System::PrivilegedAllowlistLegacyMigration::LEGACY_KEY }
+
+    it "refuses every write, whatever the value" do
+      [ [ node_module.id ].to_json, "[]", node_module.name ].each do |value|
+        row = SiteSetting.new(key: legacy_key, setting_type: "json", value: value, is_public: false)
+        expect(row).not_to be_valid, "#{value} was accepted"
+        expect(row.errors[:value].join).to include(described_class::SETTING_KEY)
+      end
+    end
+
+    it "refuses a create through SiteSetting.set" do
+      expect { SiteSetting.set(legacy_key, [ node_module.id ].to_json, setting_type: "json") }
+        .to raise_error(ActiveRecord::RecordInvalid)
+      expect(SiteSetting.find_by(key: legacy_key)).to be_nil
+    end
+
+    it "does not block the migration from REMOVING an existing legacy row" do
+      SiteSetting.new(key: legacy_key, setting_type: "json", value: "[]", is_public: false).save!(validate: false)
+
+      expect { SiteSetting.find_by(key: legacy_key).destroy! }.not_to raise_error
+    end
+  end
 end

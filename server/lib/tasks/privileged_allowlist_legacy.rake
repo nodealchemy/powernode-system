@@ -8,8 +8,8 @@
 #       prints the plan (source account, entry, module id and name, owning
 #       account, and whether it would migrate); writes nothing.
 #   CONFIRM=1 OPERATOR=<email or user id> rake system:privileged_allowlist:migrate_legacy
-#       applies it, and the audit rows name that operator. Refuses without a
-#       resolvable OPERATOR.
+#       applies it, and the audit rows name that operator. Refuses without an
+#       OPERATOR that resolves to a user holding admin.access.
 #   ... DISCARD_UNRESOLVED=1
 #       also removes the legacy entries that are not migrated (they name no
 #       module, or a module owned by another account), after recording them in
@@ -36,6 +36,9 @@ namespace :system do
       operator = ENV["OPERATOR"].to_s.strip
       actor = if operator.include?("@") then User.find_by(email: operator) else User.find_by(id: operator) end
       abort "refusing to write: OPERATOR=<email or user id> must name an existing user (got #{operator.inspect})" if actor.nil?
+      unless actor.has_permission?("admin.access")
+        abort "refusing to write: OPERATOR #{operator.inspect} does not hold admin.access; the audit row must name an administrator"
+      end
 
       result = service.call(discard_unresolved: ENV["DISCARD_UNRESOLVED"] == "1", actor: actor)
       puts "moved #{result.moved_ids.size} module id(s); kept: #{result.unresolved.inspect}; " \

@@ -687,6 +687,13 @@ module PowernodeSystem
         ::SiteSetting.register_value_check(::System::PrivilegedModuleAllowlist::SETTING_KEY) do |value|
           ::System::PrivilegedModuleAllowlist.declaration_problem(value)
         end
+        # The old platform-wide name is dead: nothing reads it. Refuse every write
+        # to it so the generic settings REST door cannot recreate a legacy source
+        # (removal is unaffected: a value check runs on save only).
+        ::SiteSetting.register_value_check(::System::PrivilegedAllowlistLegacyMigration::LEGACY_KEY) do |_value|
+          "is no longer a setting; the privileged-module grant is #{::System::PrivilegedModuleAllowlist::SETTING_KEY}, " \
+            "written only through the protected site setting door"
+        end
         ::Ai::Tools::SiteSettingTool.register_key(
           ::System::PrivilegedModuleAllowlist::SETTING_KEY,
           setting_type: "json",

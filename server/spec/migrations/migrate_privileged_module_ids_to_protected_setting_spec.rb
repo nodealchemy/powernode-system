@@ -24,6 +24,12 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
   let(:second)        { create(:system_node_module, account: account, name: "second-m") }
   let(:foreign)       { create(:system_node_module, account: other_account, name: "foreign-m") }
 
+  # The legacy row can no longer be created through SiteSetting validations (that
+  # is the point), so a fixture that stands for a pre-existing one skips them.
+  def legacy_site_setting!(value, type)
+    SiteSetting.new(key: "privileged_module_ids", value: value, setting_type: type, is_public: false).save!(validate: false)
+  end
+
   def key = System::PrivilegedModuleAllowlist::SETTING_KEY
 
   def stored_ids
@@ -123,7 +129,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
 
   describe "the legacy SiteSetting source" do
     it "moves a JSON list and deletes the legacy row" do
-      SiteSetting.set("privileged_module_ids", [ dev_cell.id, second.name ].to_json, setting_type: "json")
+      legacy_site_setting!([ dev_cell.id, second.name ].to_json, "json")
 
       run!
 
@@ -132,7 +138,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
     end
 
     it "moves a bare string, the shape Array() of a string-typed row produced" do
-      SiteSetting.set("privileged_module_ids", dev_cell.id.to_s, setting_type: "string")
+      legacy_site_setting!(dev_cell.id.to_s, "string")
 
       run!
 
@@ -193,7 +199,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
     end
 
     it "audits a global-setting source under the platform (oldest) account, not the account that owns the module" do
-      SiteSetting.set("privileged_module_ids", [ foreign.id ].to_json, setting_type: "json")
+      legacy_site_setting!([ foreign.id ].to_json, "json")
       platform = Account.order(:created_at, :id).first
 
       run!
@@ -338,7 +344,7 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
     before(:all) { Rails.application.load_tasks unless Rake::Task.task_defined?("system:privileged_allowlist:migrate_legacy") }
     after { Rake::Task["system:privileged_allowlist:migrate_legacy"].reenable }
 
-    let(:operator) { create(:user, account: account, email: "operator-#{SecureRandom.hex(3)}@example.test") }
+    let(:operator) { create(:user, account: account, permissions: [ "admin.access" ], email: "operator-#{SecureRandom.hex(3)}@example.test") }
 
     # [stdout, stderr, exit status or nil]
     def rake!(env = {})
@@ -399,6 +405,17 @@ RSpec.describe MigratePrivilegedModuleIdsToProtectedSetting do
       row = audit_rows.last
       expect(row.user_id).to eq(operator.id)
       expect(row.metadata).to include("actor" => "operator", "operator_id" => operator.id)
+    end
+
+    it "REFUSES an OPERATOR who exists but does not hold admin.access: the audit row must name an administrator" do
+      plain = create(:user, account: account, permissions: [], email: "plain-#{SecureRandom.hex(3)}@example.test")
+
+      _, err, status = rake!("CONFIRM" => "1", "OPERATOR" => plain.email)
+
+      expect(err).to match(/admin\.access/)
+      expect(status).to eq(1)
+      expect(stored_ids).to be_nil
+      expect(legacy_account_value(account)).to eq([ dev_cell.id, foreign.id ])
     end
 
     it "accepts a user id as OPERATOR" do

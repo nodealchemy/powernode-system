@@ -45,6 +45,12 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index privileged_module_ids", 
     end
   end
 
+  # The legacy row can no longer be created through SiteSetting validations (that
+  # is the point), so a fixture that stands for a pre-existing one skips them.
+  def legacy_site_setting!(value, type)
+    SiteSetting.new(key: "privileged_module_ids", value: value, setting_type: type, is_public: false).save!(validate: false)
+  end
+
   def fetch
     get "/api/v1/system/node_api/modules", headers: headers
     expect(response).to have_http_status(:ok)
@@ -87,7 +93,7 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index privileged_module_ids", 
   end
 
   it "no longer reads the legacy unregistered SiteSetting either" do
-    SiteSetting.set("privileged_module_ids", [ dev_cell.id ].to_json, setting_type: "json")
+    legacy_site_setting!([ dev_cell.id ].to_json, "json")
     expect(fetch).to eq([])
   end
 
@@ -146,7 +152,7 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index privileged_module_ids", 
     end
 
     it "reports a platform-wide legacy SiteSetting only under the platform (oldest) account" do
-      SiteSetting.set("privileged_module_ids", [ dev_cell.id ].to_json, setting_type: "json")
+      legacy_site_setting!([ dev_cell.id ].to_json, "json")
       create(:account).update_columns(created_at: 5.years.ago)
 
       expect { fetch }.not_to(change { pending_events.count })
@@ -156,7 +162,7 @@ RSpec.describe "Api::V1::System::NodeApi::Modules#index privileged_module_ids", 
     end
 
     it "also fires for the legacy SiteSetting, and is not repeated on every poll" do
-      SiteSetting.set("privileged_module_ids", [ dev_cell.id ].to_json, setting_type: "json")
+      legacy_site_setting!([ dev_cell.id ].to_json, "json")
       account.update_columns(created_at: 10.years.ago)
       fetch
 
