@@ -89,9 +89,11 @@ func createSambaUser(ctx context.Context, runner mount.Runner, client httpGetter
 //
 // Residual: an smbd process serves one client connection, and a connection
 // can carry sessions for more than one user — closing it drops those too.
-// When the account is already gone (a retry) no uid is known: sessions can
-// be found only by name, and any numeric-owner session fails the task
-// closed. smbstatus ignores its own traversal's early stop (status.c
+// A retry after the account is gone usually still resolves the uid: winbind
+// kept serving the deleted user from its cache (observed, check D0 of the
+// verify run below), so the uid path and sweep apply. Only once that cache
+// entry expires is no uid known: sessions can then be found only by name,
+// and any numeric-owner session fails the task closed. smbstatus ignores its own traversal's early stop (status.c
 // sessionid_traverse_read), so a listing it cuts short still exits 0.
 func deleteSambaUser(ctx context.Context, runner mount.Runner, task *SmbUserApplyTask) error {
 	uid, resolved, err := resolveSambaUID(ctx, runner, task.Username)
@@ -122,6 +124,10 @@ func deleteSambaUser(ctx context.Context, runner mount.Runner, task *SmbUserAppl
 // smbstatus reports a session's owner as that uid, and — without
 // libnss-winbind in nsswitch — ALSO puts the bare number in its username
 // field, so the uid is the only reliable key.
+//
+// The `wbinfo -i` line shape was observed on a live 4.19.5 DC (2026-09-30);
+// winbind there kept resolving the user from cache after the delete, so a
+// retry normally lands here with the uid (check D0 of the verify run).
 //
 // When wbinfo cannot resolve the name, `samba-tool user show` decides between
 // the two cases: an account that exists is a failure (its sessions could not
@@ -187,8 +193,9 @@ func parseWbinfoPasswd(out, username string) (uint32, error) {
 // line for THIS username are required, so another user's not-found or the
 // text under another exit status does not count.
 //
-// UNVERIFIED by execution: derived from the source above; check C of the
-// verify script (imp65a-samba-verify.sh) proves it against a live samba-tool.
+// Verified by execution 2026-09-30 on samba 4.19.5 (noble,
+// 2:4.19.5+dfsg-4ubuntu9.7), check C of imp65a-samba-verify.sh: a missing
+// user's delete exited 255 with exactly this line.
 func isSambaUserNotFound(err error, username string) bool {
 	return sambaToolFailedWith(err, `ERROR: Unable to find user "`+username+`"`)
 }
@@ -198,8 +205,9 @@ func isSambaUserNotFound(err error, username string) bool {
 // empty search as CommandError("Failed to get password for user '%s': %s")
 // around Exception('Unable to find user "%s"'); printed and exited as above.
 //
-// UNVERIFIED by execution: derived from that source; check D of the verify
-// script proves it.
+// Verified by execution 2026-09-30 on samba 4.19.5 (noble), check D of
+// imp65a-samba-verify.sh: a missing user's show exited 255 with exactly this
+// line.
 func isSambaUserShowNotFound(err error, username string) bool {
 	return sambaToolFailedWith(err, `ERROR: Failed to get password for user '`+username+`': Unable to find user "`+username+`"`)
 }
@@ -252,9 +260,10 @@ func listSmbSessions(ctx context.Context, runner mount.Runner, args ...string) (
 // that is not an integer above 1 fails the whole listing closed rather than
 // being skipped.
 //
-// Verified by execution on a live 4.19.5 AD DC without libnss-winbind: the
-// session listed "username": "<uid>", never the name — which is why the uid
-// comes first. It is also why, when no uid is known, a listing that matched
+// Verified by execution 2026-09-30 on samba 4.19.5 (noble), check A of
+// imp65a-samba-verify.sh, an AD DC without libnss-winbind: the session was
+// listed as "username": "<uid>" with its "uid" and a string pid, never the
+// name, and was found by the uid match — which is why the uid comes first. It is also why, when no uid is known, a listing that matched
 // nothing but holds a session whose owner is printed only as a number
 // (uidtoname()'s fallback) is refused: that session could be this user's.
 // Sessions still authenticating (uid -1) belong to no one yet and are skipped.
@@ -354,9 +363,11 @@ var (
 // is only reported if the poll still lists it. Cancellation is honoured
 // between polls.
 //
-// UNVERIFIED by execution: that `smbcontrol <pid> shutdown` ends an smbd
-// child's session on the node (the child inherits the parent's MSG_SHUTDOWN
-// registration across fork). Check B of the verify script proves it.
+// Verified by execution 2026-09-30 on samba 4.19.5 (noble), checks B0/B of
+// imp65a-samba-verify.sh: the session survived `samba-tool user delete`, and
+// after `smbcontrol <pid> shutdown` the smbd child exited and no session
+// remained for it (the child inherits the parent's MSG_SHUTDOWN registration
+// across fork).
 func closeSmbSessions(ctx context.Context, runner mount.Runner, pids []string, uid uint32, uidResolved bool) error {
 	signalled := map[string]bool{}
 	signalErrs := map[string]error{}
