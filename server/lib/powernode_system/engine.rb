@@ -760,8 +760,8 @@ module PowernodeSystem
       begin
         next unless ::SiteSetting.respond_to?(:register_value_presenter)
 
-        ::SiteSetting.register_value_presenter(::System::PrivilegedModuleAllowlist::SETTING_KEY) do |value|
-          ::System::PrivilegedModuleAllowlist.present(value)
+        ::SiteSetting.register_value_presenter(::System::PrivilegedModuleAllowlist::SETTING_KEY) do |value, viewer|
+          ::System::PrivilegedModuleAllowlist.present(value, viewer)
         end
       rescue StandardError => e
         Rails.logger.error "[PowernodeSystem] Could not register the privileged-module allowlist presenter: #{e.class}: #{e.message}"

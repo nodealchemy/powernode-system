@@ -74,34 +74,42 @@ module System
       "#{missing.size} entr#{missing.size == 1 ? 'y names' : 'ies name'} no existing NodeModule: #{missing.first(3).join(', ')}"
     end
 
-    UNKNOWN_MODULE_LABEL = "(unknown)"
-
     # The approval card's reading of the value (IMP-78bc3b20ee94): each id with
     # its module's name and OWNING ACCOUNT beside it, so a person can tell the
     # bare UUIDs apart. Registered on core's SiteSetting.register_value_presenter
-    # seam, which shows it NEXT TO the raw value, only to a viewer who could
-    # already read the setting, and falls back to the raw value if this raises.
+    # seam, which runs it read-only under a statement timeout, shows it NEXT TO
+    # the raw value and only to an admin.access holder, and falls back to the raw
+    # value if this raises.
     #
-    # Read live, at render time: a module deleted since the request was parked
-    # reads "(unknown)", a rename shows the current name. One query for all ids.
-    # Only the module name and the owner's name are read, nothing else about a
-    # module or an account, and foreign accounts' modules are included on purpose
-    # (the setting is global; the operator is unconfining a module wherever it
-    # lives). Both names are tenant-controlled text: the caller escapes them and
-    # every row carries the id, which is what actually gets written.
-    def present(value)
+    # STRUCTURED, not a sentence: each item is the raw id, the module `name` and
+    # `owner` as separate fields (tenant text, sanitized by core, labelled by the
+    # client), and flags this code computes from ids and account ids, never from
+    # text: `unknown` (no such module now: deleted, or not a module id) and
+    # `other_account` (the module belongs to an account other than the viewer's).
+    #
+    # Read live, at render time: a deleted module is flagged, a rename shows the
+    # current name. One query for at most PRESENTED_ROW_LIMIT ids (the rest are
+    # counted as `omitted`, raw only). Only the module name and the owner's name
+    # are read, nothing else about a module or an account, and foreign accounts'
+    # modules are included on purpose (the setting is global; the operator is
+    # unconfining a module wherever it lives).
+    def present(value, viewer = nil)
       ids = parse(value)
       return nil if ids.nil?
 
-      valid = ids.grep(UUID_FORMAT)
-      found = ::System::NodeModule.where(id: valid).joins(:account)
-                                  .pluck(:id, :name, "accounts.name").to_h { |id, name, owner| [ id.to_s, [ name, owner ] ] }
-      ids.map do |id|
-        name, owner = found[id]
-        next { value: id, label: UNKNOWN_MODULE_LABEL, detail: nil } if name.nil?
+      shown = ids.first(::SiteSetting::PRESENTED_ROW_LIMIT)
+      found = ::System::NodeModule.where(id: shown.grep(UUID_FORMAT)).joins(:account)
+                                  .pluck(:id, :name, :account_id, "accounts.name")
+                                  .to_h { |id, name, account_id, owner| [ id.to_s, [ name, account_id, owner ] ] }
+      viewer_account_id = viewer.respond_to?(:account_id) ? viewer.account_id : nil
+      items = shown.map do |id|
+        name, account_id, owner = found[id]
+        next { raw: id, fields: {}, flags: [ "unknown" ] } if account_id.nil?
 
-        { value: id, label: name, detail: owner.present? ? "owner account: #{owner}" : nil }
+        { raw: id, fields: { name: name, owner: owner },
+          flags: account_id.to_s == viewer_account_id.to_s ? [] : [ "other_account" ] }
       end
+      { items: items, omitted: ids.size - shown.size }
     end
 
     # An Array<String>, or nil when `value` is not a JSON list of strings.
