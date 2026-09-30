@@ -6245,7 +6245,11 @@ module Ai
           raise CallerFacingError, "instance is #{instance.status}: a node inspection needs a running agent"
         end
 
-        refusal = instance.offline_dispatch_refusal
+        # The model's complete check, status arm AND silence verdict, as
+        # system_restart_unit consults it. The status arm alone is nil for every
+        # status that got past the guard above, so a running instance that never
+        # enrolled or went silent was queued a task no agent would pull.
+        refusal = instance.on_node_dispatch_refusal
         raise CallerFacingError, refusal if refusal
 
         [ instance, options ]
