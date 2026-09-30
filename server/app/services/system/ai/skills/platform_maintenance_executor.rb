@@ -108,6 +108,20 @@ module System
 
         # ── cert_rotate: trigger renewal for one cert or all expiring ────
         def cert_rotate(params)
+          # IMP-156eb1a7bdbc — cert_rotate places real ACME orders, and a
+          # failed order moves the certificate out of `valid` (out of the
+          # served TLS set). system_fleet_tool fronts this skill with
+          # system.platform.read; every other renew door requires
+          # system.acme.renew, so check the permission that governs the
+          # PRIMITIVE. Fail closed on a nil user: only an explicit in-process
+          # caller (internal_caller? — the fleet reconciler, user: nil and
+          # meaning it) is exempt; an MCP instance principal is refused here,
+          # one layer under the deny overlay. Same shape as
+          # PlatformResilienceExecutor's drain gate.
+          unless internal_caller? || @user&.has_permission?("system.acme.renew")
+            return failure("cert_rotate renews certificates, which requires the system.acme.renew permission")
+          end
+
           window_days = (params[:renewal_window_days] || 30).to_i
           target_id = params[:certificate_id]
 
