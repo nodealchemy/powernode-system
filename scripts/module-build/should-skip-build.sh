@@ -130,17 +130,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # these modules (see core_ref_hash_args in needs-parent-modules.sh).
 #
 # STAGE15 ARMS (IMP-24d473c6f448). Every module that has its own arm in
-# stage15.sh's module dispatch also reads scripts/module-build/ — the arm, and
-# the helpers it calls — from OUTSIDE modules/<slug>/. The build planner now
-# targets a module for a change confined to that arm, so the skip must not be
-# able to answer "inputs unchanged" for it. That is NOT done by listing every
-# arm module below (a hand-kept list of slugs that drifts from stage15.sh, and
-# it would stop those modules skipping at all): compute-build-inputs-hash.sh
-# folds the scripts/module-build tree into the hash of exactly the modules that
-# stage15.sh has an arm for, deriving the set from stage15.sh itself. That is
-# why powernode-hub-worker/-frontend stay OFF this list — the core-ref fold plus
-# the scripts fold cover both their inputs. This list keeps only the modules
-# whose out-of-tree inputs the hash still cannot see at all.
+# stage15.sh's module dispatch also reads that arm, and the scripts/module-build
+# helpers it calls, from OUTSIDE modules/<slug>/. The build planner now targets a
+# module for a change confined to that arm, so the skip must not be able to
+# answer "inputs unchanged" for it. That is NOT done by listing every arm module
+# below (a hand-kept list of slugs that drifts from stage15.sh, and it would stop
+# those modules skipping at all): compute-build-inputs-hash.sh folds in the
+# module's OWN arm text and the helpers that arm calls, derived from stage15.sh
+# itself (stage15-arm.py, parity-tested against the planner's reader) -- the same
+# attribution the planner uses, so another module's arm or shared code does not
+# invalidate it. That is why powernode-hub-worker/-frontend stay OFF this list:
+# the core-ref fold plus the arm fold cover both their inputs. This list keeps
+# only the modules whose out-of-tree inputs the hash still cannot see at all.
 #
 # These REFUSE to skip unless the caller declares their real inputs via
 # BUILD_INPUT_PATHS. Encoding it here rather than leaving it to an operator

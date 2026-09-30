@@ -32,9 +32,9 @@
 #
 #   1. each --input-path's object id at --ref (default: the module's own
 #      modules/<slug> tree)
-#   2. the build scripts (scripts/module-build/ tree object id at --ref), for a
-#      module with its own arm in stage15.sh's module dispatch — see BUILD
-#      SCRIPTS below
+#   2. the module's OWN stage15.sh arm text and the scripts/module-build helpers
+#      that arm calls, for a module with an arm in stage15.sh's module dispatch
+#      -- see BUILD SCRIPTS below
 #   3. the --apt-snapshot id, when given — the package closure is an input the
 #      git tree cannot see
 #   4. the --core-ref commit, when given — the parent-repo subtree a needs-parent
@@ -42,16 +42,20 @@
 #
 # BUILD SCRIPTS (IMP-24d473c6f448). A module's stage15.sh arm, and the helpers
 # that arm calls, decide what its artifact contains but live in
-# scripts/module-build/, outside modules/<slug>/ — so a change confined to one
+# scripts/module-build/, outside modules/<slug>/ -- so a change confined to one
 # arm left the tree hash untouched and the skip re-tagged the old digest. The
 # build planner now targets a module for exactly that kind of change
 # (System::ModuleBuildScriptAttribution), which would have made the skip the
-# thing that defeats it. So a module with its OWN arm folds the scripts/
-# module-build tree object id into the hash. Whole tree rather than just the arm
-# and its helpers: a sound over-approximation (the direction this file always
-# errs in) that needs no second parser of the arm structure, and it only costs
-# an arm module a rebuild when some build script changed. A module with NO arm
-# (package-origin) hashes exactly as before, so it keeps skipping.
+# thing that defeats it. So a module with its OWN arm folds in the sha256 of that
+# arm's text and the blob id of each scripts/module-build helper the arm calls
+# (stage15-arm.py, a port of the planner's reader, parity-tested against it).
+#
+# Deliberately NOT the whole scripts tree: ~16 script commits a month would then
+# invalidate every arm module, rebuilding (and auto-promoting) modules whose own
+# arm nothing touched. Another module's arm, shared code outside every arm, and a
+# script no arm calls therefore leave this module's hash alone -- the same
+# attribution the planner uses. A module with NO arm (package-origin) hashes
+# exactly as before, so it keeps skipping.
 #
 # Deliberately NOT hashed: the build sha, timestamps, the erofs UUID, and the
 # output digest — the very things that vary per build without changing content.
@@ -141,25 +145,36 @@ for path in "${SORTED_PATHS[@]}"; do
   digest_input+="${path}:${oid}"$'\n'
 done
 
-# Has $1 its own arm in stage15.sh's module dispatch? A line-level match on an
-# arm's pattern list (`slug)` or `a|slug|b)`), read from the SAME ref the hash is
-# taken at. Deliberately loose: a false positive only folds the scripts tree
-# into a module that did not need it (one extra rebuild); a false negative would
-# reproduce the wrong SKIP this fold exists to prevent.
-module_has_stage15_arm() {
-  local slug="$1" text
-  text=$(git -C "$REPO" show "$REF:scripts/module-build/stage15.sh" 2>/dev/null) || return 1
-  # A here-string, not `printf | grep -q`: under `set -o pipefail` grep -q's early
-  # exit SIGPIPEs the printf of a ~100KB script and reads as "no arm" — the
-  # unsafe direction.
-  grep -Eq "^[[:space:]]*\(?([^[:space:])|]+\|)*${slug//./\\.}(\|[^[:space:])|]+)*\)" <<<"$text"
-}
-
-if module_has_stage15_arm "$MODULE"; then
-  if ! scripts_oid=$(git -C "$REPO" rev-parse --quiet --verify "$REF:scripts/module-build" 2>/dev/null); then
-    die "scripts/module-build not found at $REF but stage15.sh has an arm for $MODULE"
-  fi
-  digest_input+="build-scripts:${scripts_oid}"$'\n'
+# The module's own stage15.sh arm + the helpers it calls, read at the SAME ref
+# the rest of the hash is taken at. stage15-arm.py exits 1 for a module with no
+# arm (nothing to fold) and 2 for a script it cannot read faithfully; the latter
+# FAILS the hash -- should-skip then reads BUILD and push.sh omits the annotation,
+# never a hash silently missing the arm.
+STAGE15_REL="scripts/module-build/stage15.sh"
+if git -C "$REPO" cat-file -e "$REF:$STAGE15_REL" 2>/dev/null; then
+  command -v python3 >/dev/null 2>&1 || die "python3 not found; needed to read the stage15.sh arm for $MODULE"
+  ARM_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/stage15-arm.py"
+  [ -f "$ARM_PY" ] || die "stage15-arm.py missing next to $0"
+  mapfile -t helper_names < <(git -C "$REPO" ls-tree --name-only "$REF" scripts/module-build/ 2>/dev/null \
+    | while IFS= read -r f; do b="${f##*/}"; [ "$b" = "stage15.sh" ] || printf '%s\n' "$b"; done)
+  arm_rc=0
+  arm_out=$(git -C "$REPO" show "$REF:$STAGE15_REL" 2>/dev/null \
+    | python3 "$ARM_PY" "$MODULE" "${helper_names[@]+"${helper_names[@]}"}" 2>/dev/null) || arm_rc=$?
+  case "$arm_rc" in
+    0)
+      while IFS=' ' read -r kind value; do
+        case "$kind" in
+          arm-sha256) digest_input+="stage15-arm:${value}"$'\n' ;;
+          helper)
+            h_oid=$(git -C "$REPO" rev-parse --quiet --verify "$REF:scripts/module-build/$value" 2>/dev/null) \
+              || die "helper scripts/module-build/$value not found at $REF"
+            digest_input+="build-helper:${value}:${h_oid}"$'\n' ;;
+        esac
+      done <<<"$arm_out"
+      ;;
+    1) : ;; # no arm of its own
+    *) die "could not read stage15.sh's arm for $MODULE at $REF (unparseable dispatch)" ;;
+  esac
 fi
 
 if [ -n "$APT_SNAPSHOT" ]; then
