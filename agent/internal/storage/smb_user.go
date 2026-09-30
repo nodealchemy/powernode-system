@@ -19,7 +19,8 @@ import (
 // ApplySambaUser shells out to samba-tool for per-instance user
 // management. Runs on the backend peer (Shape 1: storage host;
 // Shape 2: gateway). Idempotent: create on an existing user updates
-// the password; delete on a missing user is a no-op.
+// the password; delete on a missing user is success, and delete also
+// closes the user's live SMB sessions (see deleteSambaUser).
 //
 // client resolves the password at apply time via fetchCredential — the task
 // itself never carries it. delete never dereferences a credential, so client
@@ -67,29 +68,41 @@ func createSambaUser(ctx context.Context, runner mount.Runner, client httpGetter
 // principal kept every share it had mounted until it disconnected on its own.
 //
 // Order is deliberate:
-//  1. resolve the user's uid (wbinfo -i) and enumerate its sessions FIRST,
-//     while the account still exists. A failure here mutates nothing; an
-//     account that exists but whose uid cannot be resolved fails here too,
-//     because its sessions could not be identified afterwards.
+//  1. resolve the user's uid (wbinfo -i) and list its sessions FIRST, while
+//     the account still exists. Any doubt fails here, with nothing mutated:
+//     an account that exists but whose uid cannot be resolved, or — when no
+//     uid is known — a listing holding a session whose owner smbstatus could
+//     only print as a number (it might be this user's; see smbSessionPIDs).
 //  2. delete, so nothing can re-authenticate — closing first would let an
 //     auto-reconnecting client straight back in before the delete landed.
-//  3. close each enumerated smbd process, then poll until none is listed.
+//  3. close: signal each listed process, then poll the numeric listing,
+//     which is the only success oracle. Each poll also sweeps by the
+//     resolved uid, so a session opened between step 1 and step 2 is closed
+//     too. A failed signal (the process may already have exited) fails the
+//     task only if the poll still lists a session for it.
 //
 // Every command goes through the runner as argv (no shell); the username has
 // already passed Validate()'s taskguard.Identifier, and uids and pids are
-// parsed as integers before they are compared or reach smbcontrol.
+// parsed as integers before they are compared or reach smbcontrol. A node
+// with samba-tool but without smbstatus/smbcontrol/wbinfo now fails every
+// delete (it used to report success without closing anything).
 //
 // Residual: an smbd process serves one client connection, and a connection
-// can carry sessions for more than one user — closing it drops those too. A
-// session opened between step 1 and step 2 is not closed; and a retry after a
-// delete that landed but whose close failed finds the account gone, has no
-// uid to match, and can fall back only on the name.
+// can carry sessions for more than one user — closing it drops those too.
+// When the account is already gone (a retry) no uid is known: sessions can
+// be found only by name, and any numeric-owner session fails the task
+// closed. smbstatus ignores its own traversal's early stop (status.c
+// sessionid_traverse_read), so a listing it cuts short still exits 0.
 func deleteSambaUser(ctx context.Context, runner mount.Runner, task *SmbUserApplyTask) error {
 	uid, resolved, err := resolveSambaUID(ctx, runner, task.Username)
 	if err != nil {
 		return fmt.Errorf("storage.smb_user.apply delete: %w", err)
 	}
-	pids, err := smbSessionPIDs(ctx, runner, task.Username, uid, resolved)
+	st, err := listSmbSessions(ctx, runner, "--processes", "--json")
+	if err != nil {
+		return fmt.Errorf("storage.smb_user.apply delete: list sessions: %w", err)
+	}
+	pids, err := smbSessionPIDs(st, task.Username, uid, resolved)
 	if err != nil {
 		return fmt.Errorf("storage.smb_user.apply delete: list sessions: %w", err)
 	}
@@ -98,15 +111,10 @@ func deleteSambaUser(ctx context.Context, runner mount.Runner, task *SmbUserAppl
 			return fmt.Errorf("storage.smb_user.apply delete: %w", err)
 		}
 	}
-	if len(pids) == 0 {
+	if len(pids) == 0 && !resolved {
 		return nil
 	}
-	for _, pid := range pids {
-		if err := runner.Run(ctx, "smbcontrol", pid, "shutdown"); err != nil {
-			return fmt.Errorf("storage.smb_user.apply delete: close session process %s: %w", pid, err)
-		}
-	}
-	return waitSmbSessionsGone(ctx, runner, pids)
+	return closeSmbSessions(ctx, runner, pids, uid, resolved)
 }
 
 // resolveSambaUID returns the uid smbd runs username's sessions under, from
@@ -246,28 +254,57 @@ func listSmbSessions(ctx context.Context, runner mount.Runner, args ...string) (
 //
 // Verified by execution on a live 4.19.5 AD DC without libnss-winbind: the
 // session listed "username": "<uid>", never the name — which is why the uid
-// comes first.
-func smbSessionPIDs(ctx context.Context, runner mount.Runner, username string, uid uint32, uidResolved bool) ([]string, error) {
-	st, err := listSmbSessions(ctx, runner, "--processes", "--json")
-	if err != nil {
-		return nil, err
-	}
+// comes first. It is also why, when no uid is known, a listing that matched
+// nothing but holds a session whose owner is printed only as a number
+// (uidtoname()'s fallback) is refused: that session could be this user's.
+// Sessions still authenticating (uid -1) belong to no one yet and are skipped.
+func smbSessionPIDs(st *smbstatusSessions, username string, uid uint32, uidResolved bool) ([]string, error) {
 	seen := map[uint64]bool{}
+	var unattributed []string
 	for _, s := range st.Sessions {
 		pid, err := smbdPID(s.ServerID.PID)
 		if err != nil {
 			return nil, err
 		}
+		if s.UID != nil && *s.UID == -1 {
+			continue
+		}
 		name := s.Username
 		if i := strings.LastIndex(name, `\`); i >= 0 {
 			name = name[i+1:]
 		}
-		if (uidResolved && s.UID != nil && *s.UID == int64(uid)) || strings.EqualFold(name, username) {
+		switch {
+		case uidResolved && s.UID != nil && *s.UID == int64(uid):
 			seen[pid] = true
+		case strings.EqualFold(name, username):
+			seen[pid] = true
+		case isAllDigits(s.Username):
+			unattributed = append(unattributed, s.Username)
 		}
 	}
-	nums := make([]uint64, 0, len(seen))
-	for pid := range seen {
+	if len(seen) == 0 && !uidResolved && len(unattributed) > 0 {
+		sort.Strings(unattributed)
+		return nil, fmt.Errorf("smbstatus: %d live session(s) have an owner smbstatus can print only as a uid (%s) and %s's uid is unknown; cannot prove none of them is %s's",
+			len(unattributed), strings.Join(unattributed, ", "), username, username)
+	}
+	return sortedPIDs(seen), nil
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func sortedPIDs(set map[uint64]bool) []string {
+	nums := make([]uint64, 0, len(set))
+	for pid := range set {
 		nums = append(nums, pid)
 	}
 	sort.Slice(nums, func(i, j int) bool { return nums[i] < nums[j] })
@@ -275,12 +312,12 @@ func smbSessionPIDs(ctx context.Context, runner mount.Runner, username string, u
 	for i, n := range nums {
 		pids[i] = strconv.FormatUint(n, 10)
 	}
-	return pids, nil
+	return pids
 }
 
 // smbdPID decodes server_id.pid, which status_json.c emits as a string but
 // which is accepted as a JSON number too, and refuses anything that is not
-// an integer above 1.
+// an integer above 1 (0 would make smbcontrol broadcast to every daemon).
 func smbdPID(raw json.RawMessage) (uint64, error) {
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
@@ -297,29 +334,48 @@ func smbdPID(raw json.RawMessage) (uint64, error) {
 	return n, nil
 }
 
-// smbSessionGonePolls/Interval bound the post-close check. smbcontrol only
+// smbSessionGonePolls/Interval bound the close: about 10s. smbcontrol only
 // queues MSG_SHUTDOWN; the smbd child exits asynchronously
-// (source3/smbd/server.c msg_exit_server → exit_server_cleanly), and
-// smbstatus drops a session once its process is gone (process_exists).
+// (source3/smbd/server.c msg_exit_server → exit_server_cleanly, which can
+// take a while with open files or oplock breaks), and smbstatus drops a
+// session once its process is gone (process_exists).
 var (
-	smbSessionGonePolls    = 10
-	smbSessionGoneInterval = 200 * time.Millisecond
+	smbSessionGonePolls    = 20
+	smbSessionGoneInterval = 500 * time.Millisecond
 )
 
-// waitSmbSessionsGone polls `smbstatus --processes --numeric --json` until no
-// session is held by any of pids. --numeric keeps smbstatus from resolving
-// names at all; only the pid is compared.
+// closeSmbSessions signals every listed process with `smbcontrol <pid>
+// shutdown`, then polls `smbstatus --processes --numeric --json` (numeric:
+// after the delete the uid may not resolve to a name; only uid and pid are
+// compared) until none of those processes — and, when the uid is known, no
+// session of that uid at all — is listed. A process that shows up for the
+// uid during the poll is signalled too. The poll, not smbcontrol's exit
+// status, decides: signalling a process that has already exited fails, and
+// is only reported if the poll still lists it. Cancellation is honoured
+// between polls.
 //
 // UNVERIFIED by execution: that `smbcontrol <pid> shutdown` ends an smbd
 // child's session on the node (the child inherits the parent's MSG_SHUTDOWN
 // registration across fork). Check B of the verify script proves it.
-func waitSmbSessionsGone(ctx context.Context, runner mount.Runner, pids []string) error {
+func closeSmbSessions(ctx context.Context, runner mount.Runner, pids []string, uid uint32, uidResolved bool) error {
+	signalled := map[string]bool{}
+	signalErrs := map[string]error{}
+	signal := func(pid string) {
+		signalled[pid] = true
+		if err := runner.Run(ctx, "smbcontrol", pid, "shutdown"); err != nil {
+			signalErrs[pid] = err
+		}
+	}
+	for _, pid := range pids {
+		signal(pid)
+	}
+
 	var remaining []string
 	for i := 0; i < smbSessionGonePolls; i++ {
-		if i > 0 && smbSessionGoneInterval > 0 {
+		if i > 0 {
 			select {
 			case <-ctx.Done():
-				return fmt.Errorf("storage.smb_user.apply delete: %w", ctx.Err())
+				return fmt.Errorf("storage.smb_user.apply delete: closing sessions: %w", ctx.Err())
 			case <-time.After(smbSessionGoneInterval):
 			}
 		}
@@ -327,25 +383,40 @@ func waitSmbSessionsGone(ctx context.Context, runner mount.Runner, pids []string
 		if err != nil {
 			return fmt.Errorf("storage.smb_user.apply delete: verify sessions closed: %w", err)
 		}
-		live := map[string]bool{}
+		live := map[uint64]bool{}
 		for _, s := range st.Sessions {
 			pid, err := smbdPID(s.ServerID.PID)
 			if err != nil {
 				return fmt.Errorf("storage.smb_user.apply delete: verify sessions closed: %w", err)
 			}
-			live[strconv.FormatUint(pid, 10)] = true
-		}
-		remaining = remaining[:0]
-		for _, pid := range pids {
-			if live[pid] {
-				remaining = append(remaining, pid)
+			if signalled[strconv.FormatUint(pid, 10)] || (uidResolved && s.UID != nil && *s.UID == int64(uid)) {
+				live[pid] = true
 			}
 		}
+		remaining = sortedPIDs(live)
 		if len(remaining) == 0 {
 			return nil
 		}
+		for _, pid := range remaining {
+			if !signalled[pid] {
+				signal(pid)
+			}
+		}
 	}
-	return fmt.Errorf("storage.smb_user.apply delete: sessions still open after close on process(es) %s", strings.Join(remaining, ", "))
+	msg := fmt.Sprintf("storage.smb_user.apply delete: sessions still open after close on process(es) %s", strings.Join(remaining, ", "))
+	if uidResolved {
+		msg += fmt.Sprintf(" (uid %d)", uid)
+	}
+	var errs []error
+	for _, pid := range remaining {
+		if err := signalErrs[pid]; err != nil {
+			errs = append(errs, fmt.Errorf("close session process %s: %w", pid, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s: %w", msg, errors.Join(errs...))
+	}
+	return errors.New(msg)
 }
 
 func setSambaPassword(ctx context.Context, runner mount.Runner, client httpGetter, task *SmbUserApplyTask) error {
