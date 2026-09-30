@@ -794,6 +794,7 @@ func (s *Service) buildHeartbeat(bootID string, sdwanMgr *sdwan.Manager) Heartbe
 		payload.RuntimeSecurityFailClosedUnits = s.reconciler.SecurityFailClosedUnits()
 		// Round Y: stale-confinement visibility, same nil-Reconciler guard.
 		payload.RuntimeConfinementStaleUnits = s.reconciler.ConfinementStaleUnits()
+		payload.AssignmentDeferral = s.reconciler.AssignmentDeferral()
 	}
 	if lkg, err := LoadBootLKG(BootLKGPath); err == nil {
 		payload.LKGPresent = true

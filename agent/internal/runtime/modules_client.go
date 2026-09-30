@@ -60,6 +60,18 @@ type AssignmentMeta struct {
 	// ProtectedEgressHosts, so an operator approval takes effect on the next
 	// tick with no agent restart.
 	PrivilegedModuleIDs []string
+	// ConfirmedUnassigned is the ids of modules the platform positively states
+	// were UNASSIGNED from this node (data.confirmed_unassigned), each recorded by
+	// an audited server action when the assignment was removed or disabled
+	// (IMP-9f4e162d9ed1). It exists because an assignment list that names no
+	// data-bearing module is untrusted (IMP-1023e79cc82d): the list alone cannot
+	// separate "the operator unassigned everything" from a degraded answer, so the
+	// platform must NAME what it unassigned. Only a module named here may be
+	// detached on such a list; absent or malformed means no confirmation, which is
+	// exactly the fail-closed behaviour that existed before this field. Never
+	// derived from the list being empty: an empty answer produces an empty
+	// confirmation set, not a full one.
+	ConfirmedUnassigned []string
 }
 
 // FetchAssignedModules returns the rich-shape module list the
@@ -95,6 +107,7 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 			LKGAppHealthPollSecs      int              `json:"lkg_app_health_poll_interval_seconds,omitempty"`
 			ProtectedEgressHosts      []string         `json:"protected_egress_hosts,omitempty"`
 			PrivilegedModuleIDs       []string         `json:"privileged_module_ids,omitempty"`
+			ConfirmedUnassigned       json.RawMessage  `json:"confirmed_unassigned,omitempty"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
@@ -119,5 +132,35 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 		AppHealthPollIntervalSeconds: env.Data.LKGAppHealthPollSecs,
 		ProtectedEgressHosts:         env.Data.ProtectedEgressHosts,
 		PrivilegedModuleIDs:          env.Data.PrivilegedModuleIDs,
+		ConfirmedUnassigned:          parseConfirmedUnassigned(env.Data.ConfirmedUnassigned),
 	}, nil
+}
+
+// parseConfirmedUnassigned reads data.confirmed_unassigned defensively: this
+// field authorises a detach, so anything that is not an array of objects each
+// carrying a non-empty string module_id contributes nothing, and a malformed
+// element cannot poison the well-formed ones. Duplicates collapse, order is kept.
+func parseConfirmedUnassigned(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var entries []any
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil
+	}
+	seen := make(map[string]bool, len(entries))
+	var ids []string
+	for _, e := range entries {
+		obj, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := obj["module_id"].(string)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
 }

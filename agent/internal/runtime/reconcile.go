@@ -289,6 +289,16 @@ type Reconciler struct {
 	securityFailClosedPending    []string
 	securityPolicyAttemptedUnits []string
 
+	// assignmentDeferral is the PUBLISHED set of live deferral conditions
+	// (assignment_deferral.go), read by buildHeartbeat from another goroutine —
+	// atomic for the same reason securityFailClosedUnits is. deferralPending is
+	// the pass-local accumulator, deferralSince each reason's unbroken-run start;
+	// both are touched only by RunOnce under mu. nowUnix is a test seam.
+	assignmentDeferral atomic.Pointer[[]AssignmentDeferralReport]
+	deferralPending    map[string][]string
+	deferralSince      map[string]int64
+	nowUnix            func() int64
+
 	// tickIdentityManifests (T1, final review on f3339424, HIGH) is THIS
 	// tick's own full identity/sudoers manifest set — every currently
 	// desired/attached module's manifest, with any actively-bumping
@@ -682,6 +692,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// detach-before-attach mitigation, since removed — round 9) can never
 	// land between a later reset point and its own recording call.
 	r.resetSecurityFailClosed()
+	r.resetAssignmentDeferralPending()
 
 	// E8: realize the durable-storage binding before module attaches,
 	// so any module unit start (e.g. postgres) finds its data
@@ -705,6 +716,9 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// parses a module's privileged REQUEST; attachModule consults this to
 	// decide whether to honour it (IMP-01a02f70-20b1).
 	r.privilegedAllow = assignmentMeta.PrivilegedModuleIDs
+	// Modules the platform positively named as unassigned; consulted only where
+	// the assignment list itself is untrusted (selfhost.go, IMP-9f4e162d9ed1).
+	confirmed := confirmedUnassigned(assignmentMeta, desiredModules)
 
 	// Snapshot whatever manifest is CURRENTLY cached on disk for every
 	// assigned module, BEFORE the fetch loop below overwrites that cache
@@ -848,9 +862,9 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// are attached: that list is untrusted (filterEmptyAssignmentDetaches
 	// refuses to detach on it), and the rebase would read it as "nothing is
 	// assigned" and drop entries on it (IMP-1023e79cc82d).
-	if len(current.AttachedModules) > 0 && !assignsDataModule(desiredModules) {
+	if len(current.AttachedModules) > 0 && emptyListUntrusted(desiredModules, moduleIDsOf(current.AttachedModules), confirmed) {
 		r.cfg.OnError("reconciler:state_rebase_skipped_empty_assignment", errors.New(
-			"the assignment list names no data-bearing module while modules are attached; not rebasing state against it"))
+			"the assignment list names no data-bearing module while modules are attached that the platform did not confirm unassigned; not rebasing state against it"))
 	} else {
 		r.rebaseStateAgainstBoot(ctx, current, stateRebaseInputs{fresh: manifests, fetchFailed: manifestFetchFailed, assigned: assignedIDs})
 	}
@@ -1181,7 +1195,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		detachDeferred[id] = true
 	}
 	toDetach = r.filterUnverifiedDetaches(toDetach, detachDeferred)
-	toDetach = r.filterEmptyAssignmentDetaches(toDetach, desiredModules)
+	toDetach = r.filterEmptyAssignmentDetaches(toDetach, desiredModules, confirmed)
 
 	// Refuse detaches that would take down this node's own control plane
 	// (see selfhost.go). Applied HERE, before both the detach loop and the
@@ -1278,6 +1292,13 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 			"this pass has %d module(s) [%s] with no fresh, cached, or breadcrumb manifest; they are omitted from this tick's render (harmless — none of them was ever attached or boot-composed)",
 			len(unresolvedHarmless), strings.Join(unresolvedHarmless, ", ")))
 	}
+
+	// The pass has now decided both the detach set and the render. Publish what it
+	// deferred or skipped for the heartbeat's health lane, exactly once.
+	if mustSkipRender {
+		r.recordAssignmentDeferral(DeferralIdentityRenderSkipped, unresolvedReal)
+	}
+	r.publishAssignmentDeferral()
 
 	if mustSkipRender {
 		sort.Strings(unresolvedReal)
@@ -2265,12 +2286,16 @@ func (r *Reconciler) stagePendingCompose(assigned []AssignedModule, manifests ma
 	// Same untrusted-answer rule as the detach and state-rebase guards: a list
 	// naming no data-bearing module while this boot composed some says nothing
 	// about what the next boot should run, and staging it would overwrite a
-	// legitimately staged set with a config-only one (IMP-1023e79cc82d).
+	// legitimately staged set with a config-only one (IMP-1023e79cc82d). It
+	// stops applying only when the platform confirmed EVERY data module this boot
+	// composed as unassigned (IMP-9f4e162d9ed1): then the empty set is its
+	// statement, not a guess.
 	if !assignsDataModule(assigned) {
+		confirmed := confirmedUnassigned(meta, assigned)
 		for _, m := range bc.Modules {
-			if m.HasDataFile {
+			if m.HasDataFile && !confirmed[m.ID] {
 				r.cfg.OnError("reconciler:stage_pending_compose_skipped_empty_assignment", errors.New(
-					"the assignment list names no data-bearing module while this boot composed some; not staging it for the next boot"))
+					"the assignment list names no data-bearing module while this boot composed some the platform did not confirm unassigned; not staging it for the next boot"))
 				return
 			}
 		}

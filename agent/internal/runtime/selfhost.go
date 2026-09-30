@@ -303,9 +303,57 @@ func assignsDataModule(assigned []AssignedModule) bool {
 	return false
 }
 
+// confirmedUnassigned is the set of module ids the platform positively named as
+// unassigned (AssignmentMeta.ConfirmedUnassigned) that the list itself does NOT
+// also carry. A module that is both assigned and confirmed-unassigned is a
+// contradiction in one response, and contradictory input is never a licence to
+// detach: it is dropped here, so it stays untrusted.
+func confirmedUnassigned(meta AssignmentMeta, assigned []AssignedModule) map[string]bool {
+	if len(meta.ConfirmedUnassigned) == 0 {
+		return nil
+	}
+	listed := make(map[string]bool, len(assigned))
+	for _, a := range assigned {
+		listed[a.ID] = true
+	}
+	confirmed := make(map[string]bool, len(meta.ConfirmedUnassigned))
+	for _, id := range meta.ConfirmedUnassigned {
+		if !listed[id] {
+			confirmed[id] = true
+		}
+	}
+	return confirmed
+}
+
+func moduleIDsOf(mods []mount.Module) []string {
+	ids := make([]string, 0, len(mods))
+	for _, m := range mods {
+		ids = append(ids, m.ID)
+	}
+	return ids
+}
+
+// emptyListUntrusted reports whether the assignment list is untrusted for the
+// modules currently attached: it names no data-bearing module while at least one
+// attached module is NOT confirmed unassigned. A list confirming every attached
+// module is the platform saying "these were unassigned", which is a trusted
+// statement about all of them.
+func emptyListUntrusted(assigned []AssignedModule, attachedIDs []string, confirmed map[string]bool) bool {
+	if assignsDataModule(assigned) {
+		return false
+	}
+	for _, id := range attachedIDs {
+		if !confirmed[id] {
+			return true
+		}
+	}
+	return false
+}
+
 // filterEmptyAssignmentDetaches refuses a detach set when the platform's
 // assignment list names NO data-bearing module (success:true, an empty list or
-// one of only config/skill modules) while modules are attached. Applied
+// one of only config/skill modules) while modules are attached, EXCEPT for a
+// module the platform positively named as unassigned (confirmed). Applied
 // unconditionally, like filterUnverifiedDetaches.
 //
 // The list is the agent's only statement of desired state and carries no
@@ -318,22 +366,39 @@ func assignsDataModule(assigned []AssignedModule) bool {
 // undo per module; detaching them on a degraded answer is an outage. The
 // ambiguity is resolved toward keeping, and made visible.
 //
+// The marker is per module, not per list (IMP-9f4e162d9ed1): a confirmation is
+// a positive record the platform wrote when it unassigned THAT module, so an
+// empty list cannot manufacture one — the same degraded read that empties the
+// list empties the confirmations. A confirmed module passes through to the
+// normal detach path (and its remaining guards); an unconfirmed one is deferred
+// and reported as a health condition.
+//
 // Only data-bearing assignments count (HasDataFile): every attached module is
 // one, so a list carrying none of them says nothing about which to keep. A list
 // that names at least one data module and omits another is a removal the
-// operator (or the server's own resolution check) is asserting.
-func (r *Reconciler) filterEmptyAssignmentDetaches(toDetach mount.ModuleStack, assigned []AssignedModule) mount.ModuleStack {
+// operator (or the server's own resolution check) is asserting, and never
+// consults the confirmations.
+func (r *Reconciler) filterEmptyAssignmentDetaches(toDetach mount.ModuleStack, assigned []AssignedModule, confirmed map[string]bool) mount.ModuleStack {
 	if len(toDetach) == 0 || assignsDataModule(assigned) {
 		return toDetach
 	}
-	ids := make([]string, 0, len(toDetach))
+	safe := make(mount.ModuleStack, 0, len(toDetach))
+	deferred := make([]string, 0, len(toDetach))
 	for _, mod := range toDetach {
-		ids = append(ids, mod.ID)
+		if confirmed[mod.ID] {
+			safe = append(safe, mod)
+			continue
+		}
+		deferred = append(deferred, mod.ID)
 	}
+	if len(deferred) == 0 {
+		return safe
+	}
+	r.recordAssignmentDeferral(DeferralEmptyAssignment, deferred)
 	r.noteUnconverged("reconciler:detach_deferred_empty_assignment", "", fmt.Errorf(
-		"the platform returned an assignment list with no data-bearing module (%d assigned) while %d module(s) [%s] are attached; refusing to read that as \"unassign everything\" and deferring their detach — detach a module deliberately with `powernode-agent detach`",
-		len(assigned), len(ids), strings.Join(ids, ", ")))
-	return nil
+		"the platform returned an assignment list with no data-bearing module (%d assigned) while %d module(s) [%s] are attached and not confirmed unassigned; refusing to read that as \"unassign everything\" and deferring their detach — detach a module deliberately with `powernode-agent detach`",
+		len(assigned), len(deferred), strings.Join(deferred, ", ")))
+	return safe
 }
 
 // filterUnverifiedDetaches drops from a detach set any module whose manifest

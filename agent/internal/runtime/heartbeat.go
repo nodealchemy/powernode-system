@@ -188,6 +188,16 @@ type HeartbeatPayload struct {
 	// Empty/omitted means every attached, N4-eligible unit's running
 	// capabilities currently match what its manifest declares.
 	RuntimeConfinementStaleUnits []string `json:"runtime_confinement_stale_units,omitempty"`
+	// AssignmentDeferral (IMP-9f4e162d9ed1) lists the live conditions in which
+	// the reconciler is KEEPING modules it would otherwise detach, or skipping
+	// the identity render, because the platform's answer cannot be trusted (see
+	// assignment_deferral.go). Each carries how long that unbroken run has lasted
+	// as a duration, so the platform can tell a one-tick blip from a node stuck
+	// on a composition that no longer matches its assignment. Read straight from
+	// the Reconciler, recomputed every pass, never persisted. Empty/omitted
+	// means no deferral is in force, or an agent too old to say; the platform
+	// must treat absence as UNREPORTED, never as a measured all-clear.
+	AssignmentDeferral []AssignmentDeferralReport `json:"assignment_deferral,omitempty"`
 	// SSHHostKeys are this host's SSH host PUBLIC keys, read from
 	// /etc/ssh/ssh_host_*_key.pub (IMP-190834701b0a; see hostkeys.go). The
 	// platform verifies every SSH connection it makes to this node against
