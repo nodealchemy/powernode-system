@@ -43,12 +43,20 @@ module System
           instance_types: instance_types_summary,
           volume_types: volume_types_summary
         })
+      # IMP-156eb1a7bdbc — Result.error is rendered verbatim to the caller
+      # (ProviderConnectionsController#sync_catalog), so it is a fixed,
+      # classified message; the class rides in data[:exception] and the raw
+      # text (a cloud SDK's, an adapter's, PG's) goes to the log only.
       rescue Registry::UnknownProviderError => e
-        Runtime::Result.err(error: "Provider resolution failed: #{e.message}")
+        Rails.logger.error("[CatalogSyncService] #{e.class}: #{e.message}")
+        Runtime::Result.err(
+          error: "Provider resolution failed for provider type #{@provider&.provider_type.inspect}",
+          data: { exception: e.class.name }
+        )
       rescue StandardError => e
         Rails.logger.error("[CatalogSyncService] #{e.class}: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}")
         Runtime::Result.err(
-          error: "Catalog sync failed: #{e.message}",
+          error: "Catalog sync failed",
           data: { exception: e.class.name }
         )
       end
