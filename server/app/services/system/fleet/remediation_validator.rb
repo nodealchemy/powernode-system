@@ -170,6 +170,15 @@ module System
       #                                            it, an operator
       #                                            diagnosis far beyond
       #                                            SETTLE_WINDOW.
+      #   system.node_assignment_deferred_investigate — IMP-9f4e162d9ed1. The
+      #                                            agent has been keeping
+      #                                            modules an untrusted
+      #                                            assignment list no longer
+      #                                            names, or skipping the
+      #                                            identity render. There is
+      #                                            no applier: the repair is a
+      #                                            deliberate unassignment or
+      #                                            a servable manifest.
       #
       # system.instance_replace WAS LISTED HERE and is not any more
       # (IMP-555db48d41f1, APO-4). The exemption was correct while the lane had
@@ -194,6 +203,7 @@ module System
         system.node_lkg_investigate
         system.node_security_fail_closed_investigate
         system.node_pending_digest_stuck_investigate
+        system.node_assignment_deferred_investigate
         system.module_promotion_investigate
         project.target_unmeasurable_investigate
         system.cloud_sync_terminated_guest_investigate

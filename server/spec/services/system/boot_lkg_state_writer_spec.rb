@@ -203,6 +203,52 @@ RSpec.describe System::BootLkgStateWriter do
     end
   end
 
+  # IMP-9f4e162d9ed1 — the agent's assignment_deferral lane: the conditions in
+  # which it is KEEPING modules (empty assignment list) or skipping the identity
+  # render because the platform's answer cannot be trusted. Same list-or-nil
+  # discipline as its siblings: absence is "unreported / none", never a measured
+  # all-clear.
+  describe "assignment_deferral" do
+    let(:wire) do
+      [ { "reason" => "empty_assignment", "module_ids" => %w[m1 m2], "persisted_seconds" => 1800 },
+        { "reason" => "identity_render_skipped", "module_ids" => %w[m3], "persisted_seconds" => 60 } ]
+    end
+
+    it "stores the reported deferrals normalized" do
+      write("assignment_deferral" => wire)
+
+      expect(stored["assignment_deferral"]).to eq(wire)
+    end
+
+    it "stores nil, never [], for an absent or empty report" do
+      write("assignment_deferral" => wire)
+      write("lkg_present" => true)
+      expect(stored["assignment_deferral"]).to be_nil
+
+      write("assignment_deferral" => [])
+      expect(stored["assignment_deferral"]).to be_nil
+    end
+
+    it "counts as a report for the first-write rule (a node stuck on day one still gets a document)" do
+      expect(write("assignment_deferral" => wire)).to be_present
+      expect(stored).to be_present
+    end
+
+    it "drops entries that are not well-formed hashes and non-integer durations" do
+      write("assignment_deferral" => [ "junk", 7, { "reason" => "empty_assignment", "module_ids" => "m1", "persisted_seconds" => "soon" } ])
+
+      expect(stored["assignment_deferral"]).to eq([ { "reason" => "empty_assignment", "module_ids" => [], "persisted_seconds" => nil } ])
+    end
+
+    it "bounds the number of entries and module ids a node can make the platform store" do
+      big = Array.new(50) { |i| { "reason" => "r#{i}", "module_ids" => Array.new(200) { |j| "m#{j}" }, "persisted_seconds" => i } }
+      write("assignment_deferral" => big)
+
+      expect(stored["assignment_deferral"].size).to eq(described_class::MAX_DEFERRALS)
+      expect(stored["assignment_deferral"].first["module_ids"].size).to eq(described_class::MAX_CONFINEMENTS)
+    end
+  end
+
   describe "pivot_security_fail_closed_units / runtime_security_fail_closed_units" do
     # IMP-caef5c00d63f phase 4 — producer-side contract: a heartbeat carrying
     # either key persists it. Same list-or-nil discipline as

@@ -698,6 +698,16 @@ module System
           skill: nil,
           action_category: "system.node_security_fail_closed_investigate"
         },
+        # IMP-9f4e162d9ed1 — AssignmentDeferralSensor. The agent has been KEEPING
+        # modules the platform's assignment no longer names (an empty or
+        # config-only list fails closed) or skipping its identity render for
+        # longer than the sensor's threshold. skill: nil: the repair is a
+        # deliberate unassignment or a servable manifest, both operator
+        # decisions with no safe applier.
+        "system.node_assignment_deferred" => {
+          skill: nil,
+          action_category: "system.node_assignment_deferred_investigate"
+        },
         # N4 (review round 11, IMP-caef5c00d63f) — PendingDigestStuckSensor.
         # A module has held the same in-place-upgrade PendingDigest past the
         # sensor's threshold. skill: nil, and there is no safe applier to

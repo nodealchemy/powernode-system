@@ -660,6 +660,14 @@ module System
         # fingerprint stands until a person acts.
         "system.node_security_fail_closed_investigate" => "notify_and_proceed",
 
+        # IMP-9f4e162d9ed1 — AssignmentDeferralSensor. The agent has been
+        # keeping modules an untrusted assignment list no longer names, or
+        # skipping its identity render, past the sensor's threshold.
+        # notify_and_proceed, never auto_approve: the repair is a deliberate
+        # unassignment or a servable manifest, both operator decisions with no
+        # applier. Also in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
+        "system.node_assignment_deferred_investigate" => "notify_and_proceed",
+
         # N4 (review round 11, IMP-caef5c00d63f) — PendingDigestStuckSensor.
         # A module has held the same in-place-upgrade PendingDigest past the
         # sensor's threshold.

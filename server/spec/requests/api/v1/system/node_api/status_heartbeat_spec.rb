@@ -685,6 +685,17 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
       expect(recorded["runtime_security_fail_closed_units"]).to be_nil
     end
 
+    # IMP-9f4e162d9ed1 — the assignment-deferral wire is connected end to end.
+    it "records the assignment deferrals the agent reports, and nil when it reports none" do
+      post_heartbeat(assignment_deferral: [ { reason: "empty_assignment", module_ids: %w[m1], persisted_seconds: 1200 } ])
+
+      expect(recorded["assignment_deferral"]).to eq([ { "reason" => "empty_assignment", "module_ids" => %w[m1], "persisted_seconds" => 1200 } ])
+
+      post_heartbeat(lkg_present: true)
+
+      expect(recorded["assignment_deferral"]).to be_nil
+    end
+
     # `lkg_confirmed_at` is the AGENT's clock for the on-disk LKG. The
     # document's own observed_at is only when the report reached us — an agent
     # whose LKG froze keeps re-shipping the same confirmed_at while the server

@@ -90,12 +90,15 @@ module System
       booted_from_lkg lkg_age_seconds lkg_present lkg_confirmed_at
       lkg_module_count boot_incomplete pivot_confinement_omitted
       pivot_security_fail_closed_units runtime_security_fail_closed_units
+      assignment_deferral
     ].freeze
 
     # Caps. The payload arrives from a node — a compromised or simply buggy
     # agent can make it as large as it likes — and lands in a jsonb column read
     # on every fleet read.
     MAX_CONFINEMENTS     = 32
+    # Entries in assignment_deferral (the agent has two reasons today).
+    MAX_DEFERRALS        = 8
     # Stated once in System::IdentifierCaps — same bound, different write surface.
     MAX_IDENTIFIER_CHARS = ::System::IdentifierCaps::MAX_IDENTIFIER_CHARS
     # Digits, not value: the two numeric fields are an int64 and an int on the
@@ -180,7 +183,14 @@ module System
           # empty-but-measured "confirmed clean", and a stored `[]` here would
           # claim exactly that on a node whose agent predates the field.
           "pivot_security_fail_closed_units"   => normalize_string_list(fetch(payload, :pivot_security_fail_closed_units)),
-          "runtime_security_fail_closed_units" => normalize_string_list(fetch(payload, :runtime_security_fail_closed_units))
+          "runtime_security_fail_closed_units" => normalize_string_list(fetch(payload, :runtime_security_fail_closed_units)),
+
+          # IMP-9f4e162d9ed1 — the agent is KEEPING modules it would otherwise
+          # detach (an empty or config-only assignment list) or skipping the
+          # identity render, because the platform's answer cannot be trusted.
+          # List-or-nil like its siblings: absence is "none, or an agent too old
+          # to say", never a measured all-clear. AssignmentDeferralSensor reads it.
+          "assignment_deferral" => normalize_deferrals(fetch(payload, :assignment_deferral))
         }
       end
 
@@ -206,6 +216,26 @@ module System
             identifier(value).presence || "unnamed"
           end
         normalized.empty? ? nil : normalized
+      end
+
+      # A list of { reason, module_ids, persisted_seconds }, or nil. The node
+      # controls this payload, so every part is bounded and typed: at most
+      # MAX_DEFERRALS entries, MAX_CONFINEMENTS ids each, a duration that is an
+      # integer or nil (an unmeasured duration is never read as a long one).
+      def normalize_deferrals(raw)
+        return nil unless raw.is_a?(Array)
+
+        entries = raw.first(MAX_DEFERRALS).filter_map do |entry|
+          next unless entry.respond_to?(:key?)
+
+          ids = fetch(entry, :module_ids)
+          {
+            "reason"            => identifier(fetch(entry, :reason)).presence || "unnamed",
+            "module_ids"        => (ids.is_a?(Array) ? ids : []).first(MAX_CONFINEMENTS).map { |id| identifier(id) },
+            "persisted_seconds" => integer_or_nil(fetch(entry, :persisted_seconds))
+          }
+        end
+        entries.empty? ? nil : entries
       end
 
       # true or nil — never false. See the class doc: `omitempty` makes a

@@ -476,6 +476,17 @@ module System
         # applier exists — the repair is whatever made the write fail, or a
         # manifest correction, both operator actions).
         ::System::Fleet::Sensors::SecurityFailClosedSensor,
+        # IMP-9f4e162d9ed1 — the fail-closed assignment oracle. The agent keeps
+        # modules an untrusted (empty or config-only) assignment list no longer
+        # names, and skips its identity render when a manifest cannot be
+        # resolved; both are safe and both were silent. It reports each live
+        # condition on its heartbeat (assignment_deferral), BootLkgStateWriter
+        # persists it, and this sensor alerts on a persistent one. Emits
+        # system.node_assignment_deferred ->
+        # system.node_assignment_deferred_investigate (notify-only; no
+        # applier — the repair is a deliberate unassignment or a servable
+        # manifest).
+        ::System::Fleet::Sensors::AssignmentDeferralSensor,
         # N4 (review round 11, IMP-caef5c00d63f) — the pending-upgrade-digest
         # oracle. System::PendingModuleDigestsWriter has persisted the
         # agent's PendingModuleDigests heartbeat lane (M9, round 9) since
