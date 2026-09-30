@@ -2814,9 +2814,18 @@ func (r *Reconciler) applyIdentityAndSudoers(manifests []*manifest.Manifest, sta
 	// and any unprivileged service with HOME there break. Idempotent.
 	reconcileHomeOwnership(identitySet, "", r.cfg.OnError)
 	if err := applySudoers(etcsudoers.CollectFromManifests(manifests)); err != nil {
-		r.cfg.OnError(stagePrefix+"sudoers_write", err)
-		if firstErr == nil {
-			firstErr = fmt.Errorf("sudoers: %w", err)
+		if etcsudoers.RefusalsOnly(err) {
+			// IMP-3f6c2f35c50d: grants refused for an illegal or colliding
+			// drop-in name are one module's own defect, not a failure of the
+			// sudoers directory. Signal them, but do NOT return them: a
+			// non-nil result here makes upgradeModule refuse to restart, which
+			// would stall every OTHER module's upgrade on the node.
+			r.cfg.OnError(stagePrefix+"sudoers_refused", err)
+		} else {
+			r.cfg.OnError(stagePrefix+"sudoers_write", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("sudoers: %w", err)
+			}
 		}
 	}
 	return firstErr

@@ -43,25 +43,44 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 
 	kept := map[string]struct{}{}
 	var firstWriteErr error
-	// refused holds one error per grant refused by the filename rule, so an
-	// operator sees every bad grant rather than only the first.
+	// refused holds one RefusedGrantError per grant declined by the filename
+	// rule, so an operator sees every bad grant rather than only the first.
 	var refused []error
 
-	for _, g := range grants {
-		// Validate the name BEFORE anything is rendered or written: Filename()
-		// embeds the module name and grant id, so a "/" or ".." in either would
-		// put the file outside dir, and a "." or "~" would leave a drop-in sudo
-		// silently ignores. Refuse this grant alone and keep applying the rest;
-		// the returned error reaches the reconciler's OnError hook.
+	// Name every grant BEFORE writing any. "-" is legal in both components, so
+	// two DIFFERENT (module, id) identities can join to one basename; which one
+	// won used to depend on input order, itself derived from Go map iteration
+	// in the reconciler. Every identity in such a collision group is refused,
+	// independent of order. The SAME identity arriving twice is not a
+	// collision: the reconciler's old-union-new set legitimately carries a
+	// grant from both manifests, and the later (the new manifest) wins by
+	// being written last.
+	type identity struct{ module, id string }
+	paths := make([]string, len(grants))
+	idsByPath := map[string]map[identity]struct{}{}
+	for n, g := range grants {
 		path, err := g.PathIn(dir)
 		if err != nil {
-			refused = append(refused, fmt.Errorf("refusing sudoers grant: %w", err))
+			refused = append(refused, &RefusedGrantError{ModuleName: g.ModuleName, GrantID: g.Grant.ID, Reason: err.Error()})
 			continue
 		}
-		if _, dup := kept[path]; dup {
-			// "-" is legal in both components, so (a-b, c) and (a, b-c) join to
-			// the same basename; the later must not silently replace the earlier.
-			refused = append(refused, fmt.Errorf("refusing sudoers grant: module %q grant %q renders to %s, already written by an earlier grant", g.ModuleName, g.Grant.ID, g.Filename()))
+		paths[n] = path
+		if idsByPath[path] == nil {
+			idsByPath[path] = map[identity]struct{}{}
+		}
+		idsByPath[path][identity{g.ModuleName, g.Grant.ID}] = struct{}{}
+	}
+
+	for n, g := range grants {
+		// paths[n] is empty for a grant the name rule already refused above:
+		// nothing is rendered, written or removed for it, and the rest apply.
+		path := paths[n]
+		if path == "" {
+			continue
+		}
+		if len(idsByPath[path]) > 1 {
+			refused = append(refused, &RefusedGrantError{ModuleName: g.ModuleName, GrantID: g.Grant.ID,
+				Reason: fmt.Sprintf("renders to %s, which another module/grant also renders to", g.Filename())})
 			continue
 		}
 		if err := writeguard.Check(path); err != nil {
@@ -95,10 +114,10 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 	}
 
 	sweepErr := sweep(dir, kept)
-	if firstWriteErr == nil && len(refused) == 0 {
-		return sweepErr
+	if firstWriteErr == nil && sweepErr == nil && len(refused) == 0 {
+		return nil
 	}
-	return errors.Join(append(refused, firstWriteErr)...)
+	return errors.Join(append(refused, firstWriteErr, sweepErr)...)
 }
 
 // sweep removes any /etc/sudoers.d/powernode-* file whose path is not

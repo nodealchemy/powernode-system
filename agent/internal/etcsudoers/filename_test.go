@@ -1,6 +1,7 @@
 package etcsudoers
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,24 +155,101 @@ func TestApplyAtRefusesHostileGrantsButAppliesTheRest(t *testing.T) {
 	}
 }
 
-// Two distinct (module, id) pairs can join to the same basename because "-" is
-// legal in both components. The second must not silently overwrite the first.
-func TestApplyAtRefusesAGrantCollidingWithAnEarlierOne(t *testing.T) {
-	dir := t.TempDir()
-	first := grantOf("a-b", "c")
-	second := grantOf("a", "b-c")
-	if first.Filename() != second.Filename() {
+// Two DISTINCT (module, id) pairs can join to the same basename because "-" is
+// legal in both components. Which one would win used to depend on input order
+// (which itself comes from Go map iteration in the reconciler), so EVERY grant
+// in the collision group is refused, in either order, and nothing is written.
+func TestApplyAtRefusesEveryGrantInACollisionGroupRegardlessOfOrder(t *testing.T) {
+	a := grantOf("a-b", "c")
+	b := grantOf("a", "b-c")
+	if a.Filename() != b.Filename() {
 		t.Fatal("fixture no longer collides")
 	}
-	if err := ApplyAt([]Grant{first, second}, dir, staticClock()); err == nil {
-		t.Error("the colliding grant was not reported")
+	for name, order := range map[string][]Grant{"a,b": {a, b}, "b,a": {b, a}} {
+		dir := t.TempDir()
+		err := ApplyAt(order, dir, staticClock())
+		if err == nil {
+			t.Errorf("%s: the collision was not reported", name)
+			continue
+		}
+		if got := listDir(t, dir); len(got) != 0 {
+			t.Errorf("%s: a colliding grant was written: %v", name, got)
+		}
+		for _, want := range []string{`module "a-b" grant "c"`, `module "a" grant "b-c"`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: %s not reported as refused: %v", name, want, err)
+			}
+		}
+		if !RefusalsOnly(err) {
+			t.Errorf("%s: a collision refusal must be a non-fatal refusal: %v", name, err)
+		}
 	}
-	body, err := os.ReadFile(filepath.Join(dir, first.Filename()))
+}
+
+// The reconciler and the upgrade path hand ApplyAt an old-union-new set, so the
+// SAME (module, id) legitimately arrives twice. That is not a collision: no
+// error, and the LAST occurrence (the new manifest, appended after the old)
+// is the body on disk.
+func TestApplyAtAcceptsTheSameGrantTwiceLastOneWins(t *testing.T) {
+	dir := t.TempDir()
+	oldG := grantOf("postgres-primary", "reload")
+	oldG.Grant.Commands = []string{"/bin/old"}
+	newG := grantOf("postgres-primary", "reload")
+	newG.Grant.Commands = []string{"/bin/new"}
+	if err := ApplyAt([]Grant{oldG, newG}, dir, staticClock()); err != nil {
+		t.Fatalf("an old-union-new pair was refused: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "powernode-postgres-primary-reload"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "module=a-b,") {
-		t.Errorf("the first grant was overwritten:\n%s", body)
+	if !strings.Contains(string(body), "/bin/new") || strings.Contains(string(body), "/bin/old") {
+		t.Errorf("the new body did not land:\n%s", body)
+	}
+}
+
+// A refusal is reported (so it is logged and signalled) but is distinguishable
+// from a real write/IO failure, which stays fatal.
+func TestRefusalsOnlyDistinguishesRefusalsFromWriteFailures(t *testing.T) {
+	err := ApplyAt([]Grant{grantOf("a", "b.c"), grantOf("good", "one")}, t.TempDir(), staticClock())
+	if err == nil || !RefusalsOnly(err) {
+		t.Fatalf("a refusal-only result must satisfy RefusalsOnly: %v", err)
+	}
+	if RefusalsOnly(nil) {
+		t.Error("nil is not a refusal")
+	}
+	if RefusalsOnly(errors.New("write failed")) {
+		t.Error("a plain error is not a refusal")
+	}
+	if RefusalsOnly(errors.Join(err, errors.New("write failed"))) {
+		t.Error("a refusal joined with a real failure must not read as refusal-only")
+	}
+}
+
+// A refusal must not hide a sweep failure: both are returned, and the result is
+// then NOT refusal-only (the IO failure stays fatal).
+func TestApplyAtKeepsTheSweepErrorWhenAGrantIsRefused(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not bind root")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "powernode-stale-one"), []byte("# x\n"), 0o440); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	err := ApplyAt([]Grant{grantOf("a", "b.c")}, dir, staticClock())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "refusing sudoers grant") || !strings.Contains(err.Error(), "sweep ") {
+		t.Errorf("both the refusal and the sweep failure must be reported: %v", err)
+	}
+	if RefusalsOnly(err) {
+		t.Error("a sweep IO failure must stay fatal")
 	}
 }
 
