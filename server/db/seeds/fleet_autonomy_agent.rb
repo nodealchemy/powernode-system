@@ -6,7 +6,7 @@ require_relative "content/canonical_agent_content"
 # Seeds the Fleet Autonomy AI agent and the fleet approval chain.
 #
 # Reference: Golden Eclipse plan M7 — fleet_autonomy_agent seed.
-# Mirrors trading_overseer_autonomy.rb shape so trading + fleet decisions
+# Shaped like the other autonomy-agent seeds so every domain's decisions
 # share the same approval queue UI without code paths diverging.
 
 puts "\n  Seeding Fleet Autonomy agent..."
@@ -117,7 +117,7 @@ puts "  ℹ️  Fleet Autonomy policies: written by System::Governance::PolicyRe
      "boot-time governance-reconcile or `rails system:governance:reconcile`)"
 
 # ── Fleet Approval Chain ────────────────────────────────────────────────
-# Single-step chain for fleet require_approval actions. The trading approval
+# Single-step chain for fleet require_approval actions. The shared approval
 # queue UI surfaces fleet requests via source_type="system_fleet" without UI
 # changes.
 

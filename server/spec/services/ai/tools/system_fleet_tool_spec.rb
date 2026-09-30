@@ -3,7 +3,7 @@
 require "rails_helper"
 
 # Golden Eclipse M5 — SystemFleetTool MCP surface.
-# Mirrors the trading_*_tool_spec.rb shape: invoke .execute(params:) directly,
+# Same shape as the other Ai::Tools specs: invoke .execute(params:) directly,
 # assert success_result/error_result content.
 RSpec.describe Ai::Tools::SystemFleetTool do
   let(:account)  { create(:account) }

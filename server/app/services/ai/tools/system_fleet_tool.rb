@@ -6,7 +6,7 @@ module Ai
     # NodeTemplate/NodeModule/Task lifecycle to operators + AI agents.
     #
     # Reference: Golden Eclipse plan M5 — MCP CRUD surface for System extension.
-    # Mirrors trading_*_tool.rb in shape so the operator approval UI + agent
+    # Shaped like the other Ai::Tools MCP tools so the operator approval UI + agent
     # invocation paths work uniformly.
     class SystemFleetTool < BaseTool
       # IMP-b8cab7f951c7 — this tool holds two of the six on-node refusal
