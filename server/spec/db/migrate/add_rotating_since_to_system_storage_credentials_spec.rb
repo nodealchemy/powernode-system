@@ -27,6 +27,8 @@ RSpec.describe AddRotatingSinceToSystemStorageCredentials do
 
   subject(:migration) { described_class.new }
 
+  after(:context) { ActiveRecord::Base.connection.clear_cache! }
+
   def run!
     migration.verbose = false
     migration.up
