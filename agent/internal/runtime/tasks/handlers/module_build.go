@@ -458,9 +458,14 @@ func parseBuildResult(stdout []byte) (*moduleBuildResult, error) {
 }
 
 // logTail bounds stdout/stderr for inclusion in the task result — enough
-// for operator diagnosis without bloating System::Task#events JSONB.
+// for operator diagnosis without bloating System::Task#events JSONB. Every
+// headed private-key block is removed from the WHOLE stream first (the same
+// scrub-then-bound principle as scrubbedLogTail), so no cut can land inside
+// one; the window cut then falls back to dropCutKeyBody for a body whose
+// header was never in the stream. Shared by module_build, package_build and
+// lint_discovery, which all get both.
 func logTail(stdout, stderr []byte) string {
-	return "stdout: " + tailBytes(stdout, logTailMaxBytes) + "\nstderr: " + tailBytes(stderr, logTailStderrMaxBytes)
+	return "stdout: " + tailBytes(removeKeyBlocks(stdout), logTailMaxBytes) + "\nstderr: " + tailBytes(removeKeyBlocks(stderr), logTailStderrMaxBytes)
 }
 
 func tailBytes(b []byte, max int) string {
@@ -470,57 +475,104 @@ func tailBytes(b []byte, max int) string {
 	return strings.TrimSpace(dropCutKeyBody(string(b[len(b)-max:])))
 }
 
-// logTailKeyBodyMarker stands in for a run of PEM-body-shaped lines that a
-// window cut left at its start (IMP-33ab99763220).
-const logTailKeyBodyMarker = "[truncated key material removed]"
+const (
+	// logTailKeyBlockMarker stands in for a whole private-key block (BEGIN
+	// through END, or a clipped BEGIN with its body) removed from a stream
+	// before the window is cut (IMP-33ab99763220).
+	logTailKeyBlockMarker = "[key material removed]"
+	// logTailKeyBodyMarker stands in for a run of PEM-body-shaped lines that
+	// a window cut left at its start, the header already outside the stream.
+	logTailKeyBodyMarker = "[truncated key material removed]"
+)
 
 var (
+	// A headed private-key block anywhere in a stream, in whatever form a
+	// build log carries it: a BEGIN header through the next PRIVATE KEY END
+	// footer, matched as ONE span so indentation (a YAML block scalar), a
+	// per-line prefix (a timestamped logger), JSON-escaped `\n`, a
+	// space-joined `echo $KEY`, trailing whitespace and CRLF all fall inside
+	// it. Without a footer (the stream ended mid-key) it consumes only
+	// PEM-shaped continuation lines, optionally indented, plus a short final
+	// line at the very end of the text, and stops at the first ordinary line,
+	// exactly as System::ShellOutputSanitizer's clipped-block pattern does.
+	//
+	// Properties, stated: the footer is restricted to PRIVATE KEY so a span
+	// cannot end on a certificate footer; the lazy span is over-redaction-only
+	// (a line that merely MENTIONS a header, followed much later by a real
+	// key, swallows the text between them, which is lost, not leaked); a
+	// clipped key with a per-line prefix keeps its body (the fallback below
+	// cannot see prefixed lines either; residual, low). RE2: linear.
+	pemBlockRe = regexp.MustCompile(
+		`-----BEGIN[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----` +
+			`(?:[\s\S]*?-----END[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----` +
+			`|(?:\r?\n[ \t]*(?:[A-Za-z0-9+/=]{16,76}|(?:Proc-Type|DEK-Info):[^\n]*|[A-Za-z0-9+/=]{1,15}[ \t]*\z|)[ \t]*)*)`)
+
 	// One full line of a PEM body: 16..76 base64 characters and nothing else
 	// (RFC 7468 wraps at 64, OpenSSH at 70), an RFC 1421 encryption header,
 	// or a blank line. The lower bound is the server sanitizer's own: shorter
-	// runs are ordinary words, and a clipped body has no short line by
-	// construction except its last.
+	// runs are ordinary words. Lines are matched after TrimSpace, so
+	// indentation and trailing whitespace do not break a run.
 	pemBodyLineRe = regexp.MustCompile(`^(?:[A-Za-z0-9+/=]{16,76}|(?:Proc-Type|DEK-Info):.*)?$`)
+	// A body's LAST line is the base64 remainder, 4..64 chars: a short one
+	// counts only when the END footer is the very next line.
+	pemShortLineRe = regexp.MustCompile(`^[A-Za-z0-9+/=]{1,15}$`)
 	// The window's first line is a FRAGMENT (the cut landed mid-line): any
 	// length of base64 alphabet, including none, can be the end of a body line.
 	pemFragmentRe = regexp.MustCompile(`^[A-Za-z0-9+/=]*$`)
 	pemEndLineRe  = regexp.MustCompile(`^-----END[A-Z0-9 ]*-----$`)
 )
 
-// dropCutKeyBody handles a window whose cut landed inside a PEM block: the
-// BEGIN header fell outside it, so the body lines at its start match no
-// header-keyed pattern downstream (System::ShellOutputSanitizer keys on the
-// header; System::StoredOutputRedactor strips a headerless body only at the
-// start of ITS window, which is not where `stdout: ` / `\nstderr: ` put it).
+// removeKeyBlocks replaces every headed private-key block in the stream with
+// logTailKeyBlockMarker. The parsed build result is read from the raw stream
+// by the caller, never from this copy.
+func removeKeyBlocks(b []byte) []byte {
+	if !bytes.Contains(b, []byte("PRIVATE KEY")) {
+		return b
+	}
+	return pemBlockRe.ReplaceAll(b, []byte(logTailKeyBlockMarker))
+}
+
+// dropCutKeyBody handles a window whose cut landed inside a PEM body whose
+// BEGIN header was never in the stream (removeKeyBlocks has already taken
+// every headed block), so the body lines at its start match no header-keyed
+// pattern downstream (System::ShellOutputSanitizer keys on the header;
+// System::StoredOutputRedactor strips a headerless body only at the start of
+// ITS window, which is not where `stdout: ` / `\nstderr: ` put it).
 //
 // The run of leading body-shaped lines is dropped THROUGH the END footer, or
 // to the first ordinary line when no footer appears, and replaced with
 // logTailKeyBodyMarker. Conservative by construction: the run must be anchored
-// by at least one full body-shaped line or an END footer, so a cut that lands
-// on a base64-looking word of an ordinary line ("deprecated") followed by
-// ordinary lines is left exactly as it was. A first line that is not base64
-// (the cut landed in a Proc-Type header, or in the BEGIN line itself) is kept
-// and the body after it is still stripped. Only ever called on a cut window.
+// by a full body-shaped line AFTER the first, or by an END footer — the first
+// line is a fragment and never anchors alone, so a cut that lands on a
+// base64-looking word or digest fragment of an ordinary line followed by
+// ordinary lines is left exactly as it was, and the marker is never written
+// for a lone fragment with a body still standing behind it. A first line that
+// is not base64 (the cut landed in a Proc-Type header, or in a BEGIN line the
+// block pass could not pair with a footer) is kept and the body after it is
+// still stripped. Only ever called on a cut window.
 func dropCutKeyBody(window string) string {
 	lines := strings.SplitAfter(window, "\n")
 	start, end, anchored := 0, 0, false
 	for i, raw := range lines {
-		line := strings.TrimRight(raw, "\r\n")
-		if pemEndLineRe.MatchString(line) {
+		line := strings.TrimSpace(raw)
+		switch {
+		case pemEndLineRe.MatchString(line):
 			end, anchored = i+1, true
-			break
-		}
-		if i == 0 && !pemFragmentRe.MatchString(line) {
-			start, end = 1, 1
+		case i == 0:
+			if !pemFragmentRe.MatchString(line) {
+				start = 1
+			}
+			end = 1
+			continue
+		case pemBodyLineRe.MatchString(line):
+			anchored = anchored || line != ""
+			end = i + 1
+			continue
+		case pemShortLineRe.MatchString(line) && i+1 < len(lines) && pemEndLineRe.MatchString(strings.TrimSpace(lines[i+1])):
+			end = i + 1
 			continue
 		}
-		if i > 0 && !pemBodyLineRe.MatchString(line) {
-			break
-		}
-		if line != "" && pemBodyLineRe.MatchString(line) {
-			anchored = true
-		}
-		end = i + 1
+		break
 	}
 	if !anchored {
 		return window
