@@ -40,15 +40,32 @@
 # see should-skip-build.sh's NEEDS_DECLARED_INPUTS comment for the full
 # reasoning (IMP-fad0b3f67255's follow-up).
 
+# THE LIST. One slug per line, nothing else between the quotes, and keep this
+# exact shape: besides module_needs_parent() below, two readers that cannot
+# source bash extract it with /^NEEDS_PARENT_MODULES="([^"]*)"/ —
+# scripts/module-build/stage15-arm.py (the build-inputs hash) and the planner's
+# System::ModuleBuildScriptAttribution (IMP-c19b10a942d7). Both attribute
+# stage15.sh's shared parent-clone block (between its
+# `# --- BEGIN/END needs-parent shared block ---` markers) to exactly these
+# modules, so an edit inside that block moves their hashes and no other.
+# Renaming or reshaping this makes both readers refuse the file, loudly,
+# rather than attribute the block to nobody.
+NEEDS_PARENT_MODULES="
+powernode-hub-backend
+powernode-hub-worker
+powernode-hub-frontend
+powernode-extension-system
+"
+
 # Is $1 a module whose build packages parent-repo content?
 # Exit 0 = yes, 1 = no. No output.
 module_needs_parent() {
-  case "${1:-}" in
-    powernode-hub-backend|powernode-hub-worker|powernode-hub-frontend|powernode-extension-system)
-      return 0 ;;
-    *)
-      return 1 ;;
-  esac
+  local _needs_parent_m
+  # shellcheck disable=SC2086  # the list is whitespace-separated slugs by construction
+  for _needs_parent_m in $NEEDS_PARENT_MODULES; do
+    [ "$_needs_parent_m" = "${1:-}" ] && return 0
+  done
+  return 1
 }
 
 # Echo the --core-ref argument pair for $1, or nothing.

@@ -232,6 +232,14 @@ case "$MODULE" in
   powernode-hub-backend|powernode-hub-worker|powernode-hub-frontend|powernode-extension-system) needs_parent=1 ;;
 esac
 
+# Everything between the BEGIN and END markers below is a build input of exactly
+# the modules needs-parent-modules.sh lists (IMP-c19b10a942d7):
+# compute-build-inputs-hash.sh (through stage15-arm.py) and the planner's
+# attribution fold that text into their hashes and attribute an edit inside it
+# to them. Keep both markers — a reader that finds one without the other, or
+# neither, refuses the whole script. This comment sits outside the markers so
+# rewording it moves no hash.
+# --- BEGIN needs-parent shared block ---
 if [ "$needs_parent" = "1" ]; then
   parent_host="${POWERNODE_PARENT_HOST:-github.com}"
   parent_path="${POWERNODE_PARENT_PATH:-nodealchemy/powernode-platform}"
@@ -493,6 +501,7 @@ if [ "$needs_parent" = "1" ]; then
   # --- END build identity ---
   # --- END core-source provenance capture ---
 fi
+# --- END needs-parent shared block ---
 
 case "$MODULE" in
   runtime-ruby)
