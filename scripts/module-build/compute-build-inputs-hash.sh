@@ -159,15 +159,22 @@ if git -C "$REPO" cat-file -e "$REF:$STAGE15_REL" 2>/dev/null; then
   command -v python3 >/dev/null 2>&1 || die "python3 not found; needed to read the stage15.sh arm for $MODULE"
   ARM_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/stage15-arm.py"
   [ -f "$ARM_PY" ] || die "stage15-arm.py missing next to $0"
+  # needs-parent-modules.sh is the LIST stage15-arm.py takes beside the script
+  # (below), never a helper: its content reaches the hash only through which
+  # modules the block is folded into, the same line the planner's reader draws
+  # (System::ModuleBuildScriptAttribution never treats it as a helper either).
+  NEEDS_PARENT_REL="scripts/module-build/needs-parent-modules.sh"
   mapfile -t helper_names < <(git -C "$REPO" ls-tree --name-only "$REF" scripts/module-build/ 2>/dev/null \
-    | while IFS= read -r f; do b="${f##*/}"; [ "$b" = "stage15.sh" ] || printf '%s\n' "$b"; done)
+    | while IFS= read -r f; do b="${f##*/}"; case "$b" in stage15.sh|"${NEEDS_PARENT_REL##*/}") ;; *) printf '%s\n' "$b" ;; esac; done)
   # needs-parent-modules.sh at the SAME ref (IMP-c19b10a942d7): the slugs that
   # own stage15.sh's shared parent-clone block, so the block is folded into
-  # exactly their hashes. Absent at the ref means no list (a fixture repo, or a
-  # ref older than the file); present but without its list, or a block nobody
-  # owns, makes stage15-arm.py exit 2 and this hash FAIL -- never a hash that
-  # silently misses the block.
-  NEEDS_PARENT_REL="scripts/module-build/needs-parent-modules.sh"
+  # exactly their hashes. Absent at the ref means no list (a fixture repo).
+  # Present but without its list -- which is every ref older than the list,
+  # where the file still has its case-statement shape -- or a block nobody
+  # owns, makes stage15-arm.py exit 2 and this hash FAIL, never a hash that
+  # silently misses the block. A build runs the scripts checked out at the ref
+  # it builds, so this reader only meets an older ref through a baked-scripts
+  # fallback, where FAIL (the skip then reads BUILD) is the safe answer.
   arm_tmp="$(mktemp -d)" || die "mktemp failed"
   trap 'rm -rf "$arm_tmp"' EXIT
   arm_args=()

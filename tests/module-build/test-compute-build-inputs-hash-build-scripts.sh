@@ -153,6 +153,24 @@ snapshot
 edit_real 's|^rm -f /tmp/parent-provenance.env$|rm -f /tmp/parent-provenance.env # edited|' "edit outside the block and every arm"
 expect_moved "edit outside the block and every arm"
 
+# needs-parent-modules.sh is the LIST both readers take, never a helper: its
+# content reaches the hash only through which modules the block is folded into
+# (so a slug added to the list moves that slug), and a comment edit in it moves
+# nothing — even when an arm sources the file, which push.sh does for real.
+# The planner's reader draws the same line (the parity spec pins it).
+echo "compute-build-inputs-hash.sh: needs-parent-modules.sh is the list, not a helper"
+edit_real 's|^    bash "$SCRIPT_DIR/stage-extension-system-files.sh"|    . "$SCRIPT_DIR/needs-parent-modules.sh"\n&|' "the extension-system arm sources needs-parent-modules.sh"
+snapshot
+sed -i 's|^# THE LIST\. |# THE LIST (comment edited). |' "$REPO/scripts/module-build/needs-parent-modules.sh"
+if git -C "$REPO" diff --quiet -- scripts/module-build/needs-parent-modules.sh; then bad "fixture edit missed: list comment"; fi
+commit "comment edit in needs-parent-modules.sh"
+expect_moved "a comment edit in needs-parent-modules.sh (sourced by an arm) moves nothing"
+snapshot
+sed -i 's|^powernode-extension-system$|powernode-extension-system\nvault|' "$REPO/scripts/module-build/needs-parent-modules.sh"
+if git -C "$REPO" diff --quiet -- scripts/module-build/needs-parent-modules.sh; then bad "fixture edit missed: add vault to the list"; fi
+commit "vault added to the needs-parent list"
+expect_moved "a slug added to the list moves that slug alone" vault
+
 echo "compute-build-inputs-hash.sh: a shared-block marker that matches nothing fails the hash (never a hash silently missing the block)"
 edit_real '/^# --- END needs-parent shared block ---$/d' "drop the END marker"
 if bash "$HASH_SH" --repo "$REPO" --module powernode-hub-worker >/dev/null 2>&1; then bad "BEGIN without END -> should exit non-zero"; else ok "BEGIN without END -> errors instead of hashing without the block"; fi

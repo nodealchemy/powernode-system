@@ -90,9 +90,11 @@ RSpec.describe "stage15 arm reader parity (Ruby planner vs stage15-arm.py)" do
     end
 
     it "reports the same helper edges (which scripts each arm calls)" do
-      # needs-parent-modules.sh is the list both readers take, not a helper: a
-      # change to it is compared as a list change (modules_for needs a base copy
-      # for that), so it is not a helper edge on either side.
+      # needs-parent-modules.sh is the list both readers take, not a helper:
+      # compute-build-inputs-hash.sh drops it from the helper names it hands
+      # stage15-arm.py, and modules_for compares a change to it as a list change
+      # (needing a base copy), so it is a helper edge on neither side. The bash
+      # test pins the hash side (a comment edit in it moves nothing).
       helpers = Dir.children(scripts_dir).reject { |f| f == "stage15.sh" || f == "needs-parent-modules.sh" }.sort
 
       rb_slugs(real, list: real_list).each do |slug|
