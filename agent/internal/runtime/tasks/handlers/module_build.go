@@ -483,29 +483,20 @@ const (
 	// logTailKeyBodyMarker stands in for a run of PEM-body-shaped lines that
 	// a window cut left at its start, the header already outside the stream.
 	logTailKeyBodyMarker = "[truncated key material removed]"
+	// pemBlockMaxSpan bounds how far past a BEGIN header the END footer it
+	// pairs with may sit. A real key always fits (RSA-16384 is ~12 KB; a
+	// per-line prefix at most doubles that); a header that merely MENTIONS a
+	// key, with an unrelated footer further away, is treated as clipped
+	// instead, so at most this much of the diagnostics between them is lost.
+	pemBlockMaxSpan = 32 << 10
 )
 
 var (
-	// A headed private-key block anywhere in a stream, in whatever form a
-	// build log carries it: a BEGIN header through the next PRIVATE KEY END
-	// footer, matched as ONE span so indentation (a YAML block scalar), a
-	// per-line prefix (a timestamped logger), JSON-escaped `\n`, a
-	// space-joined `echo $KEY`, trailing whitespace and CRLF all fall inside
-	// it. Without a footer (the stream ended mid-key) it consumes only
-	// PEM-shaped continuation lines, optionally indented, plus a short final
-	// line at the very end of the text, and stops at the first ordinary line,
-	// exactly as System::ShellOutputSanitizer's clipped-block pattern does.
-	//
-	// Properties, stated: the footer is restricted to PRIVATE KEY so a span
-	// cannot end on a certificate footer; the lazy span is over-redaction-only
-	// (a line that merely MENTIONS a header, followed much later by a real
-	// key, swallows the text between them, which is lost, not leaked); a
-	// clipped key with a per-line prefix keeps its body (the fallback below
-	// cannot see prefixed lines either; residual, low). RE2: linear.
-	pemBlockRe = regexp.MustCompile(
-		`-----BEGIN[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----` +
-			`(?:[\s\S]*?-----END[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----` +
-			`|(?:\r?\n[ \t]*(?:[A-Za-z0-9+/=]{16,76}|(?:Proc-Type|DEK-Info):[^\n]*|[A-Za-z0-9+/=]{1,15}[ \t]*\z|)[ \t]*)*)`)
+	// A private-key header / footer, in the RFC 7468 five-dash form (the
+	// server sanitizer's class, so neither can span a line) and the RFC 4716
+	// SSH2 four-dash-and-space form.
+	pemHeaderRe = regexp.MustCompile(`-----BEGIN[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|---- BEGIN [A-Z0-9 ]*PRIVATE KEY ----`)
+	pemFooterRe = regexp.MustCompile(`-----END[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|---- END [A-Z0-9 ]*PRIVATE KEY ----`)
 
 	// One full line of a PEM body: 16..76 base64 characters and nothing else
 	// (RFC 7468 wraps at 64, OpenSSH at 70), an RFC 1421 encryption header,
@@ -519,17 +510,115 @@ var (
 	// The window's first line is a FRAGMENT (the cut landed mid-line): any
 	// length of base64 alphabet, including none, can be the end of a body line.
 	pemFragmentRe = regexp.MustCompile(`^[A-Za-z0-9+/=]*$`)
-	pemEndLineRe  = regexp.MustCompile(`^-----END[A-Z0-9 ]*-----$`)
+	pemEndLineRe  = regexp.MustCompile(`^(?:-----END[A-Z0-9 ]*-----|---- END [A-Z0-9 ]*----)$`)
 )
 
 // removeKeyBlocks replaces every headed private-key block in the stream with
-// logTailKeyBlockMarker. The parsed build result is read from the raw stream
-// by the caller, never from this copy.
+// logTailKeyBlockMarker, in ONE forward pass whatever the number of headers:
+// header and footer offsets are collected by two anchored regexes, each
+// header is paired with the first footer after it (forward-only pointers,
+// a header inside a removed span is skipped), and the span between them is
+// replaced as a whole, so indentation (a YAML block scalar), a per-line
+// prefix (a timestamped logger), JSON-escaped `\n`, a space-joined
+// `echo $KEY`, trailing whitespace and CRLF all fall inside it and a key
+// printed whole can never straddle the window cut. A header with no footer
+// within pemBlockMaxSpan is CLIPPED (the stream ended mid-key, or the header
+// was only mentioned): clippedBodyEnd consumes whole PEM-shaped lines after
+// it and nothing else. The parsed build result is read from the raw stream by
+// the caller, never from this copy.
+//
+// Stated residuals: a clipped key with a per-line prefix keeps its body
+// (neither this pass nor the window fallback can see prefixed lines without a
+// footer); a header mention with an unrelated footer within pemBlockMaxSpan
+// loses the text between them (lost, not leaked); base64 of a whole PEM is
+// not seen. A regex spanning header to footer was replaced by this pass
+// because it cost O(headers x stream) when headers had no footer (measured:
+// 65 s on 256 KiB of header lines).
 func removeKeyBlocks(b []byte) []byte {
 	if !bytes.Contains(b, []byte("PRIVATE KEY")) {
 		return b
 	}
-	return pemBlockRe.ReplaceAll(b, []byte(logTailKeyBlockMarker))
+	headers := pemHeaderRe.FindAllIndex(b, -1)
+	if len(headers) == 0 {
+		return b
+	}
+	footers := pemFooterRe.FindAllIndex(b, -1)
+	out := make([]byte, 0, len(b))
+	pos, fi, rejected := 0, 0, -1
+	for _, h := range headers {
+		if h[0] < pos {
+			continue
+		}
+		for fi < len(footers) && footers[fi][0] < h[1] {
+			fi++
+		}
+		var end int
+		if fi < len(footers) && footers[fi][1]-h[0] <= pemBlockMaxSpan {
+			end = footers[fi][1]
+			fi++
+		} else {
+			end = clippedBodyEnd(b, h[1], &rejected)
+		}
+		out = append(out, b[pos:h[0]]...)
+		out = append(out, logTailKeyBlockMarker...)
+		pos = end
+	}
+	return append(out, b[pos:]...)
+}
+
+// clippedBodyEnd returns where the body of a header with no footer ends:
+// from the header's end it consumes WHOLE lines (each `\r?\n` plus the
+// content up to, not including, the next `\n`) while they are PEM-shaped
+// after TrimSpace: blank, an RFC 1421 header, a run of 16 or more base64
+// characters with no upper bound (an unwrapped clipped body is taken whole),
+// or a 1..15-character base64 remainder with nothing after it in the text.
+// It stops at the first ordinary line, which stays intact, so the line after
+// a clipped body is never glued to the marker or partly eaten. `rejected`
+// remembers the ordinary line a previous header already stopped on, so a run
+// of headers never re-reads it: every byte is examined once.
+func clippedBodyEnd(b []byte, from int, rejected *int) int {
+	end := from
+	for end < len(b) {
+		nl := end
+		if b[nl] == '\r' {
+			nl++
+		}
+		if nl >= len(b) || b[nl] != '\n' {
+			break
+		}
+		lineStart := nl + 1
+		if lineStart == *rejected {
+			break
+		}
+		// `last`: nothing at all follows the line, not even a newline. A
+		// stream clipped mid-key ends that way; finished tool output ends
+		// with a newline, so a final short word ("done") is never taken.
+		lineEnd := bytes.IndexByte(b[lineStart:], '\n')
+		last := lineEnd < 0
+		if last {
+			lineEnd = len(b)
+		} else {
+			lineEnd += lineStart
+		}
+		if !clippedBodyLine(bytes.TrimSpace(b[lineStart:lineEnd]), last) {
+			*rejected = lineStart
+			break
+		}
+		end = lineEnd
+	}
+	return end
+}
+
+func clippedBodyLine(line []byte, last bool) bool {
+	if len(line) == 0 || bytes.HasPrefix(line, []byte("Proc-Type:")) || bytes.HasPrefix(line, []byte("DEK-Info:")) {
+		return true
+	}
+	for _, c := range line {
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '+' || c == '/' || c == '=') {
+			return false
+		}
+	}
+	return len(line) >= 16 || last
 }
 
 // dropCutKeyBody handles a window whose cut landed inside a PEM body whose
