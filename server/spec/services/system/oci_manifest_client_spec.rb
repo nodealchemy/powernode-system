@@ -84,6 +84,21 @@ RSpec.describe System::OciManifestClient do
         expect(described_class.fetch(node_module: node_module, oci_ref: oci_ref).layer_digest).to eq(meta_digest)
       end
 
+      # IMP-469117835ccb — the manifest annotations push.sh stamps are the only
+      # record of the commit an artifact was built from; surface them.
+      it "surfaces the manifest-level annotations, and {} when there are none" do
+        manifest["annotations"] = { "org.powernode.built_from_sha" => "d" * 40 }
+        stub_request(:get, url).to_return(status: 200, body: manifest.to_json)
+
+        expect(described_class.fetch(node_module: node_module, oci_ref: oci_ref).annotations)
+          .to eq("org.powernode.built_from_sha" => "d" * 40)
+
+        manifest.delete("annotations")
+        stub_request(:get, url).to_return(status: 200, body: manifest.to_json)
+
+        expect(described_class.fetch(node_module: node_module, oci_ref: oci_ref).annotations).to eq({})
+      end
+
       it "returns nil on a non-2xx" do
         stub_request(:get, url).to_return(status: 404, body: "")
 

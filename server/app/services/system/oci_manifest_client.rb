@@ -33,7 +33,13 @@ module System
     # erofs_layer — the erofs layer descriptor (falling back to the first
     #   layer); its digest is what a native publish records as
     #   NodeModuleVersion#oci_digest and what nodes report as running.
-    Manifest = Struct.new(:manifest_digest, :erofs_layer, keyword_init: true) do
+    # annotations — the MANIFEST-level annotations push.sh stamped
+    #   (org.powernode.built_from_sha, org.powernode.core_source_sha, ...).
+    #   The registry is the ONLY place these live: NodeModuleVersion#artifacts
+    #   never carries them (see ModuleOciIngestService), so a reader that needs
+    #   the commit an artifact was built from has to come here. {} when the
+    #   manifest carries none.
+    Manifest = Struct.new(:manifest_digest, :erofs_layer, :annotations, keyword_init: true) do
       def layer_digest
         erofs_layer && erofs_layer["digest"].presence
       end
@@ -68,13 +74,15 @@ module System
       return unavailable unless res.is_a?(Net::HTTPSuccess)
 
       body = res.body.to_s
-      layers = Array(JSON.parse(body)["layers"])
+      doc = JSON.parse(body)
+      layers = Array(doc["layers"])
       erofs = layers.find { |l| l["mediaType"].to_s =~ /erofs/ } || layers.first
       return unavailable unless erofs
 
       Lookup.new(status: :found, manifest: Manifest.new(
         manifest_digest: res["Docker-Content-Digest"].presence || "sha256:#{Digest::SHA256.hexdigest(body)}",
-        erofs_layer: erofs
+        erofs_layer: erofs,
+        annotations: doc["annotations"].is_a?(Hash) ? doc["annotations"] : {}
       ))
     rescue StandardError => e
       Rails.logger.warn "[OciManifestClient] #{oci_ref}: #{e.class}: #{e.message}"
