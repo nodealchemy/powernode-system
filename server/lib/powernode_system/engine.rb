@@ -977,6 +977,26 @@ module PowernodeSystem
       end
     end
 
+    # IMP-d97f6e3bbc2b — GDPR files erasure. Core's
+    # FileManagement::ErasureReferentRegistry seam asks, per batch, which
+    # file_objects a registered handler HOLDS (refuses to let an erasure
+    # destroy) and lets it RELEASE its own references before each destroy.
+    # This extension's six boot-image pointers (node architectures, disk
+    # image publications, node platforms) all hold — see
+    # System::FileErasureReferents. Same to_prepare / defined? / rescue
+    # posture as the container lifecycle hook above, for the same reasons.
+    initializer "powernode_system.file_erasure_referents", after: :load_config_initializers do
+      config.to_prepare do
+        next unless defined?(::FileManagement::ErasureReferentRegistry)
+
+        ::FileManagement::ErasureReferentRegistry.register(:system_boot_images) do |action, payload|
+          ::System::FileErasureReferents.call(action, payload)
+        end
+      rescue StandardError => e
+        Rails.logger.warn "[PowernodeSystem] Could not register the file erasure referent handler: #{e.message}"
+      end
+    end
+
     # Component-status contributors (campaign 01a08c9b increment B1, design
     # §4.4). Core's Platform::Status::Registry never names an extension; the
     # extension registers itself, and this is the one call it makes.
