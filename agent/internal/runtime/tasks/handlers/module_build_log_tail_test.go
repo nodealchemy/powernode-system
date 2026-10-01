@@ -594,3 +594,94 @@ func BenchmarkLogTail_ManyHeaderMentionsNoFooter(b *testing.B) {
 		_ = logTail([]byte(`{"ok":false}`), stderr)
 	}
 }
+
+// ---- fix round 2, critic A addendum: its own cost shape (M1), a clipped key
+// whose stream ends with a newline (L1), a truncated JSON-escaped key (L3),
+// and the 76-column base64 over-redaction pinned as accepted.
+
+func cosignMentionStream(mentions, between int) []byte {
+	var b strings.Builder
+	for i := 0; i < mentions; i++ {
+		b.WriteString("cosign: unsupported PEM block -----BEGIN RSA PRIVATE KEY----- in cosign.key\n")
+		b.WriteString(filler("stage", between))
+	}
+	b.WriteString("build complete\n")
+	return []byte(b.String())
+}
+
+func TestLogTail_CosignMentionsWithoutFooterIsLinear(t *testing.T) {
+	// Critic A's input: the cosign line 100 times with ~250 ordinary lines
+	// between, no END anywhere (~0.95 MB). The regex span took 2.4 s here and
+	// 15.7 s at 800 mentions.
+	stderr := cosignMentionStream(100, 250)
+	if len(stderr) < 900<<10 {
+		t.Fatalf("fixture: %d bytes is smaller than the measured shape", len(stderr))
+	}
+	tail := timedLogTail(t, []byte(`{"ok":false}`), stderr)
+	if strings.Contains(tail, "-----BEGIN") || !strings.HasSuffix(tail, "build complete") {
+		t.Fatalf("got tail end:\n%.200s", tail[len(tail)-200:])
+	}
+	if !strings.Contains(tail, "cosign: unsupported PEM block "+wantKeyBlockMarker+" in cosign.key\nstage line 0 of ordinary build output") {
+		t.Fatalf("the mention line and the line after it must survive intact, got:\n%.400s", tail[len(tail)-400:])
+	}
+}
+
+func TestLogTail_ClippedKeyWhoseStreamEndsWithANewlineIsRemovedWhole(t *testing.T) {
+	// L1: tools end their output with a newline; the 4-char remainder of a
+	// clipped key must still go with the body.
+	body := syntheticPEMBodyBytes(t, 61, 30*48+3)
+	short := body[len(body)-1]
+	for _, nl := range []string{"\n", "\r\n"} {
+		in := "stage 1" + nl + "-----BEGIN OPENSSH PRIVATE KEY-----" + nl + strings.Join(body, nl) + nl
+		tail := logTail([]byte(in), []byte("ok"))
+		if strings.Contains(tail, short) || tail != "stdout: stage 1"+nl+wantKeyBlockMarker+"\nstderr: ok" {
+			t.Fatalf("remainder survived for %q, got:\n%.300s", nl, tail)
+		}
+	}
+}
+
+func TestLogTail_TruncatedJSONEscapedKeyWithoutFooterIsRemoved(t *testing.T) {
+	// L3: a JSON dump that stopped mid-key is ONE physical line with literal
+	// \n separators and no footer.
+	body := syntheticPEMBody(t, 62, 6)
+	in := `{"name":"demo","private_key":"-----BEGIN PRIVATE KEY-----\n` + strings.Join(body, `\n`) + `\n` + body[0][:20]
+	tail := logTail([]byte(in), []byte("ok"))
+	if strings.Contains(tail, body[2]) || strings.Contains(tail, body[0][:20]) {
+		t.Fatalf("escaped clipped body survived:\n%.300s", tail)
+	}
+	if want := `stdout: {"name":"demo","private_key":"` + wantKeyBlockMarker + "\nstderr: ok"; tail != want {
+		t.Fatalf("got:\n%.300s", tail)
+	}
+}
+
+func TestLogTail_CutInsideA76ColumnBase64BlobIsTheAcceptedOverRedaction(t *testing.T) {
+	// A headerless `base64` dump (76 columns, not a key) that straddles the
+	// cut is indistinguishable from a key body: the fallback marker replaces
+	// it. Lost, not leaked; pinned as accepted.
+	raw := make([]byte, 60*57)
+	rand.New(rand.NewSource(63)).Read(raw)
+	enc := base64.StdEncoding.EncodeToString(raw)
+	var blob strings.Builder
+	for len(enc) > 0 {
+		cut := min(76, len(enc))
+		blob.WriteString(enc[:cut] + "\n")
+		enc = enc[cut:]
+	}
+	after := filler("stage", 20)
+	stdout := []byte("dump:\n" + blob.String() + after)
+	if len(stdout) <= logTailMaxBytes || len(after) >= logTailMaxBytes {
+		t.Fatalf("fixture: the cut must land inside the blob")
+	}
+	tail := logTail(stdout, []byte("ok"))
+	if want := "stdout: " + wantKeyBodyMarker + "\n" + strings.TrimSpace(after) + "\nstderr: ok"; tail != want {
+		t.Fatalf("over-redaction changed shape, got:\n%.300s", tail)
+	}
+}
+
+func BenchmarkLogTail_CosignMentionsNoFooter6400(b *testing.B) {
+	stderr := cosignMentionStream(6400, 22) // ~6.3 MB, critic A's prototype target: 24 ms
+	b.SetBytes(int64(len(stderr)))
+	for b.Loop() {
+		_ = logTail([]byte(`{"ok":false}`), stderr)
+	}
+}
