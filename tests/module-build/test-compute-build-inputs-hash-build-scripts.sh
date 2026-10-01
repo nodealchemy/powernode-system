@@ -21,6 +21,7 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HASH_SH="${HASH_SH:-$TEST_DIR/../../scripts/module-build/compute-build-inputs-hash.sh}"
 REAL_STAGE15="$TEST_DIR/../../scripts/module-build/stage15.sh"
 REAL_HELPER="$TEST_DIR/../../scripts/module-build/assert-gemfile-lock-has-extension-path.sh"
+REAL_NEEDS_PARENT="$TEST_DIR/../../scripts/module-build/needs-parent-modules.sh"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -122,15 +123,42 @@ if bash "$HASH_SH" --repo "$REPO" --module runtime-go >/dev/null 2>&1; then bad 
 
 echo "compute-build-inputs-hash.sh: against the real stage15.sh"
 cp "$REAL_STAGE15" "$REPO/scripts/module-build/stage15.sh"
+cp "$REAL_NEEDS_PARENT" "$REPO/scripts/module-build/$(basename "$REAL_NEEDS_PARENT")"
 cp "$REAL_HELPER" "$REPO/scripts/module-build/$(basename "$REAL_HELPER")"
-mkdir -p "$REPO/modules/powernode-hub-worker" "$REPO/modules/powernode-hub-backend" "$REPO/modules/postgres-primary"
-for m in powernode-hub-worker powernode-hub-backend postgres-primary; do echo "schema_version: 1" > "$REPO/modules/$m/manifest.yaml"; done
+NEEDS_PARENT="powernode-hub-backend powernode-hub-worker powernode-hub-frontend powernode-extension-system"
+for m in $NEEDS_PARENT postgres-primary; do mkdir -p "$REPO/modules/$m"; echo "schema_version: 1" > "$REPO/modules/$m/manifest.yaml"; done
 commit "real stage15"
-MODULES="powernode-hub-worker powernode-hub-backend postgres-primary vault"
+MODULES="$NEEDS_PARENT postgres-primary vault"
 snapshot
 echo "# edited" >> "$REPO/scripts/module-build/$(basename "$REAL_HELPER")"; commit "helper edit against real stage15"
 # stage-extension-system-files.sh is called by the hub-backend and extension-system arms only
 expect_moved "real stage15, helper called by hub-backend" powernode-hub-backend
+
+# IMP-c19b10a942d7: the parent-clone / BUILD_INFO.json block sits outside every
+# arm but is an input of exactly the modules needs-parent-modules.sh lists. An
+# edit inside it must move those four and nothing else; an edit outside it (and
+# outside every arm) must move nothing.
+# edit_real <sed-expr> <what>  — applies the edit and fails loudly if it matched nothing
+edit_real() {
+  sed -i "$1" "$REPO/scripts/module-build/stage15.sh"
+  if git -C "$REPO" diff --quiet -- scripts/module-build/stage15.sh; then bad "fixture edit missed: $2"; return 1; fi
+  commit "$2"
+}
+snapshot
+edit_real 's/^  echo "\[stage-1.5\] build identity: /  echo "[stage-1.5] build identity (edited): /' "edit inside the needs-parent shared block"
+# shellcheck disable=SC2086
+expect_moved "edit inside the needs-parent shared block" $NEEDS_PARENT
+
+snapshot
+edit_real 's|^rm -f /tmp/parent-provenance.env$|rm -f /tmp/parent-provenance.env # edited|' "edit outside the block and every arm"
+expect_moved "edit outside the block and every arm"
+
+echo "compute-build-inputs-hash.sh: a shared-block marker that matches nothing fails the hash (never a hash silently missing the block)"
+edit_real '/^# --- END needs-parent shared block ---$/d' "drop the END marker"
+if bash "$HASH_SH" --repo "$REPO" --module powernode-hub-worker >/dev/null 2>&1; then bad "BEGIN without END -> should exit non-zero"; else ok "BEGIN without END -> errors instead of hashing without the block"; fi
+edit_real '/^# --- BEGIN needs-parent shared block ---$/d' "drop the BEGIN marker too"
+if bash "$HASH_SH" --repo "$REPO" --module powernode-hub-worker >/dev/null 2>&1; then bad "list without a block -> should exit non-zero"; else ok "needs-parent list but no block -> errors instead of hashing without the block"; fi
+if bash "$HASH_SH" --repo "$REPO" --module vault >/dev/null 2>&1; then bad "list without a block -> should exit non-zero for vault too (the script is unreadable, not one module)"; else ok "list without a block -> errors for a module outside the list as well"; fi
 echo
 echo "passed=$PASS_COUNT failed=$FAIL_COUNT"
 [ "$FAIL_COUNT" -eq 0 ]

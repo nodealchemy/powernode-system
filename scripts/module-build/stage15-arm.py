@@ -6,6 +6,15 @@ build skip hashes exactly the build inputs stage15.sh gives a module: that
 module's own `case "$MODULE" in <slug>) ... ;;` arm, and the scripts/module-build
 helpers the arm calls -- not the whole scripts tree, and not another module's arm.
 
+Plus the shared parent-clone block (IMP-c19b10a942d7): the text between
+stage15.sh's `# --- BEGIN needs-parent shared block ---` and
+`# --- END needs-parent shared block ---` markers sits outside every arm but is
+an input of exactly the modules needs-parent-modules.sh lists. Given that file
+(--needs-parent-modules), the block is folded into those modules' text and no
+other. A marker that matches nothing is an error, never a silent omission: a
+non-empty list with no block, a block with no list, BEGIN without END, END
+without BEGIN, a second block, or a marker inside a case all exit 2.
+
 THIS IS A LINE-FOR-LINE PORT of the reader in
 server/app/services/system/module_build_script_attribution.rb (the build planner's
 attribution). The two must agree on which arms exist and what text each holds, or
@@ -14,13 +23,22 @@ server/spec/services/system/module_build_script_attribution_parity_spec.rb runs
 both over the real stage15.sh and asserts they agree; change one, change both.
 
 Usage:
-  stage15-arm.py MODULE [HELPER ...] < stage15.sh
-      exit 0: prints `arm-sha256 <hex>` and one `helper <name>` line per HELPER
-              (a basename) that a non-comment line of the arm calls, sorted.
-      exit 1: MODULE has no arm of its own (nothing printed).
+  stage15-arm.py [--needs-parent-modules FILE] MODULE [HELPER ...] < stage15.sh
+      exit 0: prints `arm-sha256 <hex>` over MODULE's attributed text (its arms,
+              plus the shared block when MODULE is listed) and one
+              `helper <name>` line per HELPER (a basename) that a non-comment
+              line of that text calls, sorted.
+      exit 1: MODULE has no arm of its own and is not listed (nothing printed).
       exit 2: the script could not be read faithfully (stderr says why).
-  stage15-arm.py --dump MODULE < stage15.sh   the arm text itself (exit codes as above)
-  stage15-arm.py --slugs < stage15.sh         every literal slug that has an arm, sorted
+  stage15-arm.py [--needs-parent-modules FILE] --dump MODULE < stage15.sh
+      the attributed text itself (exit codes as above)
+  stage15-arm.py [--needs-parent-modules FILE] --slugs < stage15.sh
+      every literal slug that has an arm or is listed, sorted
+  stage15-arm.py --needs-parent-modules FILE --needs-parent-list
+      the slugs read out of FILE, in file order (exit 2 if it has no list)
+
+FILE is needs-parent-modules.sh at the same ref as the script on stdin. Without
+it the script must have no shared block.
 
 The script is read and re-emitted as latin-1 so bytes are never altered.
 """
@@ -42,6 +60,10 @@ HEREDOC_SPACED_RX = re.compile(
 COMMENT_RX = re.compile(r'\s*#', A)
 LITERAL_SLUG_RX = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*', A)
 ESAC_WORD_RX = re.compile(r'\besac\b', A)
+# The shared block's two markers, each on a line of its own.
+SHARED_BLOCK_RX = re.compile(r'\s*#\s*---\s*(BEGIN|END) needs-parent shared block\s*---\s*', A)
+# needs-parent-modules.sh's list: the ONE definition of which modules own the block.
+NEEDS_PARENT_LIST_RX = re.compile(r'^NEEDS_PARENT_MODULES="([^"]*)"', re.M | A)
 WS = " \t\r\n\f\v"
 
 
@@ -71,11 +93,31 @@ def finish(cur):
     return {"slugs": literal, "text": "".join(cur["text"])}
 
 
-def parse(script):
+def needs_parent_modules(text):
+    """The slugs needs-parent-modules.sh lists, in file order; None for no text."""
+    if text is None:
+        return None
+    m = NEEDS_PARENT_LIST_RX.search(text)
+    if not m:
+        raise ParseError('needs-parent-modules.sh has no NEEDS_PARENT_MODULES="..." list')
+    # Split on the same ASCII whitespace Ruby's String#split uses -- str.split()
+    # on latin-1 text would also split on \x1c-\x1f, \x85 and \xa0, which the
+    # planner's reader rejects as part of a non-slug token.
+    slugs = [s for s in re.split("[" + WS + "]+", m.group(1)) if s]
+    for s in slugs:
+        if not LITERAL_SLUG_RX.fullmatch(s):
+            raise ParseError("needs-parent list entry %r is not a module slug" % s)
+    return slugs
+
+
+def parse(script, needs_parent=None):
+    needs_parent = list(needs_parent or [])
     arms = []
     stack = []
     current = None
     heredoc = None
+    block = None        # the shared block's lines while it is open
+    shared = None       # its text once closed
 
     for raw in each_line(script):
         line = chomp(raw)
@@ -83,9 +125,31 @@ def parse(script):
         if heredoc is not None:
             if current is not None:
                 current["text"].append(raw)
+            if block is not None:
+                block.append(raw)
             if line.strip(WS) == heredoc:
                 heredoc = None
             continue
+
+        bm = SHARED_BLOCK_RX.fullmatch(line)
+        if bm:
+            if bm.group(1) == "BEGIN":
+                if block is not None or shared is not None:
+                    raise ParseError("second needs-parent shared block BEGIN")
+                if stack or current is not None:
+                    raise ParseError("needs-parent shared block BEGIN inside a case")
+                block = [raw]
+            else:
+                if block is None:
+                    raise ParseError("needs-parent shared block END with no BEGIN")
+                if stack:
+                    raise ParseError("needs-parent shared block END inside a case")
+                block.append(raw)
+                shared = "".join(block)
+                block = None
+            continue
+        if block is not None:
+            block.append(raw)
 
         if COMMENT_RX.match(line):
             if current is not None:
@@ -137,13 +201,26 @@ def parse(script):
 
     if stack:
         raise ParseError("unterminated case (%d open at end of script)" % len(stack))
+    if block is not None:
+        raise ParseError("unterminated needs-parent shared block (BEGIN with no END)")
     if not arms:
         raise ParseError('no `case "$MODULE" in` dispatch found')
-    return arms
+    if needs_parent and shared is None:
+        raise ParseError("needs-parent modules are listed but the script has no needs-parent shared block")
+    if shared is not None and not needs_parent:
+        raise ParseError("the script has a needs-parent shared block but no needs-parent module list owns it")
+    return {"arms": arms, "shared": shared, "needs_parent": needs_parent}
 
 
-def text_for(arms, slug):
-    return "".join(a["text"] for a in arms if slug in a["slugs"])
+def slugs_of(parsed):
+    return {s for a in parsed["arms"] for s in a["slugs"]} | set(parsed["needs_parent"])
+
+
+def text_for(parsed, slug):
+    text = "".join(a["text"] for a in parsed["arms"] if slug in a["slugs"])
+    if parsed["shared"] is not None and slug in parsed["needs_parent"]:
+        text += parsed["shared"]
+    return text
 
 
 def calls(arm_text, helper):
@@ -155,15 +232,39 @@ def main(argv):
     if not argv:
         sys.stderr.write(__doc__)
         return 2
-    script = sys.stdin.buffer.read().decode("latin-1")
+
+    needs_parent_text = None
+    if argv[0] == "--needs-parent-modules":
+        if len(argv) < 2:
+            sys.stderr.write("stage15-arm.py: --needs-parent-modules requires a FILE\n")
+            return 2
+        try:
+            with open(argv[1], "rb") as f:
+                needs_parent_text = f.read().decode("latin-1")
+        except OSError as e:
+            sys.stderr.write("stage15-arm.py: cannot read %s: %s\n" % (argv[1], e))
+            return 2
+        argv = argv[2:]
+        if not argv:
+            sys.stderr.write("stage15-arm.py: MODULE, --slugs, --dump or --needs-parent-list required\n")
+            return 2
+
     try:
-        arms = parse(script)
+        needs_parent = needs_parent_modules(needs_parent_text)
+        if argv[0] == "--needs-parent-list":
+            if needs_parent is None:
+                raise ParseError("--needs-parent-list needs --needs-parent-modules FILE")
+            for s in needs_parent:
+                print(s)
+            return 0
+        script = sys.stdin.buffer.read().decode("latin-1")
+        parsed = parse(script, needs_parent)
     except ParseError as e:
         sys.stderr.write("stage15-arm.py: %s\n" % e)
         return 2
 
     if argv[0] == "--slugs":
-        print("\n".join(sorted({s for a in arms for s in a["slugs"]})))
+        print("\n".join(sorted(slugs_of(parsed))))
         return 0
 
     dump = argv[0] == "--dump"
@@ -173,9 +274,9 @@ def main(argv):
         return 2
     module, helpers = args[0], args[1:]
 
-    if not any(module in a["slugs"] for a in arms):
+    if module not in slugs_of(parsed):
         return 1
-    text = text_for(arms, module)
+    text = text_for(parsed, module)
     if dump:
         sys.stdout.buffer.write(text.encode("latin-1"))
         return 0

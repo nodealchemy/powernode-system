@@ -34,7 +34,11 @@
 #      modules/<slug> tree)
 #   2. the module's OWN stage15.sh arm text and the scripts/module-build helpers
 #      that arm calls, for a module with an arm in stage15.sh's module dispatch
-#      -- see BUILD SCRIPTS below
+#      -- see BUILD SCRIPTS below; plus, for a module needs-parent-modules.sh
+#      lists, stage15.sh's shared parent-clone block (IMP-c19b10a942d7), the
+#      text between its `# --- BEGIN/END needs-parent shared block ---` markers,
+#      which sits outside every arm but builds /tmp/parent and
+#      /tmp/parent-build-info.json for exactly those modules
 #   3. the --apt-snapshot id, when given — the package closure is an input the
 #      git tree cannot see
 #   4. the --core-ref commit, when given — the parent-repo subtree a needs-parent
@@ -157,9 +161,24 @@ if git -C "$REPO" cat-file -e "$REF:$STAGE15_REL" 2>/dev/null; then
   [ -f "$ARM_PY" ] || die "stage15-arm.py missing next to $0"
   mapfile -t helper_names < <(git -C "$REPO" ls-tree --name-only "$REF" scripts/module-build/ 2>/dev/null \
     | while IFS= read -r f; do b="${f##*/}"; [ "$b" = "stage15.sh" ] || printf '%s\n' "$b"; done)
+  # needs-parent-modules.sh at the SAME ref (IMP-c19b10a942d7): the slugs that
+  # own stage15.sh's shared parent-clone block, so the block is folded into
+  # exactly their hashes. Absent at the ref means no list (a fixture repo, or a
+  # ref older than the file); present but without its list, or a block nobody
+  # owns, makes stage15-arm.py exit 2 and this hash FAIL -- never a hash that
+  # silently misses the block.
+  NEEDS_PARENT_REL="scripts/module-build/needs-parent-modules.sh"
+  arm_tmp="$(mktemp -d)" || die "mktemp failed"
+  trap 'rm -rf "$arm_tmp"' EXIT
+  arm_args=()
+  if git -C "$REPO" cat-file -e "$REF:$NEEDS_PARENT_REL" 2>/dev/null; then
+    git -C "$REPO" show "$REF:$NEEDS_PARENT_REL" > "$arm_tmp/needs-parent-modules.sh" \
+      || die "could not read $NEEDS_PARENT_REL at $REF"
+    arm_args=(--needs-parent-modules "$arm_tmp/needs-parent-modules.sh")
+  fi
   arm_rc=0
   arm_out=$(git -C "$REPO" show "$REF:$STAGE15_REL" 2>/dev/null \
-    | python3 "$ARM_PY" "$MODULE" "${helper_names[@]+"${helper_names[@]}"}" 2>/dev/null) || arm_rc=$?
+    | python3 "$ARM_PY" "${arm_args[@]+"${arm_args[@]}"}" "$MODULE" "${helper_names[@]+"${helper_names[@]}"}" 2>"$arm_tmp/arm.err") || arm_rc=$?
   case "$arm_rc" in
     0)
       while IFS=' ' read -r kind value; do
@@ -173,7 +192,7 @@ if git -C "$REPO" cat-file -e "$REF:$STAGE15_REL" 2>/dev/null; then
       done <<<"$arm_out"
       ;;
     1) : ;; # no arm of its own
-    *) die "could not read stage15.sh's arm for $MODULE at $REF (unparseable dispatch)" ;;
+    *) die "could not read stage15.sh's arm for $MODULE at $REF (unparseable dispatch: $(tr '\n' ' ' <"$arm_tmp/arm.err"))" ;;
   esac
 fi
 
