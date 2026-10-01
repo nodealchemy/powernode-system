@@ -57,24 +57,20 @@ RSpec.describe System::Storage::SmbRotationPreflight do
       expect(report.safe_to_rotate?).to be(true)
     end
 
-    it "passes an agent built on the commit's own day only when it is that exact commit" do
-      exact = backend(version: "2026-09-19-c9eb9e725c07")
-      smb_storage(instance_id: exact.id)
+    # 8f6aeae2 landed later the same day (password on stdin, not argv), so even
+    # the CredentialRef commit itself is not a build to rotate against.
+    [ "2026-09-19-c9eb9e725c07", "2026-09-19-8f6aeae26de9", "2026-09-19-0123456789ab" ].each do |version|
+      it "reads UNKNOWN for the same-day build #{version}, with no exact-commit exception" do
+        same_day = backend(version: version)
+        smb_storage(instance_id: same_day.id)
 
-      row = row_for(report, exact)
-      expect(row.agent_check.status).to eq("pass")
-      expect(row.agent_check.basis).to eq("exact_commit")
-    end
-
-    it "reads UNKNOWN for a same-day build of any other commit" do
-      same_day = backend(version: "2026-09-19-0123456789ab")
-      smb_storage(instance_id: same_day.id)
-
-      row = row_for(report, same_day)
-      expect(row.agent_check.status).to eq("unknown")
-      expect(row.agent_check.reason).to eq("built_same_day_as_credential_ref_commit")
-      expect(report.verdict).to eq("unknown")
-      expect(report.safe_to_rotate?).to be(false)
+        row = row_for(report, same_day)
+        expect(row.agent_check.status).to eq("unknown")
+        expect(row.agent_check.reason).to eq("built_same_day_as_credential_ref_commit")
+        expect(row.agent_check.hint).to include("git merge-base --is-ancestor 8f6aeae26de9")
+        expect(report.verdict).to eq("unknown")
+        expect(report.safe_to_rotate?).to be(false)
+      end
     end
 
     it "fails an agent built after payload validation but before the CredentialRef commit" do
@@ -206,7 +202,7 @@ RSpec.describe System::Storage::SmbRotationPreflight do
 
       expect(report.nodes).to be_empty
       expect(report.unresolved_storages.map { |s| s[:id] }).to eq([ storage.id ])
-      expect(report.unresolved_storages.first).to include(status: "fail", reason: "backend_instance_not_found")
+      expect(report.unresolved_storages.first).to include(check: "fail", reason: "backend_instance_not_found")
       expect(report.verdict).to eq("not_safe")
     end
 
@@ -214,7 +210,7 @@ RSpec.describe System::Storage::SmbRotationPreflight do
       storage = smb_storage(instance_id: nil)
 
       expect(report.unresolved_storages.first).to include(
-        id: storage.id, status: "unknown", reason: "no_backend_instance_configured"
+        id: storage.id, check: "unknown", reason: "no_backend_instance_configured"
       )
       expect(report.verdict).to eq("unknown")
     end
@@ -233,15 +229,80 @@ RSpec.describe System::Storage::SmbRotationPreflight do
       smb_storage(instance_id: backend(version: "2026-08-25-0123456789ab").id)
 
       expect(report.verdict).to eq("not_safe")
-      expect(report.summary).to include(nodes: 3, pass: 1, unknown: 1, fail: 1)
+      expect(report.summary).to include(nodes: 3, nodes_pass: 1, nodes_unknown: 1, nodes_fail: 1)
     end
 
     it "is safe_to_rotate only when every node passes both checks and nothing is unresolved" do
       smb_storage(instance_id: backend(version: "2026-09-25-0123456789ab").id)
-      smb_storage(instance_id: backend(version: "2026-09-19-c9eb9e725c07").id)
+      smb_storage(instance_id: backend(version: "2026-09-20-ba9876543210").id)
 
       expect(report.verdict).to eq("safe_to_rotate")
-      expect(report.summary).to include(nodes: 2, pass: 2, unknown: 0, fail: 0, unresolved_storages: 0)
+      expect(report.summary).to include(nodes: 2, nodes_pass: 2, nodes_unknown: 0, nodes_fail: 0, unresolved_storages: 0)
+    end
+
+    it "lists the distinct agent shas seen, so a build_date pass can be settled against history" do
+      smb_storage(instance_id: backend(version: "2026-09-25-0123456789ab").id)
+      smb_storage(instance_id: backend(version: "2026-09-25-0123456789ab").id)
+      smb_storage(instance_id: backend(version: "2026-09-20-ba9876543210").id)
+      smb_storage(instance_id: backend(version: "dev").id)
+
+      expect(report.agent_shas).to eq(%w[0123456789ab ba9876543210])
+    end
+
+    it "names the environment and database it read, so a wrong-database run is visible" do
+      expect(report.environment).to eq(Rails.env.to_s)
+      expect(report.database).to eq(ActiveRecord::Base.connection_db_config.database)
+      expect(report.as_json).to include("environment" => Rails.env.to_s, "database" => report.database)
+    end
+  end
+
+  describe "scan scope" do
+    it "scans an inactive SMB storage with no credentials, and reports its status" do
+      instance = backend(version: "2026-08-25-0123456789ab")
+      storage = smb_storage(instance_id: instance.id, status: "inactive")
+
+      expect(row_for(report, instance).storages).to eq(
+        [ { id: storage.id, name: storage.name, account_id: account.id, status: "inactive", deployment_shape: "self_hosted" } ]
+      )
+      expect(report.verdict).to eq("not_safe")
+    end
+  end
+
+  describe "hints" do
+    {
+      "dev" => [ "agent_version_not_orderable", "stamped module build" ],
+      "2026-09-10-0123456789ab" => [ "predates_credential_ref", "Upgrade" ]
+    }.each do |version, (reason, fragment)|
+      it "carries an operator hint for #{reason}" do
+        instance = backend(version: version)
+        smb_storage(instance_id: instance.id)
+
+        check = row_for(report, instance).agent_check
+        expect(check.reason).to eq(reason)
+        expect(check.hint).to include(fragment)
+      end
+    end
+
+    it "carries a hint for a stale heartbeat" do
+      instance = backend(version: "2026-09-25-0123456789ab", heartbeat: 20.minutes.ago)
+      smb_storage(instance_id: instance.id)
+
+      expect(row_for(report, instance).agent_check.hint).to include("3 minutes")
+    end
+
+    it "carries a hint for a storage with no backend instance configured" do
+      smb_storage(instance_id: nil)
+
+      expect(report.unresolved_storages.first[:hint]).to include("external SMB server")
+    end
+
+    it "carries no hint on a pass" do
+      instance = backend(version: "2026-09-25-0123456789ab")
+      smb_storage(instance_id: instance.id)
+
+      row = row_for(report, instance)
+      expect(row.agent_check.hint).to be_nil
+      expect(row.account_check.hint).to be_nil
     end
   end
 

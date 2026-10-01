@@ -22,6 +22,10 @@ module System
     # everything is a proven pass. No SMB storages at all is its own verdict
     # (no_smb_backends), not a pass by vacuity.
     #
+    # SCOPE. Every provider_type "smb" storage is scanned, whatever its status
+    # and whether or not it holds a credential today: a credential issued
+    # between the preflight and the rotation lands on the same backend agent.
+    #
     # HOW "AT OR AFTER THE COMMIT" IS DECIDED. The only thing the platform
     # records about an agent build is NodeInstance#agent_version, the string
     # the agent heartbeats. scripts/module-build/stage15.sh stamps it as
@@ -30,13 +34,21 @@ module System
     # is the comparable:
     #
     #   built before the commit's date  → fail (the commit did not exist yet)
-    #   built on the commit's date      → unknown, unless the sha is the commit
+    #   built on the commit's date      → unknown, with no exception
     #   built after the commit's date   → pass, basis "build_date"
     #
-    # "build_date" proves the binary was built after the commit existed, not
-    # that the source tree contained it — a build from a branch cut earlier
-    # would pass. That holds for module builds off the mainline, and the basis
-    # is carried on every row so the reader can see which rows rest on it.
+    # The whole day is unknown, even for a build of CREDENTIAL_REF_FLOOR itself,
+    # because STDIN_FLOOR (8f6aeae2) landed later that same day: a build of the
+    # CredentialRef commit resolves the ref and then still passes the new
+    # password to samba-tool on argv. Rotating against it would be the exposure
+    # the rotation is meant to end, so the day cannot be split by sha.
+    #
+    # "build_date" proves the binary was built after the commits existed, not
+    # that the source tree contained them. It is sound for a build from the
+    # default branch and not for a build from a branch cut earlier; the basis is
+    # carried on every row, and Report#agent_shas lists the shas seen so an
+    # operator can settle one in an extension checkout with
+    # `git merge-base --is-ancestor 8f6aeae26de9 <sha>`.
     # Anything that is not a stamped version ("dev", "unknown", a tag) is
     # unknown, as is a version last reported by a heartbeat that has gone stale.
     #
@@ -51,6 +63,9 @@ module System
       VALIDATION_FLOOR = { sha: "c0edfa8277a4", date: Date.new(2026, 9, 1) }.freeze
       # Resolves `credential` / `new_credential` CredentialRefs (IMP-ab6e4075a007).
       CREDENTIAL_REF_FLOOR = { sha: "c9eb9e725c07", date: Date.new(2026, 9, 19) }.freeze
+      # Delivers the SMB password to samba-tool on stdin instead of argv
+      # (IMP-ad2c66a838f2). Same day as CREDENTIAL_REF_FLOOR, a descendant of it.
+      STDIN_FLOOR = { sha: "8f6aeae26de9", date: Date.new(2026, 9, 19) }.freeze
 
       STAMPED_VERSION = /\A(\d{4}-\d{2}-\d{2})-([0-9a-f]{12})\z/
 
@@ -58,11 +73,48 @@ module System
       FAIL = "fail"
       UNKNOWN = "unknown"
 
-      Check = Struct.new(:status, :reason, :basis, keyword_init: true)
+      ANCESTRY_COMMAND = "git merge-base --is-ancestor #{STDIN_FLOOR[:sha]} <sha>"
+
+      # What an operator does about each reason that is not a pass.
+      HINTS = {
+        "agent_version_not_orderable" =>
+          "Redeploy a stamped module build to this instance; an unstamped agent (e.g. \"dev\") cannot be ordered.",
+        "stale_heartbeat" =>
+          "No heartbeat in the last #{::System::NodeInstance::HEARTBEAT_STALE_AFTER.inspect}, so the recorded " \
+          "version may be out of date. Check the agent on this instance, then re-run.",
+        "built_same_day_as_credential_ref_commit" =>
+          "Built on the day the required commits landed. Settle it in an extension checkout with " \
+          "`#{ANCESTRY_COMMAND}` (exit 0 = safe), or redeploy a newer module build.",
+        "build_date_in_future" =>
+          "The stamped build date is in the future; check the build host's clock and redeploy a module build.",
+        "predates_credential_ref" =>
+          "Upgrade this instance's agent to a module build made after #{CREDENTIAL_REF_FLOOR[:date].iso8601}; " \
+          "this one refuses the rotation payload.",
+        "predates_payload_validation" =>
+          "Upgrade this instance's agent before anything else: it would run samba-tool with an empty value.",
+        "serves_multiple_accounts" =>
+          "Move each account's SMB storages to a backend of its own before rotating.",
+        "instance_account_differs_from_storage_account" =>
+          "The backend belongs to a different account than the storage it serves; correct the storage's backend.",
+        "backend_instance_not_found" =>
+          "The storage names a backend instance that no longer exists; point it at a live backend or retire it.",
+        "no_backend_instance_configured" =>
+          "Confirm this is an external SMB server the platform provisions no users on; if it is not, set its backend."
+      }.freeze
+
+      Check = Struct.new(:status, :reason, :basis, keyword_init: true) do
+        def hint
+          HINTS[reason] unless status == PASS
+        end
+
+        def as_json(*)
+          to_h.merge(hint: hint).as_json
+        end
+      end
 
       NodeRow = Struct.new(
         :instance_id, :instance_name, :node_name, :instance_account_id, :instance_status, :roles,
-        :agent_version, :last_heartbeat_at, :agent_check, :account_check, :accounts, :storages,
+        :agent_version, :agent_sha, :last_heartbeat_at, :agent_check, :account_check, :accounts, :storages,
         keyword_init: true
       ) do
         def status
@@ -73,13 +125,16 @@ module System
           to_h.merge(
             status: status,
             last_heartbeat_at: last_heartbeat_at&.iso8601,
-            agent_check: agent_check.to_h,
-            account_check: account_check.to_h
+            agent_check: agent_check.as_json,
+            account_check: account_check.as_json
           ).as_json
         end
       end
 
-      Report = Struct.new(:generated_at, :verdict, :summary, :nodes, :unresolved_storages, :floors, keyword_init: true) do
+      Report = Struct.new(
+        :generated_at, :environment, :database, :verdict, :summary, :nodes, :unresolved_storages, :agent_shas, :floors,
+        keyword_init: true
+      ) do
         def safe_to_rotate?
           verdict == "safe_to_rotate"
         end
@@ -87,10 +142,14 @@ module System
         def as_json(*)
           {
             generated_at: generated_at.iso8601,
+            environment: environment,
+            database: database,
             verdict: verdict,
             safe_to_rotate: safe_to_rotate?,
             summary: summary,
             floors: floors,
+            agent_shas: agent_shas,
+            ancestry_command: ANCESTRY_COMMAND,
             nodes: nodes.map(&:as_json),
             unresolved_storages: unresolved_storages
           }.as_json
@@ -126,10 +185,13 @@ module System
 
         Report.new(
           generated_at: Time.current,
+          environment: Rails.env.to_s,
+          database: ::ActiveRecord::Base.connection_db_config.database,
           verdict: verdict(storages, nodes, unresolved),
           summary: summary(storages, nodes, unresolved),
           nodes: nodes,
           unresolved_storages: unresolved,
+          agent_shas: nodes.filter_map(&:agent_sha).uniq.sort,
           floors: floors
         )
       end
@@ -152,6 +214,7 @@ module System
           instance_status: instance.status,
           roles: storages.map { |storage| storage.gateway_proxy? ? "gateway" : "backend" }.uniq.sort,
           agent_version: instance.agent_version,
+          agent_sha: STAMPED_VERSION.match(instance.agent_version.to_s)&.[](2),
           last_heartbeat_at: instance.last_heartbeat_at,
           agent_check: agent_check(instance),
           account_check: account_check(instance, storages),
@@ -161,7 +224,10 @@ module System
       end
 
       def storage_ref(storage)
-        { id: storage.id, name: storage.name, account_id: storage.account_id, deployment_shape: storage.deployment_shape }
+        {
+          id: storage.id, name: storage.name, account_id: storage.account_id,
+          status: storage.status, deployment_shape: storage.deployment_shape
+        }
       end
 
       # A dangling id is a fail (SmbUserManager would raise RecordNotFound);
@@ -171,7 +237,8 @@ module System
       def unresolved_row(storage, backend_id)
         status, reason = backend_id ? [ FAIL, "backend_instance_not_found" ] : [ UNKNOWN, "no_backend_instance_configured" ]
         storage_ref(storage).merge(
-          account_name: storage.account.name, backend_instance_id: backend_id, status: status, reason: reason
+          account_name: storage.account.name, backend_instance_id: backend_id,
+          check: status, reason: reason, hint: HINTS[reason]
         )
       end
 
@@ -189,9 +256,9 @@ module System
         built_on = match && parse_date(match[1])
         return Check.new(status: UNKNOWN, reason: "agent_version_not_orderable", basis: "none") unless built_on
 
-        sha = match[2]
-        return Check.new(status: PASS, reason: "is_credential_ref_commit", basis: "exact_commit") if sha == CREDENTIAL_REF_FLOOR[:sha]
-        return Check.new(status: FAIL, reason: "predates_credential_ref", basis: "exact_commit") if sha == VALIDATION_FLOOR[:sha]
+        # The one sha known NOT to carry the change, whenever it was built. There
+        # is deliberately no exact-sha pass: see the class comment on STDIN_FLOOR.
+        return Check.new(status: FAIL, reason: "predates_credential_ref", basis: "exact_commit") if match[2] == VALIDATION_FLOOR[:sha]
 
         date_check(built_on)
       end
@@ -231,7 +298,7 @@ module System
       def verdict(storages, nodes, unresolved)
         return "no_smb_backends" if storages.empty?
 
-        case self.class.worst(nodes.map(&:status) + unresolved.map { |row| row[:status] })
+        case self.class.worst(nodes.map(&:status) + unresolved.map { |row| row[:check] })
         when FAIL then "not_safe"
         when UNKNOWN then "unknown"
         else "safe_to_rotate"
@@ -243,9 +310,9 @@ module System
         {
           smb_storages: storages.size,
           nodes: nodes.size,
-          pass: counts.fetch(PASS, 0),
-          fail: counts.fetch(FAIL, 0),
-          unknown: counts.fetch(UNKNOWN, 0),
+          nodes_pass: counts.fetch(PASS, 0),
+          nodes_fail: counts.fetch(FAIL, 0),
+          nodes_unknown: counts.fetch(UNKNOWN, 0),
           unresolved_storages: unresolved.size
         }
       end
@@ -253,6 +320,7 @@ module System
       def floors
         {
           credential_ref: CREDENTIAL_REF_FLOOR.merge(date: CREDENTIAL_REF_FLOOR[:date].iso8601),
+          stdin_delivery: STDIN_FLOOR.merge(date: STDIN_FLOOR[:date].iso8601),
           payload_validation: VALIDATION_FLOOR.merge(date: VALIDATION_FLOOR[:date].iso8601)
         }
       end
