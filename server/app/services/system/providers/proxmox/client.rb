@@ -302,7 +302,7 @@ module System
           return fallback unless body.is_a?(Hash)
 
           if body["errors"].is_a?(Hash)
-            body["errors"].map { |k, v| "#{k}: #{v}" }.join("; ")
+            body["errors"].map { |k, v| field_error(k, v) }.join("; ")
           elsif body["message"]
             body["message"].to_s.strip
           else
@@ -310,6 +310,17 @@ module System
           end
         rescue JSON::ParserError
           fallback
+        end
+
+        # On a malformed field PVE's errors hash can echo the submitted value
+        # (cipassword, sshkeys, ...), and this message is raised and logged by
+        # every provider rescue arm. A secret-named field is reported by NAME
+        # only; the name test is System::StoredOutputRedactor's, the platform's
+        # one definition of a secret key name (IMP-b34c01457cec).
+        def field_error(field, detail)
+          return "#{field}: rejected" if ::System::StoredOutputRedactor.secret_key_name?(field, detail)
+
+          "#{field}: #{detail}"
         end
 
         def connection

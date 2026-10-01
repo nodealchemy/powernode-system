@@ -58,8 +58,11 @@ module System
     # match "bypass", "passed", "compass" or "author". The substring list is
     # Ai::SensitiveParams' own (the platform's one definition of a secret key
     # name, deployment-extensible), widened with the shapes it does not carry.
+    #
+    # "sshkey" is Proxmox VE's cloud-init `sshkeys`: glued, so neither the
+    # segment rule nor the key/keys suffix rule can see it (IMP-b34c01457cec).
     EXTRA_SECRET_SUBSTRINGS = %w[
-      passwd authorization apikey access_key accesskey privatekey secretkey
+      passwd authorization apikey access_key accesskey privatekey secretkey sshkey
     ].freeze
     SECRET_SEGMENTS = %w[pass pwd auth cookie cookies session signature pin otp totp passcode mfa].freeze
 
@@ -129,6 +132,13 @@ module System
         { events: out.reverse, total: all.size, truncated: all.size > limit }
       end
 
+      # Whether `name` names secret material, by the same rules that withhold a
+      # stored subtree: for a caller that holds a key and its value but no
+      # jsonb to walk (Proxmox::Client naming a rejected field).
+      def secret_key_name?(name, value = nil)
+        secret_key?(name, value, secret_substrings)
+      end
+
       private
 
       def walk(value, budget, key:, secret:, depth:)
@@ -161,7 +171,7 @@ module System
           # Keys are redacted like any other stored string, and charged.
           shown = bounded(name, MAX_KEY_LENGTH, inclusive: true)
           budget.chars -= shown.length
-          child_secret = secret || secret_key?(name, value, budget)
+          child_secret = secret || secret_key?(name, value, budget.patterns)
           put(out, shown, walk(value, budget, key: name, secret: child_secret, depth: depth + 1))
         end
         put(out, "...[truncated]", "#{hash.size - MAX_WIDTH} more keys") if hash.size > MAX_WIDTH
@@ -329,10 +339,10 @@ module System
         key.present? && segments(key).intersect?(LOG_SEGMENTS)
       end
 
-      def secret_key?(name, value, budget)
+      def secret_key?(name, value, patterns)
         snake = snake_case(name)
         parts = snake.split("_")
-        named = budget.patterns.any? { |pattern| snake.include?(pattern) } ||
+        named = patterns.any? { |pattern| snake.include?(pattern) } ||
                 parts.intersect?(SECRET_SEGMENTS) ||
                 (KEY_SUFFIXES.include?(parts.last) && !NON_SECRET_KEYS.include?(snake))
         return false unless named
