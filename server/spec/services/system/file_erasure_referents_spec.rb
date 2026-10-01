@@ -18,7 +18,7 @@ require "rails_helper"
 RSpec.describe System::FileErasureReferents do
   let(:account) { create(:account) }
   let(:storage) { create(:file_storage, account: account) }
-  let(:provider) { instance_double(StorageProviders::LocalStorage, delete_file: true, initialize_storage: true) }
+  let(:provider) { instance_double(StorageProviders::LocalStorage, delete_file: true, initialize_storage: true, store_live?: true) }
 
   before do
     allow(Audit::LogIntegrityService).to receive(:apply_integrity).and_return(true)
