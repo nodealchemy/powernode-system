@@ -35,6 +35,24 @@ RSpec.describe "CLASS_B_PARENT_MODULES <-> stage15.sh needs_parent sync" do
     expect(needs_parent_modules).not_to be_empty
   end
 
+  # IMP-c19b10a942d7: needs-parent-modules.sh's NEEDS_PARENT_MODULES list is what
+  # the build-inputs hash and the planner's attribution read to decide which
+  # modules own stage15.sh's shared parent-clone block. A slug on the needs_parent
+  # arm but not in the list gets the clone at build time while nothing folds the
+  # block into its hash — the stale-skip this change exists to close.
+  it "matches needs-parent-modules.sh's NEEDS_PARENT_MODULES list exactly (no drift)" do
+    list_path = File.expand_path("../../../../scripts/module-build/needs-parent-modules.sh", __dir__)
+    list_set = System::ModuleBuildScriptAttribution.needs_parent_modules(File.read(list_path)).to_set
+    script_set = needs_parent_modules.to_set
+
+    expect(script_set).to(
+      eq(list_set),
+      "needs-parent-modules.sh and stage15.sh needs_parent have drifted.\n" \
+      "  in the list but NOT stage15.sh: #{(list_set - script_set).to_a.inspect}\n" \
+      "  in stage15.sh but NOT the list: #{(script_set - list_set).to_a.inspect}"
+    )
+  end
+
   it "matches Api::V1::System::NodeApi::ConfigController::CLASS_B_PARENT_MODULES exactly (no drift)" do
     controller_set = Api::V1::System::NodeApi::ConfigController::CLASS_B_PARENT_MODULES.to_set
     script_set = needs_parent_modules.to_set

@@ -55,7 +55,9 @@ RSpec.describe System::ModuleBuildPlannerService, "build-script attribution" do
   # The live Gitea shape: the compare API lists commits only, each commit's own
   # detail lists the changed files (filename/status, no patch), and the two
   # stage15.sh copies come from the contents API at the range's two ends.
-  def stub_range(paths, base_script: base_stage15, head_script: base_stage15)
+  # needs-parent-modules.sh (IMP-c19b10a942d7) is fetched beside stage15.sh; nil
+  # is "absent at that ref", which the fixtures above (no shared block) allow.
+  def stub_range(paths, base_script: base_stage15, head_script: base_stage15, base_list: nil, head_list: nil)
     fake_client = instance_double(Devops::Git::GiteaApiClient)
     allow(Devops::Git::ApiClient).to receive(:for).with(gitea_credential).and_return(fake_client)
     allow(fake_client).to receive(:compare_commits).and_return(commits: [ { sha: head_sha } ])
@@ -64,7 +66,41 @@ RSpec.describe System::ModuleBuildPlannerService, "build-script attribution" do
                                                     .and_return(base_script && { content: base_script })
     allow(fake_client).to receive(:get_file_content).with("powernode", "powernode-system", stage15_path, head_sha)
                                                     .and_return(head_script && { content: head_script })
+    allow(fake_client).to receive(:get_file_content).with("powernode", "powernode-system", needs_parent_path, base_sha)
+                                                    .and_return(base_list && { content: base_list })
+    allow(fake_client).to receive(:get_file_content).with("powernode", "powernode-system", needs_parent_path, head_sha)
+                                                    .and_return(head_list && { content: head_list })
     fake_client
+  end
+
+  let(:needs_parent_path) { "scripts/module-build/needs-parent-modules.sh" }
+  let(:needs_parent_list) { "#!/usr/bin/env bash\nNEEDS_PARENT_MODULES=\"\nhub-backend\nhub-worker\n\"\n" }
+  let(:shared_block) do
+    "# --- BEGIN needs-parent shared block ---\n" \
+      "if [ \"$needs_parent\" = \"1\" ]; then\n  git clone --depth 1 \"$clone_url\" /tmp/parent\nfi\n" \
+      "# --- END needs-parent shared block ---\n"
+  end
+
+  # IMP-c19b10a942d7: the parent-clone block outside every arm is an input of the
+  # modules needs-parent-modules.sh lists — hub-frontend has an arm but is not
+  # listed, so it stays out of the plan.
+  it "a change inside the needs-parent shared block targets the listed modules plus module-forge" do
+    base = shared_block + base_stage15
+    head = base.sub("git clone --depth 1 ", "git clone --depth 1 --no-tags ")
+    stub_range([ stage15_path ], base_script: base, head_script: head,
+                                 base_list: needs_parent_list, head_list: needs_parent_list)
+
+    expect(plan_names).to eq(%w[hub-backend hub-worker module-forge])
+  end
+
+  it "a stage15.sh with the shared block but no readable needs-parent list warns and plans module-forge only" do
+    base = shared_block + base_stage15
+    head = base.sub("git clone --depth 1 ", "git clone --depth 1 --no-tags ")
+    stub_range([ stage15_path ], base_script: base, head_script: head)
+    allow(Rails.logger).to receive(:warn).and_call_original
+
+    expect(plan_names).to eq(%w[module-forge])
+    expect(Rails.logger).to have_received(:warn).with(/build-script attribution failed.*shared block/)
   end
 
   def plan_names(**opts)

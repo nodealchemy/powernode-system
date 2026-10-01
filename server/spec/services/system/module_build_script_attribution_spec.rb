@@ -16,6 +16,17 @@ RSpec.describe System::ModuleBuildScriptAttribution do
         hub-backend|hub-worker) needs_parent=1 ;;
       esac
 
+      # --- BEGIN needs-parent shared block ---
+      if [ "$needs_parent" = "1" ]; then
+        case "$parent_host" in
+          github.com) clone_url="https://github.com/x/y.git" ;;
+          *) clone_url="https://$parent_host/x/y.git" ;;
+        esac
+        git clone --depth 1 "$clone_url" /tmp/parent
+        bash "$SCRIPT_DIR/parent-info.sh" > /tmp/parent-build-info.json
+      fi
+      # --- END needs-parent shared block ---
+
       case "$MODULE" in
         runtime-go)
           # a heredoc whose body holds a line that looks like a case terminator
@@ -42,17 +53,121 @@ RSpec.describe System::ModuleBuildScriptAttribution do
     SH
   end
 
+  # The ONE definition of "packages parent-repo content" (needs-parent-modules.sh):
+  # the shared block above is attributed to exactly these slugs, read from this
+  # text, never from a list kept beside the reader.
+  let(:needs_parent_sh) do
+    <<~'SH'
+      #!/usr/bin/env bash
+      NEEDS_PARENT_MODULES="
+      hub-backend
+      hub-worker
+      "
+      module_needs_parent() { :; }
+    SH
+  end
+  let(:needs_parent) { %w[hub-backend hub-worker] }
+
   def head_with(from, to)
     base_stage15.sub(from, to).tap { |t| raise "fixture edit missed: #{from}" if t == base_stage15 }
   end
 
   def attribute(head, changed: [ "scripts/module-build/stage15.sh" ], **opts)
     base = opts.fetch(:base) { base_stage15 }
-    described_class.modules_for(changed_paths: changed, base_stage15: base, head_stage15: head)
+    described_class.modules_for(
+      changed_paths: changed, base_stage15: base, head_stage15: head,
+      base_needs_parent: opts.fetch(:base_list) { needs_parent_sh },
+      head_needs_parent: opts.fetch(:head_list) { needs_parent_sh }
+    )
+  end
+
+  describe ".needs_parent_modules" do
+    it "reads the slugs out of needs-parent-modules.sh's NEEDS_PARENT_MODULES list, in file order" do
+      expect(described_class.needs_parent_modules(needs_parent_sh)).to eq(needs_parent)
+    end
+
+    it "is nil for no text (the file is absent at the ref)" do
+      expect(described_class.needs_parent_modules(nil)).to be_nil
+    end
+
+    it "raises ParseError when the text carries no NEEDS_PARENT_MODULES list (renamed or removed)" do
+      expect { described_class.needs_parent_modules("#!/bin/bash\nmodule_needs_parent() { :; }\n") }
+        .to raise_error(described_class::ParseError, /NEEDS_PARENT_MODULES/)
+    end
+
+    it "raises ParseError on a token that is not a slug" do
+      expect { described_class.needs_parent_modules("NEEDS_PARENT_MODULES=\"\nhub-backend\n$(x)\n\"\n") }
+        .to raise_error(described_class::ParseError)
+    end
   end
 
   describe ".parse" do
-    subject(:parsed) { described_class.parse(base_stage15) }
+    subject(:parsed) { described_class.parse(base_stage15, needs_parent: needs_parent) }
+
+    it "owns the shared block with the needs-parent slugs and nobody else" do
+      expect(parsed.shared_block).to include("git clone --depth 1")
+      expect(parsed.text_for("hub-backend")).to include("git clone --depth 1")
+      expect(parsed.text_for("hub-worker")).to include("git clone --depth 1")
+      expect(parsed.text_for("hub-frontend")).not_to include("git clone --depth 1")
+      expect(parsed.text_for("runtime-go")).not_to include("git clone --depth 1")
+    end
+
+    it "captures the block verbatim, from BEGIN marker to END marker, nested case included" do
+      expect(parsed.shared_block).to start_with("# --- BEGIN needs-parent shared block ---\n")
+      expect(parsed.shared_block).to end_with("# --- END needs-parent shared block ---\n")
+      expect(parsed.shared_block).to include("case \"$parent_host\" in")
+    end
+
+    it "counts a needs-parent slug with no arm of its own among the slugs" do
+      expect(described_class.parse(base_stage15, needs_parent: %w[hub-backend vault]).slugs).to include("vault")
+    end
+
+    it "raises ParseError when needs-parent slugs are given but the script has no shared block (marker matched nothing)" do
+      unmarked = base_stage15.gsub(/^# --- (BEGIN|END) needs-parent shared block ---\n/, "")
+      expect(unmarked).not_to eq(base_stage15)
+      expect { described_class.parse(unmarked, needs_parent: needs_parent) }
+        .to raise_error(described_class::ParseError, /shared block/)
+    end
+
+    it "raises ParseError when the script has a shared block but no needs-parent slugs to own it" do
+      expect { described_class.parse(base_stage15) }.to raise_error(described_class::ParseError, /shared block/)
+      expect { described_class.parse(base_stage15, needs_parent: []) }.to raise_error(described_class::ParseError, /shared block/)
+    end
+
+    it "raises ParseError on a BEGIN marker with no END" do
+      expect { described_class.parse(base_stage15.sub("# --- END needs-parent shared block ---\n", ""), needs_parent: needs_parent) }
+        .to raise_error(described_class::ParseError, /shared block/)
+    end
+
+    it "raises ParseError on an END marker with no BEGIN" do
+      expect { described_class.parse(base_stage15.sub("# --- BEGIN needs-parent shared block ---\n", ""), needs_parent: needs_parent) }
+        .to raise_error(described_class::ParseError, /shared block/)
+    end
+
+    it "raises ParseError on a second shared block" do
+      twice = base_stage15.sub("echo done\n", "# --- BEGIN needs-parent shared block ---\necho again\n# --- END needs-parent shared block ---\necho done\n")
+      expect { described_class.parse(twice, needs_parent: needs_parent) }
+        .to raise_error(described_class::ParseError, /shared block/)
+    end
+
+    it "raises ParseError on a BEGIN marker inside a module arm" do
+      inside = head_with("    rsync -a /tmp/parent/server/", "    # --- BEGIN needs-parent shared block ---\n    rsync -a /tmp/parent/server/")
+      expect { described_class.parse(inside, needs_parent: needs_parent) }
+        .to raise_error(described_class::ParseError, /shared block/)
+    end
+
+    it "does not read a marker inside a heredoc body as a marker" do
+      script = <<~'SH'
+        case "$MODULE" in
+          a)
+            cat <<'EOF'
+        # --- BEGIN needs-parent shared block ---
+        EOF
+            ;;
+        esac
+      SH
+      expect(described_class.parse(script).arms.map(&:slugs)).to eq([ [ "a" ] ])
+    end
 
     it "reads the literal slugs of every module-dispatch arm, across case blocks" do
       expect(parsed.arms.flat_map(&:slugs).uniq).to contain_exactly(
@@ -149,7 +264,7 @@ RSpec.describe System::ModuleBuildScriptAttribution do
     end
 
     it "raises ParseError on an unbalanced case/esac" do
-      expect { described_class.parse(base_stage15.sub(/^esac\necho done/, "echo done")) }
+      expect { described_class.parse(base_stage15.sub(/^esac\necho done/, "echo done"), needs_parent: needs_parent) }
         .to raise_error(described_class::ParseError)
     end
 
@@ -177,6 +292,36 @@ RSpec.describe System::ModuleBuildScriptAttribution do
     it "attributes a change to the needs_parent dispatch to the slugs it names" do
       head = head_with("hub-backend|hub-worker) needs_parent=1 ;;", "hub-backend|hub-worker) needs_parent=2 ;;")
       expect(attribute(head)).to contain_exactly("hub-backend", "hub-worker")
+    end
+
+    # IMP-c19b10a942d7: the parent clone + BUILD_INFO.json block sits outside every
+    # arm but feeds exactly the needs-parent modules. It belongs to the slugs
+    # needs-parent-modules.sh lists — hub-frontend has an arm but is NOT listed
+    # here, so it must not move.
+    it "attributes a change inside the needs-parent shared block to the listed modules, and only them" do
+      head = head_with("git clone --depth 1 \"$clone_url\" /tmp/parent", "git clone --depth 1 --no-tags \"$clone_url\" /tmp/parent")
+      expect(attribute(head)).to contain_exactly("hub-backend", "hub-worker")
+    end
+
+    it "attributes a change inside the block's nested case to the listed modules" do
+      head = head_with("github.com) clone_url=", "github.com|*.github.com) clone_url=")
+      expect(attribute(head)).to contain_exactly("hub-backend", "hub-worker")
+    end
+
+    it "attributes a slug ADDED to the needs-parent list to that slug (the block is newly its input)" do
+      grown = needs_parent_sh.sub("hub-worker\n", "hub-worker\nhub-frontend\n")
+      expect(attribute(base_stage15, changed: [ "scripts/module-build/needs-parent-modules.sh" ], head_list: grown))
+        .to contain_exactly("hub-frontend")
+    end
+
+    it "attributes a change to a helper the block calls to the listed modules" do
+      expect(attribute(base_stage15, changed: [ "scripts/module-build/parent-info.sh" ]))
+        .to contain_exactly("hub-backend", "hub-worker")
+    end
+
+    it "raises ParseError when needs-parent-modules.sh changed but no base copy of stage15.sh is available" do
+      expect { attribute(base_stage15, changed: [ "scripts/module-build/needs-parent-modules.sh" ], base: nil) }
+        .to raise_error(described_class::ParseError, /base/)
     end
 
     it "attributes an ADDED arm to its slug" do
@@ -242,23 +387,50 @@ RSpec.describe System::ModuleBuildScriptAttribution do
   # cannot read fails HERE, in CI, rather than silently degrading production
   # planning to its module-forge-only fallback.
   describe "against the real stage15.sh" do
-    let(:real) { File.read(File.expand_path("../../../../scripts/module-build/stage15.sh", __dir__)) }
+    let(:scripts_dir) { File.expand_path("../../../../scripts/module-build", __dir__) }
+    let(:real) { File.read("#{scripts_dir}/stage15.sh") }
+    let(:real_list) { File.read("#{scripts_dir}/needs-parent-modules.sh") }
+    let(:real_needs_parent) { described_class.needs_parent_modules(real_list) }
+
+    def attribute_real(head, changed: [ "scripts/module-build/stage15.sh" ])
+      attribute(head, changed: changed, base: real, base_list: real_list, head_list: real_list)
+    end
 
     it "parses without raising and finds arms for the platform modules" do
-      parsed = described_class.parse(real)
+      parsed = described_class.parse(real, needs_parent: real_needs_parent)
       slugs = parsed.arms.flat_map(&:slugs)
       expect(slugs).to include("powernode-hub-backend", "powernode-hub-worker", "powernode-extension-system", "module-forge")
+    end
+
+    it "reads the needs-parent list out of the real needs-parent-modules.sh" do
+      expect(real_needs_parent).to contain_exactly(
+        "powernode-hub-backend", "powernode-hub-worker", "powernode-hub-frontend", "powernode-extension-system"
+      )
     end
 
     it "attributes an edit inside the hub-backend arm to hub-backend alone" do
       edited = real.sub("--exclude='log' --exclude='coverage' --exclude='extensions' \\\n", "--exclude='log' --exclude='coverage' --exclude='extensions' --exclude='vendor' \\\n")
       expect(edited).not_to eq(real)
-      expect(attribute(edited, base: real)).to contain_exactly("powernode-hub-backend")
+      expect(attribute_real(edited)).to contain_exactly("powernode-hub-backend")
     end
 
     it "attributes a change to a helper called from the hub-backend arm to that arm's module" do
-      expect(attribute(real, changed: [ "scripts/module-build/assert-gemfile-lock-has-extension-path.sh" ], base: real))
+      expect(attribute_real(real, changed: [ "scripts/module-build/assert-gemfile-lock-has-extension-path.sh" ]))
         .to contain_exactly("powernode-hub-backend")
+    end
+
+    # IMP-c19b10a942d7: the parent clone / BUILD_INFO.json block is shared code
+    # outside every arm, but it is an input of exactly the needs-parent modules.
+    it "attributes an edit inside the needs-parent shared block to the four needs-parent modules and no other" do
+      edited = real.sub("echo \"[stage-1.5] build identity: ", "echo \"[stage-1.5] build identity (edited): ")
+      expect(edited).not_to eq(real)
+      expect(attribute_real(edited)).to match_array(real_needs_parent)
+    end
+
+    it "attributes an edit outside the block and every arm to nothing" do
+      edited = real.sub("rm -f /tmp/parent-provenance.env\n", "rm -f /tmp/parent-provenance.env # edited\n")
+      expect(edited).not_to eq(real)
+      expect(attribute_real(edited)).to be_empty
     end
   end
 end

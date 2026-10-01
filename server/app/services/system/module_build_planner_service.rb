@@ -732,12 +732,21 @@ module System
       client = gitea_client_for(account)
       owner, repo = repo_full_name.split("/", 2)
       stage15 = ::System::ModuleBuildScriptAttribution::STAGE15_PATH
+      needs_parent = ::System::ModuleBuildScriptAttribution::NEEDS_PARENT_PATH
+      # IMP-c19b10a942d7: needs-parent-modules.sh names the modules that own
+      # stage15.sh's shared parent-clone block; a change to either file re-owns
+      # text, so both are compared across the range when either changed.
+      compare = script_paths.include?(stage15) || script_paths.include?(needs_parent)
 
       head_script = fetch_build_script(client, owner, repo, stage15, head_sha)
-      base_script = script_paths.include?(stage15) ? fetch_build_script(client, owner, repo, stage15, base_sha) : nil
+      head_list = fetch_optional_build_script(client, owner, repo, needs_parent, head_sha)
+      base_script = compare ? fetch_build_script(client, owner, repo, stage15, base_sha) : nil
+      base_list = compare ? fetch_optional_build_script(client, owner, repo, needs_parent, base_sha) : nil
 
-      ::System::ModuleBuildScriptAttribution
-        .modules_for(changed_paths: script_paths, base_stage15: base_script, head_stage15: head_script)
+      ::System::ModuleBuildScriptAttribution.modules_for(
+        changed_paths: script_paths, base_stage15: base_script, head_stage15: head_script,
+        base_needs_parent: base_list, head_needs_parent: head_list
+      )
     rescue StandardError => e
       Rails.logger.warn(
         "[ModuleBuildPlannerService] build-script attribution failed for #{repo_full_name} " \
@@ -751,6 +760,23 @@ module System
       content = client.get_file_content(owner, repo, path, ref)
       text = content && content[:content]
       raise PlanningError, "#{path} at #{ref.to_s[0, 7]} could not be read" if text.nil?
+      raise PlanningError, "#{path} at #{ref.to_s[0, 7]} is #{text.bytesize} bytes (limit #{BUILD_SCRIPT_MAX_BYTES})" if text.bytesize > BUILD_SCRIPT_MAX_BYTES
+
+      text
+    end
+
+    # A script that may be absent at a ref (needs-parent-modules.sh postdates
+    # stage15.sh): nil is "no copy", and the attribution decides what that means
+    # against the stage15.sh it reads — a shared block nobody owns is refused
+    # there, loudly, not here. An oversize copy is still refused.
+    def fetch_optional_build_script(client, owner, repo, path, ref)
+      content = begin
+        client.get_file_content(owner, repo, path, ref)
+      rescue ::Devops::Git::ApiClient::NotFoundError
+        nil # the Gitea client already maps 404 to nil; make "absent" hold for any client
+      end
+      text = content && content[:content]
+      return nil if text.nil?
       raise PlanningError, "#{path} at #{ref.to_s[0, 7]} is #{text.bytesize} bytes (limit #{BUILD_SCRIPT_MAX_BYTES})" if text.bytesize > BUILD_SCRIPT_MAX_BYTES
 
       text
