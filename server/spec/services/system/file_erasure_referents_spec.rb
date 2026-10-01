@@ -98,6 +98,30 @@ RSpec.describe System::FileErasureReferents do
       expect(arch.reload.kernel_file_object_id).to eq(kernel.id)
     end
 
+    # The one column where the handler is LOAD-BEARING: no foreign key backs
+    # system_node_platforms.disk_image_file_object_id, so without this
+    # registration a personal upload promoted to a platform's live boot
+    # image would simply be destroyed and the platform left pointing at
+    # nothing. Driven through core's erasure end to end.
+    it "refuses a personal upload set as a platform's disk image, where no FK would catch it" do
+      user = create(:user, account: account)
+      image = upload(uploaded_by: user, category: "user_upload")
+      platform = create(:system_node_platform, account: account)
+      platform.update_columns(disk_image_file_object_id: image.id)
+
+      result = FileManagement::Erasure.call(
+        scope: FileManagement::Object.where(account_id: account.id, uploaded_by_id: user.id)
+      )
+
+      expect(result.erased_count).to eq(0)
+      expect(result.failures).to contain_exactly(
+        hash_including(id: image.id, kind: "held", reason: "held_by_system_node_platform")
+      )
+      expect(FileManagement::Object.exists?(image.id)).to be true
+      expect(platform.reload.disk_image_file_object_id).to eq(image.id)
+      expect(result.audit_metadata[:referents_consulted]).to include("system_boot_images")
+    end
+
     it "is the registered handler, so the hold does not depend on the FK backstop" do
       expect(FileManagement::ErasureReferentRegistry.registered?(:system_boot_images)).to be true
       handler = FileManagement::ErasureReferentRegistry.handlers[:system_boot_images]
