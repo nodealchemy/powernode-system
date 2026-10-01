@@ -356,6 +356,49 @@ that is not a pass carries a hint:
 | `backend_instance_not_found` | Point the storage at a live backend or retire it. |
 | `no_backend_instance_configured` | Confirm it is an external SMB server the platform provisions no users on. |
 
+#### Historical rows: the `storage.smb_user.apply` secret scrub
+
+Before extension commit c9eb9e72 the task payload carried the SMB password in
+plaintext (`options.password`, plus `options.new_password` on `set_password`),
+and a failed run echoed it through the agent's argv error into `error_message`
+and the mirrored `failed` event in `events`. The data migration
+`20261001120000_scrub_smb_user_apply_task_secrets` rewrites those rows at boot:
+the two option keys keep their names with the value `[REDACTED]`, the row's own
+value is replaced wherever it appears in `error_message`, `description` and
+`events[].message`, and the argv shape (`samba-tool [user create <user> …]: `,
+`samba-tool [user setpassword <user> --newpassword=…]: `) is redacted by
+pattern for rows whose options no longer hold the value. Scope is the one
+command, exactly; other tasks are untouched. It is batched, idempotent, skips
+rows a running task holds locked, never raises on a row of an unexpected shape
+(it reports such rows by count), and prints counts only. `down` is a no-op; to
+re-run it after a reported leftover, `bin/rails db:migrate:redo
+VERSION=20261001120000`.
+
+**What the scrub does not reach.** The migration removes the copy in the live
+`system_tasks` heap. It does not reach:
+
+- dead tuples of the rewritten rows until `VACUUM` reclaims them (the migration
+  deliberately does not `VACUUM FULL`);
+- the WAL that carried the original writes, WAL archives and any PITR base
+  backup taken while the rows held the value;
+- `pg_dump` files, snapshot-based backups and a replica's own backups (the
+  rewrite itself replicates, the replica's past backups do not change);
+- the `events[].data` sub-object, which the writers leave empty and the scrub
+  does not rewrite, and a password containing `]` on a row whose options were
+  already stripped: the argv pattern does not match such an echo at all, so the
+  whole value stays and the row is not counted in the "not scrubbed" line (the
+  value arm removes it whenever the option value is still there);
+- logs: the agent's journal and the platform's request logs on the node API
+  `fail` endpoint, where `error_message` is not a filtered parameter name;
+- copies made by anything that read the task row while it held the value
+  (`system_get_task` results stored in conversations or agent executions);
+- the `/proc/<pid>/cmdline` exposure on the backend host while the pre-fix
+  agent ran `samba-tool`, which c9eb9e72 recorded separately.
+
+Credential rotation is the actual remedy: a password that has been rotated is
+worthless in every copy above. Run the preflight first, rotate, and only then
+treat the scrub as having closed the historical copy.
+
 ### `task_payload_builder.rb` — `TaskPayloadBuilder`
 
 Composes the JSON task payloads the on-node agent receives via `System::Task`.
