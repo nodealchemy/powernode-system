@@ -5723,36 +5723,13 @@ module Ai
       # `correlation_id: "template_mutation:<template_id>"`, so
       # system_inspect_correlation walks one template's mutation history in
       # emission order.
-      # `extra` is merged into both the returned radius and the event payload —
-      # the unassign verb's purge count and node ids. Empty for every other
-      # caller, whose radius is unchanged.
-      def record_template_blast_radius(template, node_module, change, extra: {})
-        classification = ::System::Ai::Skills::TemplateApprovalPolicy.for(template: template)
-        return nil unless classification.requires_approval?
-
-        radius = {
-          requires_approval: true,
-          provisioned_node_count: classification.provisioned_node_count,
-          reason: classification.reason
-        }.merge(extra)
-
-        ::System::Fleet::EventBroadcaster.emit!(
-          account: @account,
-          kind: "system.template_mutation",
-          severity: :medium,
-          source: "system_fleet_tool",
-          correlation_id: "template_mutation:#{template.id}",
-          node_module_id: node_module.id,
-          payload: radius.merge(
-            change: change,
-            template_id: template.id,
-            template_name: template.name,
-            node_module_name: node_module.name,
-            initiated_by: @user&.id || "system"
-          )
+      # The classification and event live in System::TemplateMutationRecorder,
+      # shared with System::TemplateModuleUnassignService (IMP-5fa3c8d0e2f7).
+      def record_template_blast_radius(template, node_module, change)
+        ::System::TemplateMutationRecorder.record!(
+          account: @account, template: template, node_module: node_module, change: change,
+          initiated_by: @user&.id
         )
-
-        radius
       end
 
       def serialize_template_module(join)
@@ -8878,33 +8855,21 @@ module Ai
           )
         end
 
-        shipped = join.enabled
         # IMP-5fa3c8d0e2f7 — the join and the assignments it produced go
-        # together (System::TemplateModuleUnassignService, shared with the REST
-        # DELETE). Destroying the join alone nullified their source and
-        # orphaned them where no purging apply would ever reap them.
-        result = ::System::TemplateModuleUnassignService.new(join).call!
+        # together, and the blast radius (TemplateApprovalPolicy + the
+        # `system.template_mutation` FleetEvent) is recorded by the same
+        # System::TemplateModuleUnassignService the REST DELETE uses. Destroying
+        # the join alone nullified their source and orphaned them where no
+        # purging apply would ever reap them.
+        result = ::System::TemplateModuleUnassignService.new(join)
+                                                         .call!(initiated_by: @user&.id, source: "system_fleet_tool")
 
-        payload = {
+        success_result({
           unassigned: true,
           template_module_id: result.template_module_id,
           template_id: template.id,
           module_id: node_module.id
-        }.merge(result.to_payload)
-        # Removing a SHIPPING join is the highest-blast-radius join mutation
-        # there is — it takes a module off every node on the template. A
-        # DISABLED join counts too when it still had derived rows: disabling
-        # kept them, and this purge is what takes the module off those nodes.
-        # The count comes from the service's plan, read under the join's lock
-        # before any row was written.
-        if shipped || result.purged_count.positive?
-          radius = record_template_blast_radius(
-            template, node_module, "module_unassigned",
-            extra: { purged_assignment_count: result.purged_count, purged_node_ids: result.purged_node_ids }
-          )
-          payload[:blast_radius] = radius if radius
-        end
-        success_result(payload)
+        }.merge(result.to_payload))
       end
 
       # Enable/disable a NodeModuleAssignment — mirrors the

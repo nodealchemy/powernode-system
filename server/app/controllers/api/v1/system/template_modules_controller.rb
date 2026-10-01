@@ -146,8 +146,11 @@ module Api
         # them. Hand-authored rows and rows from other joins are untouched; a
         # derived row whose module another join still brings in is re-pointed
         # at that join, not destroyed. The response names the purged node ids
-        # and count. The member `:id` is the NODE_MODULE id (matches create's
-        # use of node_module_id). A missing assignment 404s.
+        # and count, and on a template with live fleet carries the same
+        # `blast_radius` and records the same `system.template_mutation`
+        # FleetEvent the MCP verb does (the service records both). The member
+        # `:id` is the NODE_MODULE id (matches create's use of node_module_id).
+        # A missing assignment 404s.
         #
         # Permission: `system.templates.update` (same as attaching — both
         # mutate the template's composition).
@@ -157,7 +160,8 @@ module Api
           join = @template.template_modules.find_by(node_module_id: params[:id])
           return render_not_found("Template Module assignment") unless join
 
-          result = ::System::TemplateModuleUnassignService.new(join).call!
+          result = ::System::TemplateModuleUnassignService.new(join)
+                                                           .call!(initiated_by: current_user&.id, source: "template_modules_controller")
           # `message` stays at the top level too, as the message-only envelope
           # this action returned before it carried the purge.
           message = "Module removed from template"

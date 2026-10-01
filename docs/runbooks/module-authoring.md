@@ -439,7 +439,7 @@ PATCH /api/v1/system/node_module_assignments/<assignment-id>
 { "effective_priority": 95 }
 ```
 
-To change *which* modules a template carries, use the assign/unassign MCP actions (`system_assign_module_to_template` / `system_unassign_module_from_template`) rather than an update call.
+To change *which* modules a template carries, use the assign/unassign MCP actions (`system_assign_module_to_template` / `system_unassign_module_from_template`) rather than an update call. Unassigning is irreversible: it destroys the join and, in the same transaction, purges every NodeModuleAssignment the join produced, so the module leaves those nodes on their next module sync (a row another join on the template still needs is re-pointed, and hand-authored assignments are untouched). To take a module out reversibly, set `enabled: false` with `system_update_template_module` instead.
 
 Once assigned, every NodeInstance built from this template will pull the module on its next reconcile tick. Use `system_drift_report` to verify.
 

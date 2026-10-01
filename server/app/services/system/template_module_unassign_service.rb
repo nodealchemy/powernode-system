@@ -41,8 +41,27 @@ module System
   # after the lock and BEFORE any write, so its count is the pre-write
   # statement a caller reports as blast radius. The whole thing commits or
   # rolls back as one.
+  #
+  # The closure is read without a lock on the template's OTHER joins, so a join
+  # assigned concurrently (between the plan and the commit) that also requires
+  # a purged module is not seen. That row is purged and the next apply
+  # re-creates it — one flap, self-healing.
+  #
+  # BLAST RADIUS. After the commit — never inside the transaction, where a
+  # rollback would leave a phantom event — the service records the mutation
+  # through System::TemplateMutationRecorder (the TemplateApprovalPolicy
+  # classification plus a `system.template_mutation` FleetEvent) when the join
+  # was shipping or any row was purged: a disabled join's derived rows were kept
+  # by the disable, and this purge is what takes the module off those nodes.
+  # Both doors therefore record exactly the same radius; the radius rides back
+  # on the Result.
   class TemplateModuleUnassignService
-    Result = Struct.new(:template_module_id, :purged, :repointed, keyword_init: true) do
+    # Reply and event payloads list at most this many node ids and rows; the
+    # counts are always exact. A fleet-sized template must not turn the reply
+    # or the event's jsonb column into a megabyte list.
+    LISTED_LIMIT = 100
+
+    Result = Struct.new(:template_module_id, :purged, :repointed, :blast_radius, keyword_init: true) do
       def purged_count
         purged.size
       end
@@ -51,12 +70,25 @@ module System
         purged.map { |row| row[:node_id] }.uniq
       end
 
+      # The capped node-id summary the radius and the event carry.
+      def radius_extra
+        ids = purged_node_ids
+        { purged_assignment_count: purged_count, purged_node_count: ids.size,
+          purged_node_ids: ids.first(LISTED_LIMIT), purged_node_ids_truncated: ids.size > LISTED_LIMIT }
+      end
+
       # The shape both surfaces return.
       def to_payload
+        ids = purged_node_ids
         {
-          purged_assignments: { count: purged_count, node_ids: purged_node_ids, assignments: purged },
-          repointed_assignments: repointed
-        }
+          purged_assignments: {
+            count: purged_count, node_count: ids.size,
+            node_ids: ids.first(LISTED_LIMIT), assignments: purged.first(LISTED_LIMIT),
+            truncated: ids.size > LISTED_LIMIT || purged_count > LISTED_LIMIT
+          },
+          repointed_assignments: repointed.first(LISTED_LIMIT),
+          repointed_count: repointed.size
+        }.tap { |payload| payload[:blast_radius] = blast_radius if blast_radius }
       end
     end
 
@@ -64,7 +96,22 @@ module System
       @join = template_module
     end
 
-    def call!
+    # initiated_by / source identify the caller on the recorded FleetEvent.
+    def call!(initiated_by:, source:)
+      shipped = @join.enabled
+      result = purge!
+      if shipped || result.purged_count.positive?
+        result.blast_radius = ::System::TemplateMutationRecorder.record!(
+          account: @join.node_template.account, template: @join.node_template, node_module: @join.node_module,
+          change: "module_unassigned", initiated_by: initiated_by, source: source, extra: result.radius_extra
+        )
+      end
+      result
+    end
+
+    private
+
+    def purge!
       ActiveRecord::Base.transaction do
         @join.lock!
         to_purge, to_repoint = plan
@@ -82,8 +129,6 @@ module System
         Result.new(template_module_id: @join.id, purged: purged, repointed: repointed)
       end
     end
-
-    private
 
     def plan
       derived = ::System::NodeModuleAssignment
