@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
+	"time"
 )
 
 // wantKeyBodyMarker is the contract text a stripped run is replaced with.
@@ -432,6 +433,163 @@ func BenchmarkLogTail_StderrWindowAllBodyNoEnd(b *testing.B) {
 	}
 	b.SetBytes(int64(len(stderr)))
 	b.ReportAllocs()
+	for b.Loop() {
+		_ = logTail([]byte(`{"ok":false}`), stderr)
+	}
+}
+
+// ---- fix round 2: the block pass must be linear in the stream whatever the
+// number of headers (critic B N1), must consume whole lines only (N2), must
+// take an unwrapped clipped body whole (N3); the mention-plus-far-footer
+// trade-off is bounded (N4); residuals are pinned (N5).
+
+const fastEnough = 5 * time.Second // a quadratic pass measured 49-65 s on these shapes
+
+// wantBlockSpanBound mirrors the contract: a header whose nearest footer is
+// further away than this is clipped, not paired (pemBlockMaxSpan).
+const wantBlockSpanBound = 32 << 10
+
+func timedLogTail(t *testing.T, stdout, stderr []byte) string {
+	t.Helper()
+	start := time.Now()
+	tail := logTail(stdout, stderr)
+	if took := time.Since(start); took > fastEnough {
+		t.Fatalf("logTail took %s on %d+%d bytes; the block pass must be linear", took, len(stdout), len(stderr))
+	}
+	return tail
+}
+
+func TestLogTail_ManyHeaderLinesWithoutFooterIsLinear(t *testing.T) {
+	// 256 KiB of nothing but BEGIN lines and no footer anywhere: 8192
+	// unpaired headers.
+	line := "-----BEGIN RSA PRIVATE KEY-----\n"
+	stderr := []byte(strings.Repeat(line, (256<<10)/len(line)))
+	tail := timedLogTail(t, []byte(`{"ok":false}`), stderr)
+	if strings.Contains(tail, "-----BEGIN") {
+		t.Fatalf("an unpaired header must still be replaced")
+	}
+}
+
+func TestLogTail_ManyHeaderMentionsWithoutFooterIsLinear(t *testing.T) {
+	// A secret-scan report: 1000 lines that MENTION a header, ~2 KB of
+	// ordinary output between them, no footer anywhere (~2 MB).
+	var b strings.Builder
+	for i := 0; i < 1000; i++ {
+		fmt.Fprintf(&b, "leak-scan: matched -----BEGIN RSA PRIVATE KEY----- in fixtures/k%d.pem\n", i)
+		b.WriteString(filler("scan", 45))
+	}
+	b.WriteString("scan complete\n")
+	tail := timedLogTail(t, []byte(`{"ok":false}`), []byte(b.String()))
+	if strings.Contains(tail, "-----BEGIN") || !strings.HasSuffix(tail, "scan complete") {
+		t.Fatalf("mentions must be replaced and the report kept, got tail end:\n%.200s", tail[len(tail)-200:])
+	}
+	if !strings.Contains(tail, wantKeyBlockMarker+" in fixtures/k999.pem") {
+		t.Fatalf("the rest of a mention line must survive, got tail end:\n%.300s", tail[len(tail)-300:])
+	}
+}
+
+func TestLogTail_HeaderMentionThenFarFooterKeepsTheDiagnosticsBetween(t *testing.T) {
+	// A mention, 40 KiB of lint output, then an unrelated footer line: beyond
+	// the span bound the mention is treated as clipped, nothing between is
+	// lost and the lone footer line stays as the text it is.
+	between := filler("lint", 1000)
+	if len(between) <= wantBlockSpanBound {
+		t.Fatalf("fixture: %d bytes between is not past the bound", len(between))
+	}
+	stderr := "finding 1: -----BEGIN RSA PRIVATE KEY-----\n" + between + "finding 2: -----END RSA PRIVATE KEY-----\nsummary\n"
+	tail := timedLogTail(t, []byte(`{"ok":false}`), []byte(stderr))
+	if !strings.HasPrefix(tail, "stdout: {\"ok\":false}\nstderr: finding 1: "+wantKeyBlockMarker+"\nlint line 0 of ordinary build output\n") {
+		t.Fatalf("got head:\n%.300s", tail)
+	}
+	if !strings.HasSuffix(tail, "lint line 999 of ordinary build output\nfinding 2: -----END RSA PRIVATE KEY-----\nsummary") {
+		t.Fatalf("got tail end:\n%.300s", tail[len(tail)-300:])
+	}
+}
+
+func TestLogTail_HeaderMentionThenNearFooterIsTheStatedTradeOff(t *testing.T) {
+	// Within the span bound a mention and a later footer are one block: the
+	// text between is LOST, not leaked. Pinned as the accepted trade-off.
+	stderr := "finding 1: -----BEGIN RSA PRIVATE KEY-----\n" + filler("lint", 99) + "finding 100: -----END RSA PRIVATE KEY-----\nsummary\n"
+	tail := timedLogTail(t, []byte(`{"ok":false}`), []byte(stderr))
+	if want := "stdout: {\"ok\":false}\nstderr: finding 1: " + wantKeyBlockMarker + "\nsummary"; tail != want {
+		t.Fatalf("got:\n%.300s", tail)
+	}
+}
+
+func TestLogTail_ClippedBodyKeepsTheFollowingLineIntact(t *testing.T) {
+	l64 := syntheticPEMBody(t, 51, 1)[0]
+	begin := "-----BEGIN RSA PRIVATE KEY-----"
+	for _, tc := range []struct{ name, in, want string }{
+		{"plain next line", "stage 0\n" + begin + "\n" + l64 + "\n" + l64 + "\nnext step\n",
+			"stdout: stage 0\n" + wantKeyBlockMarker + "\nnext step\nstderr: ok"},
+		{"next line opens with a 36-char word", "stage 0\n" + begin + "\n" + l64 + "\nabcdefghijklmnopqrstuvwxyz0123456789 is next\n",
+			"stdout: stage 0\n" + wantKeyBlockMarker + "\nabcdefghijklmnopqrstuvwxyz0123456789 is next\nstderr: ok"},
+		{"blank line then prose", "stage 0\n" + begin + "\n" + l64 + "\n\nnext step\n",
+			"stdout: stage 0\n" + wantKeyBlockMarker + "\nnext step\nstderr: ok"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := logTail([]byte(tc.in), []byte("ok")); got != tc.want {
+				t.Fatalf("got:\n%s\nwant:\n%s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLogTail_ClippedUnwrappedBodyIsRemovedWhole(t *testing.T) {
+	in := "stage 0\n-----BEGIN RSA PRIVATE KEY-----\n" + strings.Repeat("Q", 300) + "\nnext\n"
+	if got, want := logTail([]byte(in), []byte("ok")), "stdout: stage 0\n"+wantKeyBlockMarker+"\nnext\nstderr: ok"; got != want {
+		t.Fatalf("got:\n%.200s", got)
+	}
+}
+
+func TestLogTail_SSH2HeadedKeyIsRemoved(t *testing.T) {
+	body := syntheticPEMBody(t, 52, 6)
+	in := "stage 0\n---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\nComment: \"synthetic\"\n" + strings.Join(body, "\n") + "\n---- END SSH2 ENCRYPTED PRIVATE KEY ----\nnext\n"
+	got := logTail([]byte(in), []byte("ok"))
+	if strings.Contains(got, body[2]) || got != "stdout: stage 0\n"+wantKeyBlockMarker+"\nnext\nstderr: ok" {
+		t.Fatalf("got:\n%.300s", got)
+	}
+}
+
+func TestLogTail_AcceptedResidualsArePinned(t *testing.T) {
+	body := syntheticPEMBody(t, 53, 4)
+	t.Run("clipped key with a per-line prefix keeps its body", func(t *testing.T) {
+		var b strings.Builder
+		b.WriteString("#8 0.1 -----BEGIN RSA PRIVATE KEY-----\n")
+		for _, l := range body {
+			b.WriteString("#8 0.1 " + l + "\n")
+		}
+		got := logTail([]byte(b.String()), []byte("ok"))
+		if !strings.HasPrefix(got, "stdout: #8 0.1 "+wantKeyBlockMarker+"\n#8 0.1 "+body[0]) {
+			t.Fatalf("residual changed shape, got:\n%.300s", got)
+		}
+	})
+	t.Run("base64 of a whole PEM is not seen", func(t *testing.T) {
+		pem := "-----BEGIN RSA PRIVATE KEY-----\n" + strings.Join(body, "\n") + "\n-----END RSA PRIVATE KEY-----\n"
+		in := "tls.key: " + base64.StdEncoding.EncodeToString([]byte(pem)) + "\n"
+		if got := logTail([]byte(in), []byte("ok")); got != "stdout: "+strings.TrimSpace(in)+"\nstderr: ok" {
+			t.Fatalf("residual changed shape, got:\n%.300s", got)
+		}
+	})
+}
+
+func BenchmarkLogTail_ManyHeaderLinesNoFooter(b *testing.B) {
+	line := "-----BEGIN RSA PRIVATE KEY-----\n"
+	stderr := []byte(strings.Repeat(line, (256<<10)/len(line)))
+	b.SetBytes(int64(len(stderr)))
+	for b.Loop() {
+		_ = logTail([]byte(`{"ok":false}`), stderr)
+	}
+}
+
+func BenchmarkLogTail_ManyHeaderMentionsNoFooter(b *testing.B) {
+	var s strings.Builder
+	for i := 0; i < 1000; i++ {
+		fmt.Fprintf(&s, "leak-scan: matched -----BEGIN RSA PRIVATE KEY----- in fixtures/k%d.pem\n", i)
+		s.WriteString(filler("scan", 45))
+	}
+	stderr := []byte(s.String())
+	b.SetBytes(int64(len(stderr)))
 	for b.Loop() {
 		_ = logTail([]byte(`{"ok":false}`), stderr)
 	}
