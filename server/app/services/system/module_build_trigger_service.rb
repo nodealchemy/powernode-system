@@ -88,7 +88,7 @@ module System
       batch = ::System::ModuleBuildBatch.create_for(
         account: @account, plan: plan, trigger: "push",
         base_sha: base_sha, head_sha: head_sha, shadow: shadow, source_repo: source_repo,
-        excluded: planned.excluded
+        excluded: planned.excluded, attribution_fallback: planned.attribution_fallback
       )
 
       summary = ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)

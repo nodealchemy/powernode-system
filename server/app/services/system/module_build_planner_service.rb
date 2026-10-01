@@ -47,7 +47,11 @@ module System
     # builds, sorted — with or without expand_dependents. [] without an
     # allowlist, so the caller and the batch audit always see what was not
     # rebuilt.
-    PlanResult = Struct.new(:entries, :excluded, :withheld_dependents, keyword_init: true)
+    # attribution_fallback: nil when the build-script attribution held; otherwise
+    # one line saying why it did not and that the build-script change planned
+    # BUILD_SCRIPTS_FORCED_MODULE only (IMP-c19b10a942d7) — the caller must be
+    # able to see a plan that dropped modules, not only the log.
+    PlanResult = Struct.new(:entries, :excluded, :withheld_dependents, :attribution_fallback, keyword_init: true)
 
     # Exclusion reasons (machine-readable; the accompanying :detail is prose).
     #
@@ -294,6 +298,7 @@ module System
       account = resolve_account
       raise PlanningError, "no account resolvable" unless account
 
+      @attribution_fallback = nil
       dirty = Set.new
       catch_all = force_all
       changed_file_count = 0
@@ -397,7 +402,8 @@ module System
       PlanResult.new(
         entries: closure.sort.map { |slug| { module: slug, oci_ref: tag } },
         excluded: excluded,
-        withheld_dependents: withheld
+        withheld_dependents: withheld,
+        attribution_fallback: @attribution_fallback
       )
     end
 
@@ -748,11 +754,13 @@ module System
         base_needs_parent: base_list, head_needs_parent: head_list
       )
     rescue StandardError => e
-      Rails.logger.warn(
-        "[ModuleBuildPlannerService] build-script attribution failed for #{repo_full_name} " \
-        "#{base_sha.to_s[0, 7]}..#{head_sha.to_s[0, 7]} (#{e.class}: #{e.message}); " \
-        "planning #{BUILD_SCRIPTS_FORCED_MODULE} only for the build-script change"
-      )
+      # The note travels on the PlanResult (and from there onto the dispatch
+      # result and the batch), not only into the log: a plan that dropped
+      # modules must not read as a clean one to whoever dispatched it.
+      @attribution_fallback =
+        "build-script attribution failed for #{repo_full_name} #{base_sha.to_s[0, 7]}..#{head_sha.to_s[0, 7]} " \
+        "(#{e.class}: #{e.message}); planning #{BUILD_SCRIPTS_FORCED_MODULE} only for the build-script change"
+      Rails.logger.warn("[ModuleBuildPlannerService] #{@attribution_fallback}")
       Set.new
     end
 

@@ -9488,7 +9488,8 @@ module Ai
         batch = ::System::ModuleBuildBatch.create_for(
           account: @account, plan: planned.entries, trigger: params[:trigger].presence || "manual",
           base_sha: base_sha, head_sha: head_sha, source_repo: source_repo, excluded: planned.excluded,
-          selection: selection.any? ? selection_audit(selection, planned) : nil
+          selection: selection.any? ? selection_audit(selection, planned) : nil,
+          attribution_fallback: planned.attribution_fallback
         )
 
         dispatch_summary = ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)
@@ -9510,6 +9511,9 @@ module Ai
           payload[:excluded_count]   = planned.excluded.size
         end
         payload[:withheld_dependents] = Array(planned.withheld_dependents) if selection.any?
+        # IMP-c19b10a942d7: the planner could not read the build scripts and
+        # planned module-forge only for that change — say so to the caller.
+        payload[:attribution_fallback] = planned.attribution_fallback if planned.attribution_fallback.present?
 
         success_result(payload)
       rescue ::System::ModuleBuildPlannerService::PlanningError => e

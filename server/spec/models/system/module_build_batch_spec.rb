@@ -245,6 +245,20 @@ RSpec.describe System::ModuleBuildBatch, type: :model do
       expect(without.metadata).not_to have_key("excluded_count")
     end
 
+    # IMP-c19b10a942d7: when the planner could not read the build scripts it
+    # plans module-forge only for the build-script change and says so on the
+    # PlanResult; the batch must carry that note so a dispatch that dropped
+    # modules does not read as a clean one afterwards.
+    it "persists the planner's attribution fallback in metadata when supplied, and omits it otherwise" do
+      note = "build-script attribution failed (ParseError: no list); planning module-forge only"
+      with_note = described_class.create_for(account: account, plan: plan, trigger: "manual",
+                                             base_sha: "a", head_sha: "b", attribution_fallback: note)
+      without = described_class.create_for(account: account, plan: plan, trigger: "manual", base_sha: "a", head_sha: "b")
+
+      expect(with_note.metadata["attribution_fallback"]).to eq(note)
+      expect(without.metadata).not_to have_key("attribution_fallback")
+    end
+
     it "samples excluded metadata at a bounded limit, preserving the true count in excluded_count" do
       limit = described_class::EXCLUDED_METADATA_SAMPLE_LIMIT
       excluded = (1..(limit + 5)).map { |i| { module: "mod-#{i}", reason: "no_manifest", detail: "d#{i}" } }

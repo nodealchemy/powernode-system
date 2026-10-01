@@ -169,12 +169,18 @@ module System
     # range would have built but the allowlist did not — sampled like excluded,
     # with withheld_dependents_count as the true total. Omitted when nil, so a
     # default-mode batch's metadata is unchanged.
+    #
+    # attribution_fallback: (IMP-c19b10a942d7) the planner's one-line note when
+    # it could not read the build scripts and planned module-forge only for
+    # that change — kept here so the batch itself says it may have dropped
+    # modules. Omitted when nil, so a clean plan's metadata is unchanged.
     def self.create_for(account:, plan:, trigger:, base_sha:, head_sha:, shadow: false, source_repo: nil, excluded: [],
-                        selection: nil)
+                        selection: nil, attribution_fallback: nil)
       plan_array = Array(plan)
       excluded_array = Array(excluded)
       metadata = { "plan" => plan_array.map { |p| plan_entry_metadata(p) } }
       metadata["source_repo"] = source_repo.to_s if source_repo.present?
+      metadata["attribution_fallback"] = attribution_fallback.to_s if attribution_fallback.present?
       if excluded_array.any?
         metadata["excluded"] = excluded_array.first(EXCLUDED_METADATA_SAMPLE_LIMIT).map { |e| excluded_entry_metadata(e) }
         metadata["excluded_count"] = excluded_array.size

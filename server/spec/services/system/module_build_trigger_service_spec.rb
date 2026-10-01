@@ -166,6 +166,29 @@ RSpec.describe System::ModuleBuildTriggerService do
     end
   end
 
+  # IMP-c19b10a942d7: the push trigger is the one automated dispatch path, so a
+  # planner that fell back to module-forge-only (unreadable build scripts) must
+  # leave its note on the batch here too, not only on the MCP dispatch result.
+  describe "attribution fallback passthrough" do
+    it "records the planner's attribution fallback on the batch, and nothing when attribution held" do
+      SiteSetting.set("system.module_builds.mode", "native")
+      note = "build-script attribution failed (ParseError: no list); planning module-forge only"
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
+        .and_return(::System::ModuleBuildPlannerService::PlanResult.new(
+          entries: [ { module: "module-forge", oci_ref: "headsha1" } ], excluded: [], attribution_fallback: note
+        ))
+      stub_dispatch!
+
+      result = described_class.trigger!(base_sha: "base0000", head_sha: "headsha1234567")
+      expect(result.ok?).to be true
+      expect(result.batch.metadata["attribution_fallback"]).to eq(note)
+
+      stub_plan(modules: [ "mod-a" ])
+      clean = described_class.trigger!(base_sha: "base0000", head_sha: "headsha1234567")
+      expect(clean.batch.metadata).not_to have_key("attribution_fallback")
+    end
+  end
+
   describe "source_repo passthrough (imp 019f71e2)" do
     it "threads source_repo to the planner and records it on the batch" do
       SiteSetting.set("system.module_builds.mode", "native")

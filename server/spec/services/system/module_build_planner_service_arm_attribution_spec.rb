@@ -103,6 +103,37 @@ RSpec.describe System::ModuleBuildPlannerService, "build-script attribution" do
     expect(Rails.logger).to have_received(:warn).with(/build-script attribution failed.*shared block/)
   end
 
+  # The fallback must be visible to the caller, not only to the log: a dispatch
+  # that succeeded having dropped modules reads as a clean dispatch otherwise.
+  it "carries the attribution fallback on the PlanResult, and nil when attribution held" do
+    base = shared_block + base_stage15
+    head = base.sub("git clone --depth 1 ", "git clone --depth 1 --no-tags ")
+    stub_range([ stage15_path ], base_script: base, head_script: head)
+    allow(Rails.logger).to receive(:warn).and_call_original
+
+    fallen = described_class.plan_with_diagnostics(base_sha: base_sha, head_sha: head_sha)
+    expect(fallen.attribution_fallback).to match(/shared block/)
+    expect(fallen.attribution_fallback).to include("module-forge")
+
+    stub_range([ stage15_path ], base_script: base, head_script: head,
+                                 base_list: needs_parent_list, head_list: needs_parent_list)
+    expect(described_class.plan_with_diagnostics(base_sha: base_sha, head_sha: head_sha).attribution_fallback).to be_nil
+  end
+
+  # A range whose base predates the list: needs-parent-modules.sh is PRESENT at
+  # the base in its old case-statement shape (not absent), and the base
+  # stage15.sh has no block. That is the shape of the first dispatch after the
+  # list lands, and it must keep every attribution the old reader made.
+  it "a range whose base predates the list still targets an arm edit and the block's arrival" do
+    pre_list = "#!/usr/bin/env bash\nmodule_needs_parent() {\n  case \"${1:-}\" in\n    hub-backend|hub-worker) return 0 ;;\n    *) return 1 ;;\n  esac\n}\n"
+    head = (shared_block + base_stage15).sub("apt-get install -y redis-server", "apt-get install -y redis-server redis-tools")
+    stub_range([ stage15_path, needs_parent_path ], base_script: base_stage15, head_script: head,
+                                                    base_list: pre_list, head_list: needs_parent_list)
+
+    expect(plan_names).to eq(%w[hub-backend hub-worker module-forge redis])
+    expect(described_class.plan_with_diagnostics(base_sha: base_sha, head_sha: head_sha).attribution_fallback).to be_nil
+  end
+
   def plan_names(**opts)
     described_class.plan(base_sha: base_sha, head_sha: head_sha, **opts).map { |e| e[:module] }.sort
   end

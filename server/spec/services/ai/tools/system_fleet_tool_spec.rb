@@ -5260,6 +5260,30 @@ end
       expect(batch.metadata["excluded_count"]).to eq(1)
     end
 
+    # IMP-c19b10a942d7: a planner that could not read the build scripts plans
+    # module-forge only for that change and says so on the PlanResult. The
+    # dispatch result and the batch must carry it; a clean plan carries nothing.
+    it "surfaces the planner's attribution fallback in the dispatch result and on the batch, and omits it when attribution held" do
+      note = "build-script attribution failed (ParseError: no list); planning module-forge only"
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
+        .and_return(::System::ModuleBuildPlannerService::PlanResult.new(
+          entries: [ { module: "module-forge", oci_ref: "abc1234" } ], excluded: [], attribution_fallback: note
+        ))
+      stub_orchestrator_dispatch
+
+      result = call("system_dispatch_module_build_batch", base_sha: "b", head_sha: "h")
+
+      expect(result[:success]).to be true
+      expect(result[:data][:attribution_fallback]).to eq(note)
+      expect(System::ModuleBuildBatch.last.metadata["attribution_fallback"]).to eq(note)
+
+      allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
+        .and_return(plan_result([ { module: "mod-a", oci_ref: "abc1234" } ]))
+      clean = call("system_dispatch_module_build_batch", base_sha: "b", head_sha: "h")
+      expect(clean[:data]).not_to have_key(:attribution_fallback)
+      expect(System::ModuleBuildBatch.last.metadata).not_to have_key("attribution_fallback")
+    end
+
     # Pins the sample cap itself: without this, deleting the cap (or changing
     # .first(LIMIT) to .first) passes the whole suite while a force_all sweep
     # on a package-heavy fleet dumps hundreds of entries into the response.
