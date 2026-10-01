@@ -567,49 +567,72 @@ func removeKeyBlocks(b []byte) []byte {
 }
 
 // clippedBodyEnd returns where the body of a header with no footer ends:
-// from the header's end it consumes WHOLE lines (each `\r?\n` plus the
-// content up to, not including, the next `\n`) while they are PEM-shaped
-// after TrimSpace: blank, an RFC 1421 header, a run of 16 or more base64
+// from the header's end it consumes WHOLE lines (a separator plus the content
+// up to, not including, the next separator) while they are PEM-shaped after
+// TrimSpace: blank, an RFC 1421 header, a run of 16 or more base64
 // characters with no upper bound (an unwrapped clipped body is taken whole),
-// or a 1..15-character base64 remainder with nothing after it in the text.
-// It stops at the first ordinary line, which stays intact, so the line after
-// a clipped body is never glued to the marker or partly eaten. `rejected`
-// remembers the ordinary line a previous header already stopped on, so a run
-// of headers never re-reads it: every byte is examined once.
+// or the 4..12-character base64 remainder a wrapped body ends on when
+// nothing but a line terminator follows it in the text. A separator is a
+// real `\r?\n` or the literal `\n` / `\r\n` of a JSON-escaped dump that
+// stopped mid-key, so a truncated one-line key is taken too. It stops at the
+// first ordinary line, which stays intact, so the line after a clipped body
+// is never glued to the marker or partly eaten. `rejected` remembers the
+// ordinary line a previous header already stopped on, so a run of headers
+// never re-reads it: every byte is examined once.
 func clippedBodyEnd(b []byte, from int, rejected *int) int {
-	end := from
+	end, prevWidth := from, 0
 	for end < len(b) {
-		nl := end
-		if b[nl] == '\r' {
-			nl++
-		}
-		if nl >= len(b) || b[nl] != '\n' {
+		sep := lineSeparator(b, end)
+		if sep == 0 {
 			break
 		}
-		lineStart := nl + 1
+		lineStart := end + sep
 		if lineStart == *rejected {
 			break
 		}
-		// `last`: nothing at all follows the line, not even a newline. A
-		// stream clipped mid-key ends that way; finished tool output ends
-		// with a newline, so a final short word ("done") is never taken.
-		lineEnd := bytes.IndexByte(b[lineStart:], '\n')
-		last := lineEnd < 0
-		if last {
-			lineEnd = len(b)
-		} else {
-			lineEnd += lineStart
+		lineEnd := lineStart
+		for lineEnd < len(b) && b[lineEnd] != '\n' && b[lineEnd] != '\\' {
+			lineEnd++
 		}
-		if !clippedBodyLine(bytes.TrimSpace(b[lineStart:lineEnd]), last) {
+		line := bytes.TrimSpace(b[lineStart:lineEnd])
+		if !clippedBodyLine(line, prevWidth, onlyTerminatorFollows(b[lineEnd:])) {
 			*rejected = lineStart
 			break
 		}
+		prevWidth = len(line)
 		end = lineEnd
 	}
 	return end
 }
 
-func clippedBodyLine(line []byte, last bool) bool {
+// lineSeparator is the width of the line separator at b[at]: a real LF or
+// CRLF, or the escaped `\n` / `\r\n` of a JSON string; 0 if none.
+func lineSeparator(b []byte, at int) int {
+	switch {
+	case b[at] == '\n':
+		return 1
+	case b[at] == '\r' && at+1 < len(b) && b[at+1] == '\n':
+		return 2
+	case b[at] == '\\' && at+1 < len(b) && b[at+1] == 'n':
+		return 2
+	case b[at] == '\\' && at+3 < len(b) && b[at+1] == 'r' && b[at+2] == '\\' && b[at+3] == 'n':
+		return 4
+	}
+	return 0
+}
+
+// onlyTerminatorFollows: nothing after the line but at most one terminator.
+// A stream clipped mid-key ends on its remainder; finished tool output ends
+// with a newline; either way the remainder is the last thing in the text.
+func onlyTerminatorFollows(rest []byte) bool {
+	return len(rest) == 0 || string(rest) == "\n" || string(rest) == "\r\n"
+}
+
+// clippedBodyLine: a short remainder counts only after a line of a standard
+// PEM wrap width (RFC 7468 64, OpenSSH 70, MIME 76) and at a base64 length
+// (a multiple of 4), so a final short word after an unwrapped body ("next")
+// is never taken.
+func clippedBodyLine(line []byte, prevWidth int, last bool) bool {
 	if len(line) == 0 || bytes.HasPrefix(line, []byte("Proc-Type:")) || bytes.HasPrefix(line, []byte("DEK-Info:")) {
 		return true
 	}
@@ -618,7 +641,10 @@ func clippedBodyLine(line []byte, last bool) bool {
 			return false
 		}
 	}
-	return len(line) >= 16 || last
+	if len(line) >= 16 {
+		return true
+	}
+	return last && len(line)%4 == 0 && (prevWidth == 64 || prevWidth == 70 || prevWidth == 76)
 }
 
 // dropCutKeyBody handles a window whose cut landed inside a PEM body whose
