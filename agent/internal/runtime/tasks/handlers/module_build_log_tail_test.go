@@ -447,7 +447,7 @@ const fastEnough = 5 * time.Second // a quadratic pass measured 49-65 s on these
 
 // wantBlockSpanBound mirrors the contract: a header whose nearest footer is
 // further away than this is clipped, not paired (pemBlockMaxSpan).
-const wantBlockSpanBound = 32 << 10
+const wantBlockSpanBound = 128 << 10
 
 func timedLogTail(t *testing.T, stdout, stderr []byte) string {
 	t.Helper()
@@ -489,20 +489,22 @@ func TestLogTail_ManyHeaderMentionsWithoutFooterIsLinear(t *testing.T) {
 }
 
 func TestLogTail_HeaderMentionThenFarFooterKeepsTheDiagnosticsBetween(t *testing.T) {
-	// A mention, 40 KiB of lint output, then an unrelated footer line: beyond
-	// the span bound the mention is treated as clipped, nothing between is
-	// lost and the lone footer line stays as the text it is.
-	between := filler("lint", 1000)
+	// A mention, then more lint output than the span bound, then an
+	// unrelated footer line: the mention is treated as clipped, nothing
+	// between is lost and the lone footer line stays as the text it is.
+	// (Through removeKeyBlocks directly: the stream is wider than any window.)
+	between := filler("lint", 3400)
 	if len(between) <= wantBlockSpanBound {
 		t.Fatalf("fixture: %d bytes between is not past the bound", len(between))
 	}
-	stderr := "finding 1: -----BEGIN RSA PRIVATE KEY-----\n" + between + "finding 2: -----END RSA PRIVATE KEY-----\nsummary\n"
-	tail := timedLogTail(t, []byte(`{"ok":false}`), []byte(stderr))
-	if !strings.HasPrefix(tail, "stdout: {\"ok\":false}\nstderr: finding 1: "+wantKeyBlockMarker+"\nlint line 0 of ordinary build output\n") {
-		t.Fatalf("got head:\n%.300s", tail)
+	in := "finding 1: -----BEGIN RSA PRIVATE KEY-----\n" + between + "finding 2: -----END RSA PRIVATE KEY-----\nsummary\n"
+	start := time.Now()
+	out := string(removeKeyBlocks([]byte(in)))
+	if took := time.Since(start); took > fastEnough {
+		t.Fatalf("removeKeyBlocks took %s", took)
 	}
-	if !strings.HasSuffix(tail, "lint line 999 of ordinary build output\nfinding 2: -----END RSA PRIVATE KEY-----\nsummary") {
-		t.Fatalf("got tail end:\n%.300s", tail[len(tail)-300:])
+	if want := "finding 1: " + wantKeyBlockMarker + "\n" + between + "finding 2: -----END RSA PRIVATE KEY-----\nsummary\n"; out != want {
+		t.Fatalf("got head:\n%.200s\n...tail:\n%.200s", out, out[len(out)-200:])
 	}
 }
 
@@ -680,6 +682,105 @@ func TestLogTail_CutInsideA76ColumnBase64BlobIsTheAcceptedOverRedaction(t *testi
 
 func BenchmarkLogTail_CosignMentionsNoFooter6400(b *testing.B) {
 	stderr := cosignMentionStream(6400, 22) // ~6.3 MB, critic A's prototype target: 24 ms
+	b.SetBytes(int64(len(stderr)))
+	for b.Loop() {
+		_ = logTail([]byte(`{"ok":false}`), stderr)
+	}
+}
+
+// ---- round 3 (critic B L1, L2): a real key whose span exceeds the old
+// 32 KiB bound and cannot be clipped; four-dash END banners in the fallback.
+
+func TestLogTail_LargeKeyBeyond32KiBIsRemovedWhole(t *testing.T) {
+	body := syntheticPEMBodyBytes(t, 71, 200*48) // RSA-16384-sized: 200 lines of 64
+	probe := body[len(body)-3]
+	t.Run("RSA-16384 with a 105-char per-line prefix", func(t *testing.T) {
+		prefix := "2026-09-30T12:00:00.000000Z builder[module-forge] stage=3 step=sign worker=7 attempt=2 line=" + strings.Repeat("x", 15) + " "
+		if len(prefix) < 105 {
+			t.Fatalf("fixture: prefix is %d chars, want >= 105", len(prefix))
+		}
+		var in strings.Builder
+		in.WriteString(prefix + "-----BEGIN RSA PRIVATE KEY-----\n")
+		for _, l := range body {
+			in.WriteString(prefix + l + "\n")
+		}
+		in.WriteString(prefix + "-----END RSA PRIVATE KEY-----\n" + prefix + "signed\n")
+		if in.Len() <= 32<<10 {
+			t.Fatalf("fixture: %d bytes does not exceed 32 KiB", in.Len())
+		}
+		out := string(removeKeyBlocks([]byte(in.String())))
+		if strings.Contains(out, probe) || strings.Contains(out, "-----END") {
+			t.Fatalf("a real key beyond 32 KiB leaked whole (%d bytes)", in.Len())
+		}
+		if want := prefix + wantKeyBlockMarker + "\n" + prefix + "signed\n"; out != want {
+			t.Fatalf("got:\n%.300s", out)
+		}
+	})
+	t.Run("PGP private key block over 32 KiB with an armor header", func(t *testing.T) {
+		big := syntheticPEMBodyBytes(t, 72, 640*48) // ~41 KB of body
+		in := "export:\n-----BEGIN PGP PRIVATE KEY BLOCK-----\nComment: exported\n\n" + strings.Join(big, "\n") + "\n=abcd\n-----END PGP PRIVATE KEY BLOCK-----\ndone\n"
+		if len(in) <= 32<<10 {
+			t.Fatalf("fixture: %d bytes does not exceed 32 KiB", len(in))
+		}
+		out := string(removeKeyBlocks([]byte(in)))
+		if strings.Contains(out, big[len(big)-3]) || strings.Contains(out, "-----END") {
+			t.Fatalf("a PGP block beyond 32 KiB leaked whole")
+		}
+		if want := "export:\n" + wantKeyBlockMarker + "\ndone\n"; out != want {
+			t.Fatalf("got:\n%.300s", out)
+		}
+	})
+}
+
+func TestLogTail_FourDashBannersInACutWindowAreUntouched(t *testing.T) {
+	for _, first := range []string{
+		"ated\n---- END OF BUILD LOG ----\n",
+		"---- END 2 ----\n",
+	} {
+		t.Run(strings.Fields(first)[0], func(t *testing.T) {
+			var window strings.Builder
+			window.WriteString(first + "summary\n")
+			for window.Len() < logTailMaxBytes {
+				window.WriteString("npm WARN deprecated foo@1.2.3: use bar instead\n")
+			}
+			w := window.String()[:logTailMaxBytes]
+			tail := logTail([]byte("cut here "+w), []byte("ok"))
+			if want := "stdout: " + strings.TrimSpace(w) + "\nstderr: ok"; tail != want {
+				t.Fatalf("a banner was taken for a footer, got:\n%.200s", tail)
+			}
+		})
+	}
+}
+
+func TestLogTail_HeadlessSSH2BodyIsStillStrippedThroughItsFooter(t *testing.T) {
+	body := syntheticPEMBodyBytes(t, 73, 60*48)
+	probe := body[len(body)-3]
+	after := filler("npm notice", 25) + `{"ok":true}` + "\n"
+	stdout := []byte(strings.Join(body, "\n") + "\n---- END SSH2 ENCRYPTED PRIVATE KEY ----\n" + after)
+	requireCutInsideBody(t, stdout, logTailMaxBytes, probe)
+	tail := logTail(stdout, []byte("ok"))
+	if want := "stdout: " + wantKeyBodyMarker + "\n" + strings.TrimSpace(after) + "\nstderr: ok"; tail != want {
+		t.Fatalf("got:\n%.300s", tail)
+	}
+}
+
+func BenchmarkLogTail_8MiBHeaderLinesNoFooter(b *testing.B) {
+	line := "-----BEGIN RSA PRIVATE KEY-----\n"
+	stderr := []byte(strings.Repeat(line, (8<<20)/len(line)))
+	b.SetBytes(int64(len(stderr)))
+	for b.Loop() {
+		_ = logTail([]byte(`{"ok":false}`), stderr)
+	}
+}
+
+func BenchmarkLogTail_8MiBHeaderEvery33KiBOneFarFooter(b *testing.B) {
+	var s strings.Builder
+	chunk := filler("stage", 760) // ~33 KiB
+	for s.Len() < 8<<20 {
+		s.WriteString("-----BEGIN RSA PRIVATE KEY-----\n" + chunk)
+	}
+	s.WriteString("-----END RSA PRIVATE KEY-----\n")
+	stderr := []byte(s.String())
 	b.SetBytes(int64(len(stderr)))
 	for b.Loop() {
 		_ = logTail([]byte(`{"ok":false}`), stderr)
