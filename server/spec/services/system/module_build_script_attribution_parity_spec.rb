@@ -21,7 +21,7 @@ RSpec.describe "stage15 arm reader parity (Ruby planner vs stage15-arm.py)" do
   def py(script, *args, list: nil)
     argv = []
     if list
-      @list_file ||= Tempfile.create([ "needs-parent", ".sh" ]).tap { |f| f.write(list); f.flush }
+      @list_file ||= Tempfile.create([ "needs-parent", ".sh" ], binmode: true).tap { |f| f.write(list.b); f.flush }
       argv += [ "--needs-parent-modules", @list_file.path ]
     end
     out, err, status = Open3.capture3("python3", "#{scripts_dir}/stage15-arm.py", *argv, *args, stdin_data: script, binmode: true)
@@ -135,7 +135,10 @@ RSpec.describe "stage15 arm reader parity (Ruby planner vs stage15-arm.py)" do
       "two blocks" => ->(b, d) { b + d + b },
       "BEGIN inside an arm" => ->(_b, d) { d.sub("    echo a\n", "    # --- BEGIN needs-parent shared block ---\n    echo a\n    # --- END needs-parent shared block ---\n") },
       "BEGIN inside a non-dispatch case" => ->(_b, d) { "case \"$X\" in\n  1)\n    # --- BEGIN needs-parent shared block ---\n    ;;\nesac\n# --- END needs-parent shared block ---\n" + d },
-      "list with a non-slug token" => ->(b, d) { b + d }
+      "list with a non-slug token" => ->(b, d) { b + d },
+      # a MODULE dispatch opened inside the block would put its arms in the arm's
+      # slug AND every listed module; the block's own `case "$host"` stays fine
+      "MODULE dispatch opened inside the block" => ->(b, d) { b.sub("fi\n# --- END", "fi\ncase \"$MODULE\" in\n  z) echo x ;;\nesac\n# --- END") + d }
     }.each do |name, build|
       it "agrees on #{name}" do
         script = build.call(block, dispatch)
@@ -155,6 +158,37 @@ RSpec.describe "stage15 arm reader parity (Ruby planner vs stage15-arm.py)" do
     it "agrees that a block with no list is unreadable" do
       expect(py_slugs(block + dispatch)).to eq(2)
       expect(rb_slugs(block + dispatch)).to eq(2)
+    end
+
+    it "agrees that a MODULE dispatch opened inside the block is unreadable" do
+      script = block.sub("fi\n# --- END", "fi\ncase \"$MODULE\" in\n  z) echo x ;;\nesac\n# --- END") + dispatch
+      expect(script).not_to eq(block + dispatch)
+      expect(py_slugs(script, list: list)).to eq(2)
+      expect(rb_slugs(script, list: list)).to eq(2)
+    end
+
+    # The list's own shape: both readers take the FIRST NEEDS_PARENT_MODULES
+    # line where bash sourcing takes the LAST, so a second line is refused; bash
+    # splits the list on IFS (space, tab, newline) only, so any other separator
+    # is refused; an invalid byte is a ParseError on both sides, not an
+    # encoding error on one.
+    {
+      "a second NEEDS_PARENT_MODULES line" => "NEEDS_PARENT_MODULES=\"\na\nz\n\"\nNEEDS_PARENT_MODULES=\"\na\n\"\n",
+      "CRLF separators" => "NEEDS_PARENT_MODULES=\"\r\na\r\nz\r\n\"\n",
+      "a vertical-tab separator" => "NEEDS_PARENT_MODULES=\"\va\vz\v\"\n",
+      "a form-feed separator" => "NEEDS_PARENT_MODULES=\"\fa\fz\f\"\n",
+      "an invalid UTF-8 byte between two slugs" => "NEEDS_PARENT_MODULES=\"\na\xa0z\n\"\n"
+    }.each do |name, bad_list|
+      it "agrees that a list with #{name} is unreadable" do
+        expect(py_slugs(block + dispatch, list: bad_list)).to eq(2)
+        expect(rb_slugs(block + dispatch, list: bad_list)).to eq(2)
+      end
+    end
+
+    it "agrees that a tab-and-space separated list reads like a newline one (bash IFS)" do
+      spaced = "NEEDS_PARENT_MODULES=\"a \tz\"\n"
+      expect(py_slugs(block + dispatch, list: spaced)).to eq(%w[a b z])
+      expect(rb_slugs(block + dispatch, list: spaced)).to eq(%w[a b z])
     end
 
     it "agrees that a listed slug with no arm still owns the block" do

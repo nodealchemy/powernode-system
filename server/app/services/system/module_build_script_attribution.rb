@@ -137,10 +137,20 @@ module System
       def needs_parent_modules(text)
         return nil if text.nil?
 
-        m = text.match(NEEDS_PARENT_LIST_RX)
-        raise ParseError, "needs-parent-modules.sh has no NEEDS_PARENT_MODULES=\"...\" list" unless m
+        # Bytes, not characters: an invalid byte in the file is a non-slug token
+        # (a ParseError like any other), never an encoding error on this side
+        # alone — stage15-arm.py reads the same file as latin-1.
+        text = text.b
+        lists = text.scan(NEEDS_PARENT_LIST_RX)
+        raise ParseError, "needs-parent-modules.sh has no NEEDS_PARENT_MODULES=\"...\" list" if lists.empty?
+        # Both readers take the first definition; bash sourcing takes the last.
+        # Two definitions could fold the block into one set of modules while
+        # module_needs_parent() answers for another, so the file is refused.
+        raise ParseError, "needs-parent-modules.sh defines NEEDS_PARENT_MODULES more than once" if lists.size > 1
 
-        slugs = m[1].split
+        # Split exactly as bash's default IFS word-splits the list — space, tab,
+        # newline — so any other separator stays glued to a slug and is refused.
+        slugs = lists[0][0].split(/[ \t\n]+/).reject(&:empty?)
         slugs.each do |slug|
           raise ParseError, "needs-parent list entry #{slug.inspect} is not a module slug" unless slug.match?(LITERAL_SLUG_RX)
         end
@@ -159,7 +169,7 @@ module System
       # @param text [String, nil]
       # @return [Array<String>, nil]
       def base_needs_parent_modules(text)
-        return nil if text.nil? || !text.match?(NEEDS_PARENT_LIST_RX)
+        return nil if text.nil? || !text.b.match?(NEEDS_PARENT_LIST_RX)
 
         needs_parent_modules(text)
       end
@@ -216,6 +226,10 @@ module System
           if (m = line.match(CASE_OPEN_RX))
             unless m[2].match?(/\besac\b/) # a one-line `case ... esac` never opens a block
               module_dispatch = stack.empty? && m[1].match?(MODULE_SCRUTINEE_RX)
+              # A dispatch inside the block would put its arms in the arm's slug
+              # AND every listed module; the block's own non-MODULE cases are fine.
+              raise ParseError, "a `case \"$MODULE\" in` dispatch opens inside the needs-parent shared block" if module_dispatch && block
+
               stack.push(module_dispatch)
             end
             current[:text] << raw if current

@@ -121,6 +121,30 @@ RSpec.describe System::ModuleBuildScriptAttribution do
       expect { described_class.needs_parent_modules("NEEDS_PARENT_MODULES=\"\nhub-backend\n$(x)\n\"\n") }
         .to raise_error(described_class::ParseError)
     end
+
+    # Both readers take the FIRST NEEDS_PARENT_MODULES line; bash sourcing takes
+    # the LAST. A second line would let the hash fold the block into one set
+    # while module_needs_parent() answers for another — a needs-parent module
+    # could then hash without its core ref and skip. Refuse the file.
+    it "raises ParseError when NEEDS_PARENT_MODULES is defined more than once" do
+      twice = needs_parent_sh + "NEEDS_PARENT_MODULES=\"\nhub-backend\n\"\n"
+      expect { described_class.needs_parent_modules(twice) }
+        .to raise_error(described_class::ParseError, /more than once/)
+    end
+
+    it "raises ParseError, not ArgumentError, on an invalid UTF-8 byte between two slugs" do
+      expect { described_class.needs_parent_modules("NEEDS_PARENT_MODULES=\"\nhub-backend\xa0hub-worker\n\"\n") }
+        .to raise_error(described_class::ParseError)
+    end
+
+    # bash word-splits the list on IFS — space, tab, newline — and nothing else,
+    # so a \r, \v or \f is part of a slug to bash and must be refused here too.
+    it "raises ParseError on a separator bash's IFS would not split on" do
+      [ "\r\n", "\v", "\f" ].each do |sep|
+        expect { described_class.needs_parent_modules("NEEDS_PARENT_MODULES=\"#{sep}hub-backend#{sep}hub-worker#{sep}\"\n") }
+          .to raise_error(described_class::ParseError), "separator #{sep.inspect} was accepted"
+      end
+    end
   end
 
   describe ".parse" do
@@ -176,6 +200,18 @@ RSpec.describe System::ModuleBuildScriptAttribution do
       inside = head_with("    rsync -a /tmp/parent/server/", "    # --- BEGIN needs-parent shared block ---\n    rsync -a /tmp/parent/server/")
       expect { described_class.parse(inside, needs_parent: needs_parent) }
         .to raise_error(described_class::ParseError, /shared block/)
+    end
+
+    # A dispatch opened inside the block would put its arms in BOTH the arm's
+    # slug and every listed module's text, so an edit to such an arm would move
+    # the needs-parent modules as well. The block's own non-dispatch case
+    # (`case "$parent_host"` in the fixture) stays accepted.
+    it "raises ParseError on a `case \"$MODULE\" in` dispatch opened inside the shared block" do
+      inside = head_with("  bash \"$SCRIPT_DIR/parent-info.sh\" > /tmp/parent-build-info.json\n",
+                         "  bash \"$SCRIPT_DIR/parent-info.sh\" > /tmp/parent-build-info.json\n" \
+                         "  case \"$MODULE\" in\n    vault) echo x ;;\n  esac\n")
+      expect { described_class.parse(inside, needs_parent: needs_parent) }
+        .to raise_error(described_class::ParseError, /dispatch.*shared block/)
     end
 
     it "does not read a marker inside a heredoc body as a marker" do
@@ -493,6 +529,23 @@ RSpec.describe System::ModuleBuildScriptAttribution do
       expect(block).to include("git clone --depth 1 \"$clone_url\" /tmp/parent\n")
       expect(block).to include("> /tmp/parent-build-info.json\n")
       expect(block).to end_with("fi\n# --- END needs-parent shared block ---\n")
+    end
+
+    # The straddling range (base before the list and markers, head after) with
+    # an ordinary arm edit in it: the old reader attributed the vault edit, and
+    # that must survive the base's pre-list file shape.
+    it "attributes a vault arm edit in the range that introduces the list to vault plus the four" do
+      pre_block = real.gsub(/^# --- (BEGIN|END) needs-parent shared block ---\n/, "")
+      expect(pre_block).not_to eq(real)
+      pre_list = "#!/usr/bin/env bash\nmodule_needs_parent() {\n  case \"${1:-}\" in\n" \
+                 "    powernode-hub-backend|powernode-hub-worker|powernode-hub-frontend|powernode-extension-system) return 0 ;;\n" \
+                 "    *) return 1 ;;\n  esac\n}\n"
+      head = real.sub("amd64) VAULT_ARCH=amd64; ", "amd64) VAULT_ARCH=amd64; VAULT_EDITED=1; ")
+      expect(head).not_to eq(real)
+
+      expect(attribute(head, changed: [ "scripts/module-build/stage15.sh", "scripts/module-build/needs-parent-modules.sh" ],
+                             base: pre_block, base_list: pre_list, head_list: real_list))
+        .to match_array(real_needs_parent + [ "vault" ])
     end
 
     it "attributes an edit outside the block and every arm to nothing" do

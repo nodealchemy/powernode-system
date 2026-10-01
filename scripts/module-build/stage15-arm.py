@@ -97,13 +97,18 @@ def needs_parent_modules(text):
     """The slugs needs-parent-modules.sh lists, in file order; None for no text."""
     if text is None:
         return None
-    m = NEEDS_PARENT_LIST_RX.search(text)
-    if not m:
+    lists = NEEDS_PARENT_LIST_RX.findall(text)
+    if not lists:
         raise ParseError('needs-parent-modules.sh has no NEEDS_PARENT_MODULES="..." list')
-    # Split on the same ASCII whitespace Ruby's String#split uses -- str.split()
-    # on latin-1 text would also split on \x1c-\x1f, \x85 and \xa0, which the
-    # planner's reader rejects as part of a non-slug token.
-    slugs = [s for s in re.split("[" + WS + "]+", m.group(1)) if s]
+    # Both readers take the first definition; bash sourcing takes the last. Two
+    # definitions could fold the block into one set of modules while
+    # module_needs_parent() answers for another, so the file is refused.
+    if len(lists) > 1:
+        raise ParseError("needs-parent-modules.sh defines NEEDS_PARENT_MODULES more than once")
+    # Split exactly as bash's default IFS word-splits the list -- space, tab,
+    # newline -- so any other separator stays glued to a slug and is refused
+    # (str.split() would also split on \r, \v, \f, \x1c-\x1f, \x85 and \xa0).
+    slugs = [s for s in re.split("[ \t\n]+", lists[0]) if s]
     for s in slugs:
         if not LITERAL_SLUG_RX.fullmatch(s):
             raise ParseError("needs-parent list entry %r is not a module slug" % s)
@@ -159,7 +164,12 @@ def parse(script, needs_parent=None):
         m = CASE_OPEN_RX.fullmatch(line)
         if m:
             if not ESAC_WORD_RX.search(m.group(2)):
-                stack.append(not stack and MODULE_SCRUTINEE_RX.fullmatch(m.group(1)) is not None)
+                module_dispatch = not stack and MODULE_SCRUTINEE_RX.fullmatch(m.group(1)) is not None
+                # A dispatch inside the block would put its arms in the arm's slug
+                # AND every listed module; the block's own non-MODULE cases are fine.
+                if module_dispatch and block is not None:
+                    raise ParseError('a `case "$MODULE" in` dispatch opens inside the needs-parent shared block')
+                stack.append(module_dispatch)
             if current is not None:
                 current["text"].append(raw)
         elif ESAC_RX.match(line):
