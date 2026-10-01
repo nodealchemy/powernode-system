@@ -37,7 +37,10 @@ module System
     # (package_origin/no_manifest/unknown_module, each with :module/:reason
     # /:detail). nil for the gitea no-op branch (no plan was ever computed)
     # and for a failure result; [] for a dispatch that excluded nothing.
-    Result = Struct.new(:ok?, :mode, :dispatched, :shadow, :batch, :excluded, :error, keyword_init: true)
+    # withheld: (IMP-469117835ccb) the planner's withheld_regressions for this
+    # dispatch — same shape as PlanResult#withheld_regressions and
+    # create_for's withheld:; nil/[] on the same terms as excluded.
+    Result = Struct.new(:ok?, :mode, :dispatched, :shadow, :batch, :excluded, :withheld, :error, keyword_init: true)
 
     NATIVE_TAG_PREFIX = "native-"
 
@@ -88,7 +91,8 @@ module System
       batch = ::System::ModuleBuildBatch.create_for(
         account: @account, plan: plan, trigger: "push",
         base_sha: base_sha, head_sha: head_sha, shadow: shadow, source_repo: source_repo,
-        excluded: planned.excluded, attribution_fallback: planned.attribution_fallback
+        excluded: planned.excluded, attribution_fallback: planned.attribution_fallback,
+        withheld: Array(planned.withheld_regressions)
       )
 
       summary = ::System::NativeModuleBuildOrchestrator.dispatch!(batch: batch)
@@ -109,7 +113,7 @@ module System
       end
 
       Result.new(ok?: true, mode: mode, dispatched: true, shadow: shadow, batch: batch,
-                 excluded: planned.excluded, error: refusal)
+                 excluded: planned.excluded, withheld: Array(planned.withheld_regressions), error: refusal)
     end
 
     def failure(message, mode: nil)

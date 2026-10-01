@@ -12,13 +12,14 @@ RSpec.describe System::ModuleBuildTriggerService do
   # imp b9e3e05a5119 (observability follow-up) — the trigger service now
   # calls .plan_with_diagnostics (not the bare .plan) so it can thread
   # excluded modules through to its Result and the persisted batch.
-  def stub_plan(modules:, source_repo: nil, excluded: [])
+  def stub_plan(modules:, source_repo: nil, excluded: [], withheld: [])
     allow(::System::ModuleBuildPlannerService).to receive(:plan_with_diagnostics)
       .with(base_sha: "base0000", head_sha: "headsha1234567", force_all: false, source_repo: source_repo)
       .and_return(
         ::System::ModuleBuildPlannerService::PlanResult.new(
           entries: modules.map { |m| { module: m, oci_ref: "headsha1" } },
-          excluded: excluded
+          excluded: excluded,
+          withheld_regressions: withheld
         )
       )
   end
@@ -228,6 +229,30 @@ RSpec.describe System::ModuleBuildTriggerService do
           "package_module_link_id" => "link-1" }
       )
       expect(result.batch.metadata["excluded_count"]).to eq(1)
+    end
+
+    # IMP-469117835ccb — the push webhook is the one automated dispatch path;
+    # a withheld source regression that reached only the MCP caller would be
+    # invisible on exactly the batches nobody was watching.
+    it "threads the planner's withheld regressions through to the Result and persists them on the batch" do
+      SiteSetting.set("system.module_builds.mode", "native")
+      withheld = [
+        { module: "powernode-extension-system", reason: "source_regression", detail: "core pins ... behind ...",
+          pinned_sha: "c" * 40, published_sha: "d" * 40, published_version_number: 132 }
+      ]
+      stub_plan(modules: %w[mod-a], source_repo: "powernode/powernode-platform", withheld: withheld)
+      stub_dispatch!
+
+      result = described_class.trigger!(base_sha: "base0000", head_sha: "headsha1234567",
+                                        source_repo: "powernode/powernode-platform")
+
+      expect(result.withheld).to eq(withheld)
+      expect(result.batch.metadata["withheld_regressions"]).to contain_exactly(
+        { "module" => "powernode-extension-system", "reason" => "source_regression",
+          "detail" => "core pins ... behind ...", "pinned_sha" => "c" * 40, "published_sha" => "d" * 40,
+          "published_version_number" => 132 }
+      )
+      expect(result.batch.metadata["withheld_regressions_count"]).to eq(1)
     end
 
     it "threads exclusions through in dual mode too, without touching their reasons" do

@@ -174,16 +174,29 @@ module System
     # it could not read the build scripts and planned module-forge only for
     # that change — kept here so the batch itself says it may have dropped
     # modules. Omitted when nil, so a clean plan's metadata is unchanged.
+    # withheld: (IMP-469117835ccb) the planner's withheld_regressions —
+    # extension-sourced modules a core range would have built from a commit
+    # behind their current published version (or whose ancestry could not be
+    # established), each { module:, reason:, detail:, pinned_sha:,
+    # published_sha:, published_version_number: }. Recorded like excluded —
+    # sampled, with withheld_regressions_count as the true total, omitted when
+    # empty — so the batch itself says what it did NOT rebuild and why, not only
+    # the caller that happened to dispatch it.
     def self.create_for(account:, plan:, trigger:, base_sha:, head_sha:, shadow: false, source_repo: nil, excluded: [],
-                        selection: nil, attribution_fallback: nil)
+                        selection: nil, attribution_fallback: nil, withheld: [])
       plan_array = Array(plan)
       excluded_array = Array(excluded)
+      withheld_array = Array(withheld)
       metadata = { "plan" => plan_array.map { |p| plan_entry_metadata(p) } }
       metadata["source_repo"] = source_repo.to_s if source_repo.present?
       metadata["attribution_fallback"] = attribution_fallback.to_s if attribution_fallback.present?
       if excluded_array.any?
         metadata["excluded"] = excluded_array.first(EXCLUDED_METADATA_SAMPLE_LIMIT).map { |e| excluded_entry_metadata(e) }
         metadata["excluded_count"] = excluded_array.size
+      end
+      if withheld_array.any?
+        metadata["withheld_regressions"] = withheld_array.first(EXCLUDED_METADATA_SAMPLE_LIMIT).map { |w| withheld_entry_metadata(w) }
+        metadata["withheld_regressions_count"] = withheld_array.size
       end
       metadata["selection"] = selection_metadata(selection) if selection
       create!(
@@ -241,6 +254,22 @@ module System
       row
     end
     private_class_method :excluded_entry_metadata
+
+    # Stringifies a planner withheld-regression entry for JSONB storage. The two
+    # shas and the version number are nil when the ancestry question could not
+    # be answered that far (see the planner's undetermined reason); they are
+    # kept as nil rather than dropped so the row's shape is fixed.
+    def self.withheld_entry_metadata(entry)
+      {
+        "module"                   => entry[:module].to_s,
+        "reason"                   => entry[:reason].to_s,
+        "detail"                   => entry[:detail].to_s,
+        "pinned_sha"               => entry[:pinned_sha].presence,
+        "published_sha"            => entry[:published_sha].presence,
+        "published_version_number" => entry[:published_version_number]
+      }
+    end
+    private_class_method :withheld_entry_metadata
 
     # === Instance methods ===
 

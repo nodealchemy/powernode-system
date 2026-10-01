@@ -270,6 +270,33 @@ RSpec.describe System::ModuleBuildBatch, type: :model do
       expect(batch.metadata["excluded_count"]).to eq(limit + 5)
     end
 
+    # IMP-469117835ccb — a withheld source regression is recorded on the batch
+    # the same way exclusions are: sampled, counted, omitted when empty, with
+    # the shas kept as explicit nils when the planner could not read that far.
+    it "persists withheld source regressions + their count when supplied, and omits both otherwise" do
+      withheld = [
+        { module: "powernode-extension-system", reason: "source_regression", detail: "behind by 4",
+          pinned_sha: "c" * 40, published_sha: "d" * 40, published_version_number: 132 },
+        { module: "powernode-extension-system", reason: "source_ancestry_undetermined", detail: "gitlink unreadable",
+          pinned_sha: nil, published_sha: nil, published_version_number: 132 }
+      ]
+
+      with_withheld = described_class.create_for(account: account, plan: plan, trigger: "manual",
+                                                   base_sha: "a", head_sha: "b", withheld: withheld)
+      without = described_class.create_for(account: account, plan: plan, trigger: "manual", base_sha: "a", head_sha: "b")
+
+      expect(with_withheld.metadata["withheld_regressions"]).to eq([
+        { "module" => "powernode-extension-system", "reason" => "source_regression", "detail" => "behind by 4",
+          "pinned_sha" => "c" * 40, "published_sha" => "d" * 40, "published_version_number" => 132 },
+        { "module" => "powernode-extension-system", "reason" => "source_ancestry_undetermined",
+          "detail" => "gitlink unreadable", "pinned_sha" => nil, "published_sha" => nil,
+          "published_version_number" => 132 }
+      ])
+      expect(with_withheld.metadata["withheld_regressions_count"]).to eq(2)
+      expect(without.metadata).not_to have_key("withheld_regressions")
+      expect(without.metadata).not_to have_key("withheld_regressions_count")
+    end
+
     # Campaign 019f5885 inc10 — dual-run shadow mode.
     it "defaults shadow to false, preserving every pre-inc10 caller" do
       batch = described_class.create_for(account: account, plan: plan, trigger: "manual", base_sha: "a", head_sha: "b")

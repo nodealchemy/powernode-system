@@ -51,7 +51,15 @@ module System
     # one line saying why it did not and that the build-script change planned
     # BUILD_SCRIPTS_FORCED_MODULE only (IMP-c19b10a942d7) — the caller must be
     # able to see a plan that dropped modules, not only the log.
-    PlanResult = Struct.new(:entries, :excluded, :withheld_dependents, :attribution_fallback, keyword_init: true)
+    #
+    # withheld_regressions (IMP-469117835ccb): extension-sourced modules a CORE
+    # range would have built from a commit BEHIND the one their current
+    # published version was built from — each { module:, reason:, detail:,
+    # pinned_sha:, published_sha:, published_version_number: }. Reported the
+    # way withheld_dependents is, never dropped silently; [] for every plan
+    # that regresses nothing (including every manifest-repo plan).
+    PlanResult = Struct.new(:entries, :excluded, :withheld_dependents, :attribution_fallback, :withheld_regressions,
+                            keyword_init: true)
 
     # Exclusion reasons (machine-readable; the accompanying :detail is prose).
     #
@@ -242,6 +250,52 @@ module System
       %r{\Aextensions/system(/|\z)}  => "powernode-extension-system"
     }.freeze
 
+    # === Extension source-regression guard (IMP-469117835ccb) ===
+    #
+    # Core submodule gitlink path -> the module whose CONTENT comes from that
+    # submodule's repo, not from core. For such a module a core range names the
+    # commit it should ship only indirectly: through the pointer core pins at
+    # head_sha. That pointer can lag what the extension repo has already
+    # published — the incident: a core-only range pinned extensions/system four
+    # commits BEHIND the commit the live powernode-extension-system version had
+    # been built from, and nothing compared the two. Publishing would have
+    # rolled the fleet back by those four commits with every checkpoint green.
+    #
+    # Core-content modules (hub-backend/worker/frontend) are deliberately NOT
+    # here: their source commit IS head_sha, so the range names it directly.
+    CORE_SUBMODULE_MODULES = { "extensions/system" => MANIFEST_EXTENSION_MODULE }.freeze
+
+    # Withheld reasons (machine-readable; :detail is prose that names the remedy).
+    #
+    #   source_regression — the pinned commit is a STRICT ANCESTOR of the commit
+    #     the module's current published version was built from.
+    #   source_ancestry_undetermined — the question could not be answered: the
+    #     gitlink was unreadable at head_sha, the live artifact carries no
+    #     recorded source commit (or its manifest could not be fetched), or the
+    #     extension-repo compare failed. FAIL-CLOSED: withheld rather than built,
+    #     because the one outcome this guard exists to prevent is indistinguishable
+    #     from a good build at every later checkpoint, and the cost of withholding
+    #     is bounded (the fleet keeps what it has; an extension-range dispatch
+    #     rebuilds the module deliberately). The ONLY silent outcome is "no
+    #     published version" — there is nothing to regress.
+    WITHHELD_SOURCE_REGRESSION            = "source_regression"
+    WITHHELD_SOURCE_ANCESTRY_UNDETERMINED = "source_ancestry_undetermined"
+
+    # The module-source commit push.sh stamps on every published artifact
+    # (--sha = BUILD_SHA, the commit the builder checked the module source out
+    # at). It is the ONLY record of that commit: NodeModuleVersion#artifacts
+    # never carries manifest annotations, and config["git_tag"] is the batch's
+    # head_sha prefix — a CORE sha for a core-sourced batch, which says nothing
+    # about the extension commit inside. Read through System::OciManifestClient,
+    # the same registry seam the orchestrator's stale re-tag guard uses.
+    SOURCE_SHA_ANNOTATION = "org.powernode.built_from_sha"
+
+    # A recorded source commit shorter than this is not an identity to compare
+    # against (git's own "reasonably unambiguous" abbreviation threshold, and the
+    # bar System::CoreProvenanceGate applies to its expectation).
+    SOURCE_SHA_RX = /\A[0-9a-f]{12,40}\z/
+    GITLINK_SHA_RX = /\A[0-9a-f]{40}\z/
+
     class << self
       # @param base_sha [String] the pre-push commit (diff base)
       # @param head_sha [String] the post-push commit (diff head) — also the
@@ -302,13 +356,17 @@ module System
       dirty = Set.new
       catch_all = force_all
       changed_file_count = 0
-      repo_full_name = nil
       unmapped_core = []
       build_script_paths = []
 
+      # Resolved OUTSIDE the diff branch: a force_all batch never diffs, but it
+      # still records metadata["source_repo"], the orchestrator still treats it
+      # as core-sourced, and the source-regression guard below must see it the
+      # same way.
+      repo_full_name = source_repo.presence || ci_build_source_repo
+      core_repo = core_source_repo?(repo_full_name)
+
       unless catch_all
-        repo_full_name = source_repo.presence || ci_build_source_repo
-        core_repo = core_source_repo?(repo_full_name)
         changed_paths = changed_paths_for(account, base_sha, head_sha, repo_full_name)
         changed_file_count = changed_paths.size
 
@@ -397,13 +455,21 @@ module System
         known: known, excluded: excluded, changed_file_count: changed_file_count
       )
 
+      # After the guards above (they reason about what the RANGE named) and
+      # after withheld_dependents (so a withheld module is reported once): a
+      # core range may not regress an extension-sourced module, allowlisted or
+      # not. Mutates closure.
+      regressions = core_repo ? withhold_source_regressions!(account, closure, head_sha, repo_full_name) : []
+      guard_against_fully_withheld_plan!(closure: closure, withheld: regressions)
+
       tag = head_sha.to_s[0, 7]
 
       PlanResult.new(
         entries: closure.sort.map { |slug| { module: slug, oci_ref: tag } },
         excluded: excluded,
         withheld_dependents: withheld,
-        attribution_fallback: @attribution_fallback
+        attribution_fallback: @attribution_fallback,
+        withheld_regressions: regressions
       )
     end
 
@@ -505,6 +571,187 @@ module System
       raise PlanningError, "#{empty_plan_summary(catch_all, candidates, known, changed_file_count)} " \
                            "(#{format_excluded(excluded)}) — refusing to report a successful build that " \
                            "would build nothing.#{retirement_hint(excluded)}"
+    end
+
+    # === Extension source-regression guard (IMP-469117835ccb) ===
+
+    # For each submodule-sourced module in the closure, decides whether the
+    # commit core pins it at (the gitlink at head_sha) is behind the commit its
+    # current published version was built from, and if so — or if that cannot
+    # be established — removes it from the closure and returns a withheld entry
+    # for it. The sibling modules are untouched: one regressed module is never
+    # a reason to refuse the rest of the batch.
+    def withhold_source_regressions!(account, closure, head_sha, core_repo_full_name)
+      CORE_SUBMODULE_MODULES.filter_map do |gitlink_path, slug|
+        next unless closure.include?(slug)
+
+        entry = source_regression_entry(account, slug, gitlink_path, head_sha, core_repo_full_name)
+        next unless entry
+
+        closure.delete(slug)
+        Rails.logger.warn("[ModuleBuildPlannerService] withheld #{slug} (#{entry[:reason]}): #{entry[:detail]}")
+        entry
+      end
+    end
+
+    # nil = build it. Every failure to answer the question becomes an
+    # undetermined entry HERE, inside this method: the planner's outer rescue
+    # turns an ApiError into a PlanningError, which would refuse the siblings.
+    def source_regression_entry(account, slug, gitlink_path, head_sha, core_repo_full_name)
+      node_module = ::System::NodeModule.find_by(account: account, name: slug)
+      current = node_module&.current_version
+      # Nothing to regress: the module has never been published.
+      return nil unless current&.published?
+
+      ext_repo = ci_build_source_repo
+      client = gitea_client_for(account)
+      core_owner, core_repo = core_repo_full_name.split("/", 2)
+      ext_owner, ext_name = ext_repo.split("/", 2)
+
+      pinned = submodule_pointer(client, core_owner, core_repo, gitlink_path, head_sha)
+      unless pinned[:sha]
+        return undetermined_entry(slug, current, ext_repo, pinned[:sha], nil,
+                                  "the #{gitlink_path} gitlink at #{head_sha.to_s[0, 12]} #{pinned[:problem]} " \
+                                  "(#{core_repo_full_name})")
+      end
+
+      published = published_source_sha(node_module, current)
+      unless published[:sha]
+        return undetermined_entry(slug, current, ext_repo, pinned[:sha], nil, published[:problem])
+      end
+
+      return nil if pinned[:sha] == published[:sha]
+
+      ancestry = ancestry_of(client, ext_owner, ext_name, pinned[:sha], published[:sha])
+      case ancestry[:relation]
+      when :behind
+        regression_entry(slug, current, ext_repo, pinned[:sha], published[:sha], ancestry[:by], gitlink_path, head_sha)
+      when :undetermined
+        undetermined_entry(slug, current, ext_repo, pinned[:sha], published[:sha], ancestry[:problem])
+      else
+        # :ahead — the normal forward move. :diverged — neither commit is the
+        # other's ancestor; not a rollback along the published line, so the
+        # directed guard lets it through, but say so.
+        if ancestry[:relation] == :diverged
+          Rails.logger.warn(
+            "[ModuleBuildPlannerService] #{slug}: core pins #{gitlink_path} at #{pinned[:sha][0, 12]}, which has " \
+            "DIVERGED from #{published[:sha][0, 12]} (v#{current.version_number}); building it as planned"
+          )
+        end
+        nil
+      end
+    rescue StandardError => e
+      # Never let an unanswered question propagate as a batch refusal, and never
+      # let it build either.
+      undetermined_entry(slug, current, ci_build_source_repo, nil, nil, "#{e.class}: #{e.message}")
+    end
+
+    # { sha: } or { sha: nil, problem: } — what core pins the submodule at. The
+    # Gitea contents API reports a gitlink as type "submodule" with sha = the
+    # pointed-at commit; anything else at that path is not a pointer.
+    def submodule_pointer(client, owner, repo, gitlink_path, head_sha)
+      content = client.get_file_content(owner, repo, gitlink_path, head_sha)
+      return { sha: nil, problem: "could not be read" } if content.nil?
+      return { sha: nil, problem: "is not a submodule gitlink (type #{content[:type].inspect})" } unless content[:type].to_s == "submodule"
+
+      sha = content[:sha].to_s.strip
+      return { sha: nil, problem: "carries no commit sha (#{content[:sha].inspect})" } unless GITLINK_SHA_RX.match?(sha)
+
+      { sha: sha }
+    rescue ::Devops::Git::ApiClient::ApiError => e
+      { sha: nil, problem: "could not be read: status #{e.status}" }
+    end
+
+    # { sha: } or { sha: nil, problem: } — the module-source commit the current
+    # published version was built from, read off its artifact's manifest.
+    def published_source_sha(node_module, current)
+      oci_ref = current.artifact.to_h["oci_ref"].presence
+      return { sha: nil, problem: "v#{current.version_number}'s artifact records no oci_ref to read" } unless oci_ref
+
+      lookup = ::System::OciManifestClient.lookup(node_module: node_module, oci_ref: oci_ref)
+      unless lookup.status == :found
+        return { sha: nil, problem: "the manifest of v#{current.version_number}'s artifact (#{oci_ref}) could not be " \
+                                    "read (#{lookup.status})" }
+      end
+
+      sha = lookup.manifest.annotations.to_h[SOURCE_SHA_ANNOTATION].to_s.strip
+      unless SOURCE_SHA_RX.match?(sha)
+        return { sha: nil, problem: "v#{current.version_number}'s artifact carries no #{SOURCE_SHA_ANNOTATION} " \
+                                    "annotation naming the commit it was built from (found #{sha.inspect})" }
+      end
+
+      { sha: sha }
+    end
+
+    # Which way pinned sits relative to published, through two Gitea compares
+    # (base...head lists the commits head has that base lacks):
+    #   :behind    — published has commits pinned lacks, and not vice versa:
+    #                pinned is a STRICT ANCESTOR; building it rolls back by :by.
+    #   :ahead     — the reverse: the normal forward move.
+    #   :diverged  — each has commits the other lacks.
+    #   :undetermined — a compare failed, or both read empty for two different
+    #                shas (a compare that answered nothing, not "same commit").
+    def ancestry_of(client, owner, repo, pinned, published)
+      forward  = client.compare_commits(owner, repo, pinned, published)
+      backward = client.compare_commits(owner, repo, published, pinned)
+      return { relation: :undetermined, problem: "the compare of #{owner}/#{repo} answered nothing" } if forward.nil? || backward.nil?
+
+      ahead_of_pinned  = Array(forward[:commits]).size
+      behind_pinned    = Array(backward[:commits]).size
+
+      if ahead_of_pinned.positive? && behind_pinned.zero?
+        { relation: :behind, by: ahead_of_pinned }
+      elsif ahead_of_pinned.zero? && behind_pinned.positive?
+        { relation: :ahead }
+      elsif ahead_of_pinned.positive?
+        { relation: :diverged }
+      else
+        { relation: :undetermined,
+          problem: "the compare of #{owner}/#{repo} #{pinned[0, 12]}...#{published[0, 12]} listed no commits either way " \
+                   "for two different shas" }
+      end
+    rescue ::Devops::Git::ApiClient::ApiError => e
+      # Status only, as #changed_paths_for: the body is infrastructure-authored.
+      { relation: :undetermined, problem: "the compare of #{owner}/#{repo} failed: status #{e.status}" }
+    end
+
+    def regression_entry(slug, current, ext_repo, pinned, published, by, gitlink_path, head_sha)
+      withheld_entry(
+        slug, WITHHELD_SOURCE_REGRESSION, current, pinned, published,
+        "core #{head_sha.to_s[0, 12]} pins #{gitlink_path} at #{pinned[0, 12]}, which is #{by} commit(s) behind " \
+        "#{published[0, 12]}, the commit #{slug} v#{current.version_number} (current) was built from — building it " \
+        "would roll the fleet back by those commits. To rebuild the extension deliberately, dispatch an " \
+        "extension-range build with source_repo: #{ext_repo}; to move core forward, bump the pointer past " \
+        "#{published[0, 12]} first."
+      )
+    end
+
+    def undetermined_entry(slug, current, ext_repo, pinned, published, problem)
+      version = current ? "v#{current.version_number}" : "the current version"
+      withheld_entry(
+        slug, WITHHELD_SOURCE_ANCESTRY_UNDETERMINED, current, pinned, published,
+        "could not establish whether the commit core pins #{slug} at (#{pinned ? pinned[0, 12] : 'unreadable'}) is " \
+        "behind the commit #{version} was built from (#{published ? published[0, 12] : 'unrecorded'}): #{problem}. " \
+        "Withheld rather than risk rolling the fleet back; to rebuild it deliberately, dispatch an extension-range " \
+        "build with source_repo: #{ext_repo}."
+      )
+    end
+
+    def withheld_entry(slug, reason, current, pinned, published, detail)
+      { module: slug, reason: reason, detail: detail, pinned_sha: pinned, published_sha: published,
+        published_version_number: current&.version_number }
+    end
+
+    # Withholding the ONLY planned module leaves nothing to build, and a
+    # 0-module batch walks straight to `complete` (#guard_against_empty_plan!'s
+    # reasoning). Refuse, naming the withheld module and why — this is the one
+    # case where "do not refuse the batch" has no sibling left to protect.
+    def guard_against_fully_withheld_plan!(closure:, withheld:)
+      return unless closure.empty? && withheld.any?
+
+      named = withheld.map { |w| "#{w[:module]} withheld (#{w[:reason]}): #{w[:detail]}" }.join("; ")
+      raise PlanningError, "planned 0 modules — every planned module was withheld: #{named} — refusing to report a " \
+                           "successful build that would build nothing."
     end
 
     def core_source_repo?(repo_full_name)
