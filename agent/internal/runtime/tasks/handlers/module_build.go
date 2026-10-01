@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -463,8 +464,66 @@ func logTail(stdout, stderr []byte) string {
 }
 
 func tailBytes(b []byte, max int) string {
-	if len(b) > max {
-		b = b[len(b)-max:]
+	if len(b) <= max {
+		return strings.TrimSpace(string(b))
 	}
-	return strings.TrimSpace(string(b))
+	return strings.TrimSpace(dropCutKeyBody(string(b[len(b)-max:])))
+}
+
+// logTailKeyBodyMarker stands in for a run of PEM-body-shaped lines that a
+// window cut left at its start (IMP-33ab99763220).
+const logTailKeyBodyMarker = "[truncated key material removed]"
+
+var (
+	// One full line of a PEM body: 16..76 base64 characters and nothing else
+	// (RFC 7468 wraps at 64, OpenSSH at 70), an RFC 1421 encryption header,
+	// or a blank line. The lower bound is the server sanitizer's own: shorter
+	// runs are ordinary words, and a clipped body has no short line by
+	// construction except its last.
+	pemBodyLineRe = regexp.MustCompile(`^(?:[A-Za-z0-9+/=]{16,76}|(?:Proc-Type|DEK-Info):.*)?$`)
+	// The window's first line is a FRAGMENT (the cut landed mid-line): any
+	// length of base64 alphabet, including none, can be the end of a body line.
+	pemFragmentRe = regexp.MustCompile(`^[A-Za-z0-9+/=]*$`)
+	pemEndLineRe  = regexp.MustCompile(`^-----END[A-Z0-9 ]*-----$`)
+)
+
+// dropCutKeyBody handles a window whose cut landed inside a PEM block: the
+// BEGIN header fell outside it, so the body lines at its start match no
+// header-keyed pattern downstream (System::ShellOutputSanitizer keys on the
+// header; System::StoredOutputRedactor strips a headerless body only at the
+// start of ITS window, which is not where `stdout: ` / `\nstderr: ` put it).
+//
+// The run of leading body-shaped lines is dropped THROUGH the END footer, or
+// to the first ordinary line when no footer appears, and replaced with
+// logTailKeyBodyMarker. Conservative by construction: the run must be anchored
+// by at least one full body-shaped line or an END footer, so a cut that lands
+// on a base64-looking word of an ordinary line ("deprecated") followed by
+// ordinary lines is left exactly as it was. A first line that is not base64
+// (the cut landed in a Proc-Type header, or in the BEGIN line itself) is kept
+// and the body after it is still stripped. Only ever called on a cut window.
+func dropCutKeyBody(window string) string {
+	lines := strings.SplitAfter(window, "\n")
+	start, end, anchored := 0, 0, false
+	for i, raw := range lines {
+		line := strings.TrimRight(raw, "\r\n")
+		if pemEndLineRe.MatchString(line) {
+			end, anchored = i+1, true
+			break
+		}
+		if i == 0 && !pemFragmentRe.MatchString(line) {
+			start, end = 1, 1
+			continue
+		}
+		if i > 0 && !pemBodyLineRe.MatchString(line) {
+			break
+		}
+		if line != "" && pemBodyLineRe.MatchString(line) {
+			anchored = true
+		}
+		end = i + 1
+	}
+	if !anchored {
+		return window
+	}
+	return strings.Join(lines[:start], "") + logTailKeyBodyMarker + "\n" + strings.Join(lines[end:], "")
 }
