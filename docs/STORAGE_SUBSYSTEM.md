@@ -316,23 +316,45 @@ backend (Shape 1) or the gateway running Samba (Shape 2). Credentials
 
 Read-only report an operator runs BEFORE rotating SMB credentials
 (`rails system:storage:smb_rotation_preflight`, `FORMAT=json` for the structured
-form; exits 1 unless the verdict is `safe_to_rotate` or `no_smb_backends`). It
-is fleet-wide across accounts, writes nothing and dispatches nothing. For each
-instance a rotation would dispatch `storage.smb_user.apply` to, it reports two
-checks as `pass` / `fail` / `unknown`:
+form). It writes nothing and dispatches nothing. Exit status: `0`
+`safe_to_rotate`, `2` no SMB storage found, `1` anything else. An empty result
+most likely means the wrong database, so the report names the Rails environment
+and database it read and never treats "nothing found" as success.
 
-- **agent** — whether the agent can resolve the `CredentialRef` payload. Decided
+Scope: fleet-wide across accounts, and every `provider_type: smb` storage is
+scanned whatever its status and whether or not it holds a credential — a
+credential issued between the preflight and the rotation lands on the same
+backend agent. Each storage's status is printed.
+
+For each instance a rotation would dispatch `storage.smb_user.apply` to, it
+reports two checks as `pass` / `fail` / `unknown`:
+
+- **agent** — whether the agent resolves the `CredentialRef` payload and keeps
+  the value off `samba-tool`'s argv. Both commits landed on 2026-09-19. Decided
   from the heartbeated `agent_version`, which module builds stamp as
-  `<UTC build date>-<12-hex sha>`: built before the CredentialRef commit's date
-  is a fail, on that date is unknown unless the sha is that commit, after it is
-  a pass with basis `build_date` (built after the commit existed — not proof the
-  source contained it). An unstamped version (`dev`) or a stale heartbeat is
-  unknown.
+  `<UTC build date>-<12-hex sha>`: built before that date is a fail, on that
+  date is unknown with no exception, after it is a pass with basis `build_date`.
+  `build_date` is sound for a build from the default branch and not for a branch
+  build; the report lists the shas seen with the command that settles one in an
+  extension checkout, `git merge-base --is-ancestor 8f6aeae26de9 <sha>`.
 - **accounts** — whether the instance serves SMB storages of exactly one
   account, its own.
 
 SMB storages naming a backend instance that does not exist (fail) or none at
-all (unknown) are listed separately. Unknown never counts as pass.
+all (unknown) are listed separately. Unknown never counts as pass. Every result
+that is not a pass carries a hint:
+
+| Reason | What to do |
+|---|---|
+| `agent_version_not_orderable` | Redeploy a stamped module build; an unstamped agent (`dev`) cannot be ordered. |
+| `stale_heartbeat` | No heartbeat in 3 minutes, so the recorded version may be out of date. Check the agent, then re-run. |
+| `built_same_day_as_credential_ref_commit` | Settle it with the `git merge-base` command above, or redeploy a newer module build. |
+| `predates_credential_ref` | Upgrade the agent; this one refuses the rotation payload. |
+| `predates_payload_validation` | Upgrade the agent first; this one would run `samba-tool` with an empty value. |
+| `serves_multiple_accounts` | Give each account's SMB storages a backend of its own. |
+| `instance_account_differs_from_storage_account` | Correct the storage's backend. |
+| `backend_instance_not_found` | Point the storage at a live backend or retire it. |
+| `no_backend_instance_configured` | Confirm it is an external SMB server the platform provisions no users on. |
 
 ### `task_payload_builder.rb` — `TaskPayloadBuilder`
 
