@@ -68,6 +68,28 @@ RSpec.describe System::ModuleBuildScriptAttribution do
   end
   let(:needs_parent) { %w[hub-backend hub-worker] }
 
+  # needs-parent-modules.sh as it was BEFORE the list existed (the shape every
+  # ref older than IMP-c19b10a942d7 carries): present, a case statement, no
+  # NEEDS_PARENT_MODULES. A range whose base is such a ref must still attribute.
+  let(:pre_list_needs_parent_sh) do
+    <<~'SH'
+      #!/usr/bin/env bash
+      # Is $1 a module whose build packages parent-repo content?
+      module_needs_parent() {
+        case "${1:-}" in
+          hub-backend|hub-worker)
+            return 0 ;;
+          *)
+            return 1 ;;
+        esac
+      }
+    SH
+  end
+  # base_stage15 before the markers: the same code, nothing delimited.
+  let(:pre_block_stage15) do
+    base_stage15.gsub(/^# --- (BEGIN|END) needs-parent shared block ---\n/, "").tap { |t| raise "fixture edit missed" if t == base_stage15 }
+  end
+
   def head_with(from, to)
     base_stage15.sub(from, to).tap { |t| raise "fixture edit missed: #{from}" if t == base_stage15 }
   end
@@ -319,6 +341,41 @@ RSpec.describe System::ModuleBuildScriptAttribution do
         .to contain_exactly("hub-backend", "hub-worker")
     end
 
+    # A range whose BASE predates the list: needs-parent-modules.sh is present
+    # there in its old case-statement shape, and stage15.sh has no block. That
+    # pair is the pre-list era and reads as "no list" on the base side only, so
+    # the range still attributes; the head side keeps refusing a list-less file.
+    describe "a range whose base predates the list" do
+      def attribute_from_pre_list(head, changed: [ "scripts/module-build/stage15.sh", "scripts/module-build/needs-parent-modules.sh" ])
+        attribute(head, changed: changed, base: pre_block_stage15, base_list: pre_list_needs_parent_sh)
+      end
+
+      it "attributes the block's arrival to the listed modules" do
+        expect(attribute_from_pre_list(base_stage15)).to contain_exactly("hub-backend", "hub-worker")
+      end
+
+      it "still attributes an ordinary arm edit in that range" do
+        head = head_with("amd64) GO_SHA=aaa ;;", "amd64) GO_SHA=bbb ;;")
+        expect(attribute_from_pre_list(head)).to contain_exactly("hub-backend", "hub-worker", "runtime-go")
+      end
+
+      it "attributes an arm edit alone when the head has no block either (no list on either side)" do
+        head = pre_block_stage15.sub("amd64) GO_SHA=aaa ;;", "amd64) GO_SHA=bbb ;;")
+        expect(attribute(head, base: pre_block_stage15, base_list: pre_list_needs_parent_sh, head_list: nil))
+          .to contain_exactly("runtime-go")
+      end
+
+      it "raises ParseError when the pre-list-shaped base file sits beside a base stage15.sh that HAS a block" do
+        expect { attribute(base_stage15, base: base_stage15, base_list: pre_list_needs_parent_sh) }
+          .to raise_error(described_class::ParseError, /shared block/)
+      end
+
+      it "raises ParseError on the HEAD side for a file without the list, whatever the script" do
+        expect { attribute(pre_block_stage15, base: pre_block_stage15, base_list: nil, head_list: pre_list_needs_parent_sh) }
+          .to raise_error(described_class::ParseError, /NEEDS_PARENT_MODULES/)
+      end
+    end
+
     it "raises ParseError when needs-parent-modules.sh changed but no base copy of stage15.sh is available" do
       expect { attribute(base_stage15, changed: [ "scripts/module-build/needs-parent-modules.sh" ], base: nil) }
         .to raise_error(described_class::ParseError, /base/)
@@ -425,6 +482,17 @@ RSpec.describe System::ModuleBuildScriptAttribution do
       edited = real.sub("echo \"[stage-1.5] build identity: ", "echo \"[stage-1.5] build identity (edited): ")
       expect(edited).not_to eq(real)
       expect(attribute_real(edited)).to match_array(real_needs_parent)
+    end
+
+    # Pins the HEAD of the real block, not just its tail: a BEGIN marker that
+    # drifted below the needs_parent guard or below the clone would still parse,
+    # and the text it left outside would attribute to nobody.
+    it "delimits the real block from the needs_parent guard through the parent clone" do
+      block = described_class.parse(real, needs_parent: real_needs_parent).shared_block
+      expect(block).to start_with("# --- BEGIN needs-parent shared block ---\nif [ \"$needs_parent\" = \"1\" ]; then\n")
+      expect(block).to include("git clone --depth 1 \"$clone_url\" /tmp/parent\n")
+      expect(block).to include("> /tmp/parent-build-info.json\n")
+      expect(block).to end_with("fi\n# --- END needs-parent shared block ---\n")
     end
 
     it "attributes an edit outside the block and every arm to nothing" do

@@ -91,7 +91,8 @@ module System
       #   only when stage15.sh or needs-parent-modules.sh changed
       # @param head_stage15 [String] stage15.sh at the range's head
       # @param base_needs_parent [String, nil] needs-parent-modules.sh at the base
-      #   (nil: absent at that ref)
+      #   (nil: absent at that ref; its pre-list shape reads as nil too, see
+      #   .base_needs_parent_modules)
       # @param head_needs_parent [String, nil] needs-parent-modules.sh at the head
       # @return [Set<String>] module slugs the change is attributable to
       # @raise [ParseError] a script could not be read faithfully — the caller
@@ -106,7 +107,7 @@ module System
         if changed_paths.include?(STAGE15_PATH) || changed_paths.include?(NEEDS_PARENT_PATH)
           raise ParseError, "build scripts changed but no base copy of stage15.sh is available to compare arms against" if base_stage15.nil?
 
-          base = parse(base_stage15, needs_parent: needs_parent_modules(base_needs_parent))
+          base = parse(base_stage15, needs_parent: base_needs_parent_modules(base_needs_parent))
           (head.slugs | base.slugs).each do |slug|
             slugs << slug unless head.text_for(slug) == base.text_for(slug)
           end
@@ -144,6 +145,23 @@ module System
           raise ParseError, "needs-parent list entry #{slug.inspect} is not a module slug" unless slug.match?(LITERAL_SLUG_RX)
         end
         slugs
+      end
+
+      # The list at a range's BASE. A ref older than the list carries
+      # needs-parent-modules.sh in its old case-statement shape — present, with no
+      # NEEDS_PARENT_MODULES — and a stage15.sh with no block; that pair is the
+      # pre-list era and reads as "no list", so such a range keeps every
+      # attribution the old reader made (a lost base would otherwise drop an
+      # ordinary arm edit along with it). It is only ever "no list": parse then
+      # refuses a base stage15.sh that HAS a block with nobody to own it. A file
+      # that has the list is read strictly, and the head side always is.
+      #
+      # @param text [String, nil]
+      # @return [Array<String>, nil]
+      def base_needs_parent_modules(text)
+        return nil if text.nil? || !text.match?(NEEDS_PARENT_LIST_RX)
+
+        needs_parent_modules(text)
       end
 
       # @param script [String] the text of a script with a `case "$MODULE" in` dispatch
