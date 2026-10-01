@@ -27,9 +27,17 @@ RSpec.describe System::StoredOutputRedactor do
   let(:end_line) { "-----END RSA PRIVATE KEY-----" }
 
   # The production limits of the two read surfaces that serve a task result
-  # (Ai::Tools::SystemFleetTool get_task events / inspect_task result).
-  let(:events_limits) { { limit: 20, string_limit: 16_384, max_chars: 131_072, max_nodes: 5_000 } }
-  let(:inspect_limits) { { limit: 1, string_limit: 72_000, max_chars: 200_000, max_nodes: 2_000 } }
+  # (Ai::Tools::SystemFleetTool get_task events / inspect_task result), read
+  # from the tool so the spec cannot drift from it.
+  let(:tool) { Ai::Tools::SystemFleetTool }
+  let(:events_limits) do
+    { limit: tool::TASK_EVENTS_LIMIT, string_limit: tool::GET_ERROR_MESSAGE_LIMIT,
+      max_chars: tool::TASK_EVENTS_MAX_CHARS, max_nodes: tool::TASK_EVENTS_MAX_NODES }
+  end
+  let(:inspect_limits) do
+    { limit: 1, string_limit: tool::INSPECT_RESULT_STRING_LIMIT,
+      max_chars: tool::INSPECT_RESULT_MAX_CHARS, max_nodes: tool::INSPECT_RESULT_MAX_NODES }
+  end
 
   # Measured 2026-09-30 on develop: every headerless shape below is served
   # verbatim on both surfaces. The agent strips the cut body at the source
@@ -64,8 +72,15 @@ RSpec.describe System::StoredOutputRedactor do
 
       it "is withheld by .bounded with the log_tail lead" do
         pending server_gap
-        out = described_class.bounded(text, 16_384, from: :tail, lead: "log_tail: ", inclusive: true)
+        out = described_class.bounded(text, tool::GET_ERROR_MESSAGE_LIMIT, from: :tail, lead: "log_tail: ", inclusive: true)
         expect(out).not_to include(probe)
+      end
+
+      it "proves the .bounded probe is detectable: the HEADED form of the same text is redacted" do
+        headed = text.sub("stdout: ", "stdout: -----BEGIN RSA PRIVATE KEY-----\n")
+        out = described_class.bounded(headed, tool::GET_ERROR_MESSAGE_LIMIT, from: :tail, lead: "log_tail: ", inclusive: true)
+        expect(out).not_to include(probe)
+        expect(out).to include("[REDACTED]")
       end
     end
 
