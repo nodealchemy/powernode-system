@@ -312,6 +312,28 @@ backend (Shape 1) or the gateway running Samba (Shape 2). Credentials
 (`username`/`password`) come from the sealed `StorageCredential`'s
 `vault_credentials`.
 
+### `smb_rotation_preflight.rb` — `SmbRotationPreflight`
+
+Read-only report an operator runs BEFORE rotating SMB credentials
+(`rails system:storage:smb_rotation_preflight`, `FORMAT=json` for the structured
+form; exits 1 unless the verdict is `safe_to_rotate` or `no_smb_backends`). It
+is fleet-wide across accounts, writes nothing and dispatches nothing. For each
+instance a rotation would dispatch `storage.smb_user.apply` to, it reports two
+checks as `pass` / `fail` / `unknown`:
+
+- **agent** — whether the agent can resolve the `CredentialRef` payload. Decided
+  from the heartbeated `agent_version`, which module builds stamp as
+  `<UTC build date>-<12-hex sha>`: built before the CredentialRef commit's date
+  is a fail, on that date is unknown unless the sha is that commit, after it is
+  a pass with basis `build_date` (built after the commit existed — not proof the
+  source contained it). An unstamped version (`dev`) or a stale heartbeat is
+  unknown.
+- **accounts** — whether the instance serves SMB storages of exactly one
+  account, its own.
+
+SMB storages naming a backend instance that does not exist (fail) or none at
+all (unknown) are listed separately. Unknown never counts as pass.
+
 ### `task_payload_builder.rb` — `TaskPayloadBuilder`
 
 Composes the JSON task payloads the on-node agent receives via `System::Task`.
