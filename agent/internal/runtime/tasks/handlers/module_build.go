@@ -484,11 +484,15 @@ const (
 	// a window cut left at its start, the header already outside the stream.
 	logTailKeyBodyMarker = "[truncated key material removed]"
 	// pemBlockMaxSpan bounds how far past a BEGIN header the END footer it
-	// pairs with may sit. A real key always fits (RSA-16384 is ~12 KB; a
-	// per-line prefix at most doubles that); a header that merely MENTIONS a
-	// key, with an unrelated footer further away, is treated as clipped
-	// instead, so at most this much of the diagnostics between them is lost.
-	pemBlockMaxSpan = 32 << 10
+	// pairs with may sit. A real key must always fit, because one that does
+	// not and cannot be clipped (every line prefixed, or an armor header
+	// line) passes through WHOLE: RSA-16384 is ~12 KB bare and ~34 KB with a
+	// 105-char per-line prefix, and a PGP private-key block with a photo ID
+	// runs past 32 KiB, so the bound is 128 KiB. A header that merely
+	// MENTIONS a key, with an unrelated footer further away, is treated as
+	// clipped instead, so at most this much of the diagnostics between them
+	// is lost (lost, not leaked).
+	pemBlockMaxSpan = 128 << 10
 )
 
 var (
@@ -510,7 +514,9 @@ var (
 	// The window's first line is a FRAGMENT (the cut landed mid-line): any
 	// length of base64 alphabet, including none, can be the end of a body line.
 	pemFragmentRe = regexp.MustCompile(`^[A-Za-z0-9+/=]*$`)
-	pemEndLineRe  = regexp.MustCompile(`^(?:-----END[A-Z0-9 ]*-----|---- END [A-Z0-9 ]*----)$`)
+	// The four-dash form is restricted to PRIVATE KEY like pemFooterRe, so a
+	// log banner ("---- END OF BUILD LOG ----") is never taken for a footer.
+	pemEndLineRe = regexp.MustCompile(`^(?:-----END[A-Z0-9 ]*-----|---- END [A-Z0-9 ]*PRIVATE KEY ----)$`)
 )
 
 // removeKeyBlocks replaces every headed private-key block in the stream with
