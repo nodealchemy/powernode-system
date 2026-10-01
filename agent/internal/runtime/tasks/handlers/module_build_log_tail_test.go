@@ -12,9 +12,11 @@ import (
 const wantKeyBodyMarker = "[truncated key material removed]"
 
 // IMP-33ab99763220 — a log_tail window is a byte-bounded cut of a stream. A
-// key printed by a build step whose BEGIN header fell before the cut leaves a
-// HEADERLESS PEM body at the window's start, which no header-keyed server
-// pattern can see. The window must drop that body at the source.
+// headed key is removed from the whole stream before the cut (the tests
+// further down); a body printed WITHOUT its header (the fallback exercised
+// here, so these fixtures carry no BEGIN line at all) can still straddle the
+// cut and leave a headerless PEM body at the window's start, which no
+// header-keyed server pattern can see. The window must drop that body.
 
 // syntheticPEMBody is seeded random bytes in 64-column standard base64, the
 // shape of a PEM body. Synthetic only — never key material.
@@ -64,7 +66,7 @@ func TestLogTail_CutInsideStdoutKeyBodyStripsThroughEnd(t *testing.T) {
 	body := syntheticPEMBody(t, 33, 50)
 	probe := body[len(body)-3]
 	stdout := []byte(filler("npm notice", 20) +
-		"-----BEGIN RSA PRIVATE KEY-----\n" + strings.Join(body, "\n") + "\n-----END RSA PRIVATE KEY-----\n" +
+		strings.Join(body, "\n") + "\n-----END RSA PRIVATE KEY-----\n" +
 		filler("npm notice", 25) + `{"ok":true,"module":"demo"}` + "\n")
 	requireCutInsideBody(t, stdout, logTailMaxBytes, probe)
 
@@ -95,7 +97,7 @@ func TestLogTail_CutInsideStderrKeyBodyStripsThroughEnd(t *testing.T) {
 	if len(after) >= logTailStderrMaxBytes {
 		t.Fatalf("fixture: trailing output must be shorter than the stderr window")
 	}
-	stderr := []byte(filler("apt", 50) + "-----BEGIN OPENSSH PRIVATE KEY-----\r\n" + strings.Join(body, "\r\n") + "\r\n" + after)
+	stderr := []byte(filler("apt", 50) + strings.Join(body, "\r\n") + "\r\n" + after)
 	requireCutInsideBody(t, stderr, logTailStderrMaxBytes, probe)
 
 	tail := logTail([]byte(`{"ok":false}`), stderr)
@@ -120,7 +122,7 @@ func TestLogTail_CutInsideKeyBodyWithoutEndDropsOnlyBodyLines(t *testing.T) {
 	body := syntheticPEMBody(t, 35, 50)
 	probe := body[len(body)-3]
 	after := "stage 2: packaging\n" + filler("stage 2", 25) + `{"ok":true}` + "\n"
-	stdout := []byte(filler("npm notice", 20) + "-----BEGIN EC PRIVATE KEY-----\n" + strings.Join(body, "\n") + "\n" + after)
+	stdout := []byte(filler("npm notice", 20) + strings.Join(body, "\n") + "\n" + after)
 	requireCutInsideBody(t, stdout, logTailMaxBytes, probe)
 
 	tail := logTail(stdout, []byte("ok"))
@@ -136,7 +138,7 @@ func TestLogTail_CutInsideKeyBodyWithoutEndDropsOnlyBodyLines(t *testing.T) {
 func TestLogTail_CutInsideKeyBodyRunningToEndLeavesOnlyTheMarker(t *testing.T) {
 	body := syntheticPEMBody(t, 36, 80)
 	probe := body[len(body)-3]
-	stdout := []byte(filler("npm notice", 5) + "-----BEGIN RSA PRIVATE KEY-----\n" + strings.Join(body, "\n") + "\n")
+	stdout := []byte(filler("npm notice", 5) + strings.Join(body, "\n") + "\n")
 	requireCutInsideBody(t, stdout, logTailMaxBytes, probe)
 
 	tail := logTail(stdout, []byte("ok"))
@@ -176,24 +178,261 @@ func TestLogTail_NoCutWindowsAreUnchanged(t *testing.T) {
 	}
 }
 
-func TestLogTail_CutInsideBeginLineKeepsFragmentAndStripsBody(t *testing.T) {
-	// The cut lands in the BEGIN line itself: the window opens on a fragment
-	// that is not base64 ("PRIVATE KEY-----"), which is kept, while the body
-	// after it is still stripped through the END footer.
+func TestLogTail_CutInsideEncryptionHeaderKeepsFragmentAndStripsBody(t *testing.T) {
+	// The cut lands in the Proc-Type line of a headerless encrypted body: the
+	// window opens on a fragment that is not base64 ("Type: 4,ENCRYPTED"),
+	// which is kept, while the DEK-Info line and the body after it are
+	// stripped through the END footer.
 	body := syntheticPEMBody(t, 38, 50)
 	probe := body[len(body)-3]
-	head := "PRIVATE KEY-----\n" + strings.Join(body, "\n") + "\n-----END RSA PRIVATE KEY-----\n"
+	head := "Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF0123456789ABCDEF\n\n" +
+		strings.Join(body, "\n") + "\n-----END RSA PRIVATE KEY-----\n"
 	rest := filler("npm notice", 40)[:logTailMaxBytes-len(head)]
-	stdout := []byte("-----BEGIN RSA " + head + rest)
-	if len(stdout)-logTailMaxBytes != len("-----BEGIN RSA ") {
-		t.Fatalf("fixture: window must open exactly at the BEGIN line fragment")
+	stdout := []byte("Proc-" + head + rest)
+	if len(stdout)-logTailMaxBytes != len("Proc-") {
+		t.Fatalf("fixture: window must open exactly at the header-line fragment")
 	}
 
 	tail := logTail(stdout, []byte("ok"))
-	if strings.Contains(tail, probe) {
+	if strings.Contains(tail, probe) || strings.Contains(tail, "DEK-Info") {
 		t.Fatalf("headerless key body survived the cut:\n%s", tail)
 	}
-	if want := "stdout: PRIVATE KEY-----\n" + wantKeyBodyMarker + "\n" + strings.TrimSpace(rest) + "\nstderr: ok"; tail != want {
+	if want := "stdout: Type: 4,ENCRYPTED\n" + wantKeyBodyMarker + "\n" + strings.TrimSpace(rest) + "\nstderr: ok"; tail != want {
 		t.Fatalf("expected the fragment kept and the body stripped, got:\n%.300s", tail)
+	}
+}
+
+// ---- fix round: a HEADED key is redacted from the whole stream before the
+// cut, so its placement relative to the window is irrelevant; the post-cut
+// fallback tolerates whitespace and a short final body line.
+
+// wantKeyBlockMarker is the contract text a whole private-key block is
+// replaced with before the window is cut.
+const wantKeyBlockMarker = "[key material removed]"
+
+// syntheticPEMBodyBytes draws n bytes so the last base64 line can be SHORT
+// (a real body's last line is the remainder, 4..64 chars).
+func syntheticPEMBodyBytes(t *testing.T, seed int64, n int) []string {
+	t.Helper()
+	raw := make([]byte, n)
+	rand.New(rand.NewSource(seed)).Read(raw)
+	enc := base64.StdEncoding.EncodeToString(raw)
+	var lines []string
+	for len(enc) > 0 {
+		cut := min(64, len(enc))
+		lines = append(lines, enc[:cut])
+		enc = enc[cut:]
+	}
+	return lines
+}
+
+type headedKeyShape struct {
+	name  string
+	text  string // the key as it appears in the stream, BEGIN through END (plus any line terminator)
+	probe string // a body chunk that sits after any cut landing inside the key
+}
+
+func headedKeyShapes(t *testing.T) []headedKeyShape {
+	t.Helper()
+	body := syntheticPEMBodyBytes(t, 41, 50*48+3) // last line is 4 chars
+	if got := len(body[len(body)-1]); got != 4 {
+		t.Fatalf("fixture: want a 4-char last line, got %d", got)
+	}
+	probe := body[len(body)-3]
+	begin, end := "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
+	indent := func(prefix string, lines []string) string {
+		var b strings.Builder
+		for _, l := range lines {
+			b.WriteString(prefix + l + "\n")
+		}
+		return b.String()
+	}
+	all := append(append([]string{begin}, body...), end)
+	return []headedKeyShape{
+		{"plain LF, short last line", strings.Join(all, "\n") + "\n", probe},
+		{"indented YAML block scalar", "rsa_private: |\n" + indent("      ", all), probe},
+		{"per-line prefix", indent("#12 0.345 ", all), probe},
+		{"JSON-escaped single line", `{"private_key":"` + strings.Join(all, `\n`) + `\n"}` + "\n", probe},
+		{"echo $KEY single line", strings.Join(all, " ") + "\n", probe},
+		{"trailing whitespace", strings.Join(all, " \t\n") + " \t\n", probe},
+		{"CRLF", strings.Join(all, "\r\n") + "\r\n", probe},
+	}
+}
+
+func TestLogTail_HeadedKeyWhollyInsideTheWindowIsRemoved(t *testing.T) {
+	for _, shape := range headedKeyShapes(t) {
+		t.Run(shape.name, func(t *testing.T) {
+			stdout := []byte(filler("npm notice", 120) + shape.text + `{"ok":true}` + "\n")
+			if len(stdout) <= logTailMaxBytes {
+				t.Fatalf("fixture: stream must be cut")
+			}
+			window := string(stdout[len(stdout)-logTailMaxBytes:])
+			if !strings.Contains(window, "-----BEGIN") || !strings.Contains(window, shape.probe) {
+				t.Fatalf("fixture: the whole key must sit inside the window")
+			}
+
+			tail := logTail(stdout, []byte("ok"))
+			if strings.Contains(tail, shape.probe) || strings.Contains(tail, "-----END") {
+				t.Fatalf("headed key reached the tail:\n%.400s", tail)
+			}
+			if !strings.Contains(tail, wantKeyBlockMarker) || !strings.HasSuffix(tail, "{\"ok\":true}\nstderr: ok") {
+				t.Fatalf("expected the block marker and the result line, got:\n%.400s", tail)
+			}
+		})
+	}
+}
+
+func TestLogTail_CutInsideHeadedKeyIsRemovedWhateverItsForm(t *testing.T) {
+	for _, shape := range headedKeyShapes(t) {
+		t.Run(shape.name, func(t *testing.T) {
+			stdout := []byte(filler("npm notice", 20) + shape.text + filler("npm notice", 25) + `{"ok":true}` + "\n")
+			requireCutInsideBody(t, stdout, logTailMaxBytes, shape.probe)
+
+			tail := logTail(stdout, []byte("ok"))
+			if strings.Contains(tail, shape.probe) || strings.Contains(tail, "-----END") {
+				t.Fatalf("key body survived the cut:\n%.400s", tail)
+			}
+			if !strings.HasSuffix(tail, "{\"ok\":true}\nstderr: ok") || !strings.Contains(tail, "npm notice line 0 of ordinary build output") {
+				t.Fatalf("output after the key must survive, got:\n%.400s", tail)
+			}
+		})
+	}
+}
+
+func TestLogTail_HeadedKeyInAnUncutStderrIsRemoved(t *testing.T) {
+	shape := headedKeyShapes(t)[0]
+	stderr := "warn: dumping config\n" + shape.text + "error: stage 3 failed\n"
+	tail := logTail([]byte(`{"ok":false}`), []byte(stderr))
+	if strings.Contains(tail, shape.probe) {
+		t.Fatalf("headed key in an uncut window reached the tail")
+	}
+	if want := "stdout: {\"ok\":false}\nstderr: warn: dumping config\n" + wantKeyBlockMarker + "\nerror: stage 3 failed"; tail != want {
+		t.Fatalf("got:\n%s", tail)
+	}
+}
+
+func TestLogTail_ClippedHeadedKeyWithNoEndIsRemoved(t *testing.T) {
+	body := syntheticPEMBodyBytes(t, 42, 30*48+3)
+	probe := body[len(body)-3]
+	stdout := "stage 1\n-----BEGIN OPENSSH PRIVATE KEY-----\n" + strings.Join(body, "\n")
+	tail := logTail([]byte(stdout), []byte("ok"))
+	if strings.Contains(tail, probe) || strings.Contains(tail, body[len(body)-1]) {
+		t.Fatalf("clipped key body reached the tail:\n%.300s", tail)
+	}
+	if want := "stdout: stage 1\n" + wantKeyBlockMarker + "\nstderr: ok"; tail != want {
+		t.Fatalf("got:\n%s", tail)
+	}
+}
+
+func TestLogTail_ALineThatMerelyNamesAKeyFileKeepsTheProseAfterIt(t *testing.T) {
+	stdout := "cosign: unsupported PEM block -----BEGIN RSA PRIVATE KEY----- in cosign.key\nstage 2: packaging\n"
+	tail := logTail([]byte(stdout), []byte("ok"))
+	if !strings.Contains(tail, "stage 2: packaging") || !strings.HasPrefix(tail, "stdout: cosign: unsupported PEM block ") {
+		t.Fatalf("prose around a header MENTION must survive, got:\n%s", tail)
+	}
+}
+
+func TestLogTail_HeadlessBodyWithShortLastLineIsStrippedThroughEnd(t *testing.T) {
+	// The header fell before the STREAM (not just the window): only the
+	// post-cut fallback can act, and the body's 4-char last line must not
+	// stop it short of the END footer.
+	body := syntheticPEMBodyBytes(t, 43, 50*48+3)
+	probe := body[len(body)-3]
+	short := body[len(body)-1]
+	after := filler("npm notice", 25) + `{"ok":true}` + "\n"
+	stdout := []byte(strings.Join(body, "\n") + "\n-----END RSA PRIVATE KEY-----\n" + after)
+	requireCutInsideBody(t, stdout, logTailMaxBytes, probe)
+
+	tail := logTail(stdout, []byte("ok"))
+	if want := "stdout: " + wantKeyBodyMarker + "\n" + strings.TrimSpace(after) + "\nstderr: ok"; tail != want {
+		t.Fatalf("expected the short last line and END dropped with the body, got:\n%.300s", tail)
+	}
+	if strings.Contains(tail, short) {
+		t.Fatalf("short last line left behind")
+	}
+}
+
+func TestLogTail_HeadlessIndentedBodyWithTrailingWhitespaceIsStripped(t *testing.T) {
+	body := syntheticPEMBodyBytes(t, 44, 50*48)
+	probe := body[len(body)-3]
+	var key strings.Builder
+	for _, l := range body {
+		key.WriteString("    " + l + " \t\r\n")
+	}
+	key.WriteString("    -----END EC PRIVATE KEY-----  \r\n")
+	after := filler("npm notice", 25) + `{"ok":true}` + "\n"
+	stdout := []byte(key.String() + after)
+	requireCutInsideBody(t, stdout, logTailMaxBytes, probe)
+
+	tail := logTail(stdout, []byte("ok"))
+	if want := "stdout: " + wantKeyBodyMarker + "\n" + strings.TrimSpace(after) + "\nstderr: ok"; tail != want {
+		t.Fatalf("expected the indented body dropped through END, got:\n%.300s", tail)
+	}
+}
+
+func TestLogTail_CutWindowOpeningOnDigestLinesIsUntouched(t *testing.T) {
+	for _, first := range []string{
+		"sha256:" + strings.Repeat("ab12", 16),
+		"h1:" + strings.Repeat("Q", 43) + "=",
+		"sha512-" + strings.Repeat("Ab", 43) + "==",
+		strings.Repeat("0123456789abcdef", 2), // a lone base64-looking fragment, nothing body-shaped after it
+	} {
+		t.Run(first[:6], func(t *testing.T) {
+			var window strings.Builder
+			window.WriteString(first + "\n")
+			for window.Len() < logTailMaxBytes {
+				window.WriteString("npm WARN deprecated foo@1.2.3: use bar instead\n")
+			}
+			w := window.String()[:logTailMaxBytes]
+			tail := logTail([]byte("cut here "+w), []byte("ok"))
+			if want := "stdout: " + strings.TrimSpace(w) + "\nstderr: ok"; tail != want {
+				t.Fatalf("ordinary cut window was altered, got:\n%.200s", tail)
+			}
+		})
+	}
+}
+
+func TestLogTail_FragmentThenBareShaLineIsTheAcceptedResidual(t *testing.T) {
+	// Accepted, bounded false positive: a base64 fragment followed by a bare
+	// 40-hex line anchors the run; both go, the prose after them stays.
+	var window strings.Builder
+	window.WriteString("deadbe\n" + strings.Repeat("a1b2c3d4e5", 4) + "\n")
+	for window.Len() < logTailMaxBytes {
+		window.WriteString("npm WARN deprecated foo@1.2.3: use bar instead\n")
+	}
+	w := window.String()[:logTailMaxBytes]
+	tail := logTail([]byte("cut here "+w), []byte("ok"))
+	if !strings.HasPrefix(tail, "stdout: "+wantKeyBodyMarker+"\nnpm WARN deprecated") {
+		t.Fatalf("got:\n%.200s", tail)
+	}
+}
+
+func BenchmarkLogTail_StderrWindowWithKeys(b *testing.B) {
+	t := &testing.T{}
+	body := syntheticPEMBodyBytes(t, 45, 50*48+3)
+	key := "-----BEGIN RSA PRIVATE KEY-----\n" + strings.Join(body, "\n") + "\n-----END RSA PRIVATE KEY-----\n"
+	stderr := []byte(filler("apt", 1500) + key + filler("npm WARN", 1500) + key + filler("stage 3", 1500) + key + filler("stage 4", 500))
+	stdout := []byte(filler("npm notice", 100) + key + `{"ok":true}` + "\n")
+	b.SetBytes(int64(len(stdout) + len(stderr)))
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = logTail(stdout, stderr)
+	}
+}
+
+func BenchmarkLogTail_StderrWindowAllBodyNoEnd(b *testing.B) {
+	// Worst case for both passes: a BEGIN with no END and a whole window of
+	// body lines, so the lazy span scans to the end and the clipped
+	// alternative consumes every line.
+	t := &testing.T{}
+	body := syntheticPEMBodyBytes(t, 46, 2100*48)
+	stderr := []byte("-----BEGIN RSA PRIVATE KEY-----\n" + strings.Join(body, "\n"))
+	if len(stderr) < logTailStderrMaxBytes {
+		b.Fatalf("fixture: stderr must exceed the window")
+	}
+	b.SetBytes(int64(len(stderr)))
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = logTail([]byte(`{"ok":false}`), stderr)
 	}
 }
