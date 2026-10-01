@@ -114,4 +114,51 @@ RSpec.describe System::Providers::Proxmox::Client do
         }
     end
   end
+
+  # IMP-b34c01457cec: on a 400 for a malformed field, PVE's `errors` hash can
+  # echo the submitted value back. The joined message is raised, and the
+  # provider's rescue arms log e.message, so a secret-named field must surface
+  # by NAME only. Every value below is synthetic.
+  describe "a 400 whose errors hash echoes a submitted value" do
+    let(:config_url) { "https://pve.test:8006/api2/json/nodes/pve1/qemu/9009/config" }
+
+    def raise_for(errors)
+      stub_request(:put, config_url).to_return(
+        status: 400,
+        body: { "data" => nil, "message" => "Parameter verification failed.\n", "errors" => errors }.to_json,
+        headers: { "Content-Type" => "application/json" }
+      )
+      client.put("/api2/json/nodes/pve1/qemu/9009/config", { "vmid" => "9009" })
+      raise "expected the client to raise"
+    rescue System::Providers::Proxmox::Client::Error => e
+      e
+    end
+
+    {
+      "cipassword" => "invalid format - synthetic-ci-pw-0001",
+      "sshkeys" => "invalid urlencoded string: ssh-ed25519 SYNTHETICKEYMATERIAL0002",
+      "password" => "value too short: synthetic-pw-0003",
+      "token" => "bad value synthetic-token-0004",
+      "client-secret" => "bad value synthetic-secret-0005"
+    }.each do |field, echoed|
+      it "names #{field} as rejected without its echoed value" do
+        error = raise_for(field => echoed)
+
+        expect(error.message).to include("#{field}: rejected")
+        expect(error.message).not_to include(echoed)
+        expect(error.message).not_to match(/synthetic|SYNTHETIC/)
+      end
+    end
+
+    it "still shows a non-sensitive field's value, alongside a redacted one" do
+      error = raise_for(
+        "vmid" => "value must be in range 100 - 999999999",
+        "cipassword" => "invalid format - synthetic-ci-pw-0006"
+      )
+
+      expect(error.message).to include("vmid: value must be in range 100 - 999999999")
+      expect(error.message).to include("cipassword: rejected")
+      expect(error.message).not_to include("synthetic-ci-pw-0006")
+    end
+  end
 end
