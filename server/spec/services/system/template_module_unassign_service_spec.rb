@@ -53,6 +53,10 @@ RSpec.describe System::TemplateModuleUnassignService do
     create(:system_node_module_assignment, node: node_a, node_module: hand_mod)
   end
 
+  def unassign!
+    described_class.new(removed_join).call!(initiated_by: nil, source: "spec")
+  end
+
   def derived_rows
     System::NodeModuleAssignment.where(source_template_module_id: removed_join.id)
   end
@@ -60,7 +64,7 @@ RSpec.describe System::TemplateModuleUnassignService do
   it "destroys every assignment derived from the join, and the join, leaving no orphan" do
     expect(derived_rows.count).to eq(2)
 
-    described_class.new(removed_join).call!
+    unassign!
 
     expect(System::TemplateModule.exists?(removed_join.id)).to be false
     expect(System::NodeModuleAssignment.where(node_module_id: removed_mod.id)).to be_empty
@@ -70,14 +74,14 @@ RSpec.describe System::TemplateModuleUnassignService do
     hand = node_a.node_module_assignments.find_by!(node_module_id: hand_mod.id)
     kept = System::NodeModuleAssignment.where(source_template_module_id: kept_join.id).to_a
 
-    described_class.new(removed_join).call!
+    unassign!
 
     expect(hand.reload.source_template_module_id).to be_nil
     expect(kept.map { |a| a.reload.source_template_module_id }).to all(eq(kept_join.id))
   end
 
   it "reports the purged node ids and count" do
-    result = described_class.new(removed_join).call!
+    result = unassign!
 
     expect(result.purged_count).to eq(2)
     expect(result.purged_node_ids).to contain_exactly(node_a.id, node_b.id)
@@ -89,7 +93,7 @@ RSpec.describe System::TemplateModuleUnassignService do
   # removal it must honour has to be RECORDED. A per-row destroy! runs the
   # model's after_destroy; a delete_all would skip it.
   it "records a clearance for each purged (node, module) so the agent may detach it" do
-    described_class.new(removed_join).call!
+    unassign!
 
     [ node_a, node_b ].each do |n|
       expect(System::NodeAssignmentClearance.where(node_id: n.id, node_module_id: removed_mod.id)).to exist
@@ -99,7 +103,7 @@ RSpec.describe System::TemplateModuleUnassignService do
   it "purges the rows of a DISABLED join too — disabling kept them, unassigning must not orphan them" do
     removed_join.update!(enabled: false)
 
-    result = described_class.new(removed_join).call!
+    result = unassign!
 
     expect(result.purged_count).to eq(2)
     expect(System::NodeModuleAssignment.where(node_module_id: removed_mod.id)).to be_empty
@@ -124,7 +128,7 @@ RSpec.describe System::TemplateModuleUnassignService do
       dep_rows = System::NodeModuleAssignment.where(node_module_id: shared_dep.id)
       expect(dep_rows.pluck(:source_template_module_id).uniq).to eq([ removed_join.id ])
 
-      result = described_class.new(removed_join).call!
+      result = unassign!
 
       expect(dep_rows.reload.count).to eq(2)
       expect(dep_rows.pluck(:source_template_module_id).uniq).to eq([ kept_join.id ])
@@ -142,17 +146,34 @@ RSpec.describe System::TemplateModuleUnassignService do
     end
 
     it "purges the dependency's rows along with the module's" do
-      result = described_class.new(removed_join).call!
+      result = unassign!
 
       expect(System::NodeModuleAssignment.where(node_module_id: [ removed_mod.id, only_dep.id ])).to be_empty
       expect(result.purged_count).to eq(4)
     end
   end
 
+  # A fleet-sized template must not turn the reply or the event's jsonb into a
+  # megabyte list: the counts stay exact, the lists are capped and flagged.
+  it "caps the listed node ids and rows, keeping the counts exact" do
+    stub_const("#{described_class}::LISTED_LIMIT", 1)
+
+    payload = unassign!.to_payload[:purged_assignments]
+
+    expect(payload).to include(count: 2, node_count: 2, truncated: true)
+    expect(payload[:node_ids].size).to eq(1)
+    expect(payload[:assignments].size).to eq(1)
+  end
+
+  it "records no blast radius when the template carries no live fleet" do
+    expect(unassign!.blast_radius).to be_nil
+    expect(System::FleetEvent.where(account: account, kind: "system.template_mutation")).to be_empty
+  end
+
   it "writes nothing when a purge fails part-way — the join and every row survive" do
     allow_any_instance_of(System::TemplateModule).to receive(:destroy!).and_raise(ActiveRecord::RecordNotDestroyed)
 
-    expect { described_class.new(removed_join).call! }.to raise_error(ActiveRecord::RecordNotDestroyed)
+    expect { unassign! }.to raise_error(ActiveRecord::RecordNotDestroyed)
 
     expect(System::TemplateModule.exists?(removed_join.id)).to be true
     expect(derived_rows.count).to eq(2)

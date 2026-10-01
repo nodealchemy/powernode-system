@@ -297,6 +297,68 @@ RSpec.describe "Operator API — Node Template modules", type: :request do
         expect(nodes.first.node_module_assignments.find_by!(node_module_id: hand_module.id)
                  .source_template_module_id).to be_nil
       end
+
+      # Critic F2: the REST door purged live-node rows and recorded nothing, so
+      # the template's `template_mutation:<id>` history missed the most
+      # destructive join mutation whenever it came through the UI. The service
+      # now records it, so both doors must report the same radius and emit the
+      # same event.
+      context "when the template carries live fleet" do
+        before { create(:system_node_instance, :running, node: nodes.first) }
+
+        def mutation_events
+          ::System::FleetEvent.where(account: account, kind: "system.template_mutation").order(:created_at)
+        end
+
+        # The same template shape built twice, so each door removes the module
+        # from its own copy with nothing else differing.
+        def twin_template!
+          twin = create(:system_node_template, account: account, node_platform: platform,
+                        name: "twin-#{SecureRandom.hex(3)}")
+          ::System::TemplateModule.create!(node_template: twin, node_module: node_module)
+          ::System::TemplateModule.create!(node_template: twin, node_module: kept_module)
+          twin_nodes = Array.new(2) do
+            create(:system_node, account: account, node_template: twin, name: "tn-#{SecureRandom.hex(3)}")
+          end
+          twin_nodes.each { |n| ::System::TemplateApplyService.new(n).apply! }
+          create(:system_node_instance, :running, node: twin_nodes.first)
+          [ twin, twin_nodes ]
+        end
+
+        it "records the same blast radius and FleetEvent through REST DELETE as through the MCP verb" do
+          twin, twin_nodes = twin_template!
+
+          expect do
+            delete "/api/v1/system/node_templates/#{template.id}/modules/#{node_module.id}", headers: headers
+          end.to change { mutation_events.count }.by(1)
+          rest_radius = JSON.parse(response.body).dig("data", "blast_radius")
+          rest_event = mutation_events.last
+
+          mcp = nil
+          expect do
+            mcp = Ai::Tools::SystemFleetTool.new(account: account, user: user).execute(
+              params: { action: "system_unassign_module_from_template", template_id: twin.id, module_id: node_module.id }
+            )
+          end.to change { mutation_events.count }.by(1)
+          mcp_radius = mcp.dig(:data, :blast_radius).deep_stringify_keys
+          mcp_event = mutation_events.last
+
+          expect(rest_radius).to include("requires_approval" => true, "provisioned_node_count" => 1,
+                                         "purged_assignment_count" => 2, "purged_node_count" => 2)
+          expect(rest_radius["purged_node_ids"]).to match_array(nodes.map(&:id))
+          expect(mcp_radius["purged_node_ids"]).to match_array(twin_nodes.map(&:id))
+          except_ids = ->(h) { h.except("purged_node_ids") }
+          expect(except_ids.call(rest_radius)).to eq(except_ids.call(mcp_radius))
+
+          [ rest_event, mcp_event ].each do |event|
+            expect(event.payload).to include("change" => "module_unassigned", "purged_assignment_count" => 2,
+                                             "initiated_by" => user.id)
+            expect(event.node_module_id).to eq(node_module.id)
+          end
+          expect(rest_event.correlation_id).to eq("template_mutation:#{template.id}")
+          expect(mcp_event.correlation_id).to eq("template_mutation:#{twin.id}")
+        end
+      end
     end
   end
 
