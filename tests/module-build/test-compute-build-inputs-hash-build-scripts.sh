@@ -125,10 +125,17 @@ echo "compute-build-inputs-hash.sh: against the real stage15.sh"
 cp "$REAL_STAGE15" "$REPO/scripts/module-build/stage15.sh"
 cp "$REAL_NEEDS_PARENT" "$REPO/scripts/module-build/$(basename "$REAL_NEEDS_PARENT")"
 cp "$REAL_HELPER" "$REPO/scripts/module-build/$(basename "$REAL_HELPER")"
-NEEDS_PARENT="powernode-hub-backend powernode-hub-worker powernode-hub-frontend powernode-extension-system"
-for m in $NEEDS_PARENT postgres-primary; do mkdir -p "$REPO/modules/$m"; echo "schema_version: 1" > "$REPO/modules/$m/manifest.yaml"; done
+NEEDS_PARENT="$(python3 "$TEST_DIR/../../scripts/module-build/stage15-arm.py" --needs-parent-modules "$REAL_NEEDS_PARENT" --needs-parent-list | tr '\n' ' ')"
+NEEDS_PARENT="${NEEDS_PARENT% }"
+[ -n "$NEEDS_PARENT" ] || { echo "FATAL: could not read the needs-parent list"; exit 1; }
+# "and no other" is only as strong as the module list: every module with an
+# arm in the real stage15.sh (plus two with none) is hashed at every step.
+ARM_MODULES="$(python3 "$TEST_DIR/../../scripts/module-build/stage15-arm.py" --needs-parent-modules "$REAL_NEEDS_PARENT" --slugs < "$REAL_STAGE15" | tr '\n' ' ')"
+[ -n "$ARM_MODULES" ] || { echo "FATAL: could not read the arm slugs"; exit 1; }
+MODULES="${ARM_MODULES% } postgres-primary redis"
+for m in $MODULES; do mkdir -p "$REPO/modules/$m"; echo "schema_version: 1" > "$REPO/modules/$m/manifest.yaml"; done
 commit "real stage15"
-MODULES="$NEEDS_PARENT postgres-primary vault"
+echo "  (modules under test: $(echo "$MODULES" | wc -w))"
 snapshot
 echo "# edited" >> "$REPO/scripts/module-build/$(basename "$REAL_HELPER")"; commit "helper edit against real stage15"
 # stage-extension-system-files.sh is called by the hub-backend and extension-system arms only
