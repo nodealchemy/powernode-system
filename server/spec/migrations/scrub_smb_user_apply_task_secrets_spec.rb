@@ -111,6 +111,13 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
     ActiveSupport::Notifications.unsubscribe(subscription) if subscription
   end
 
+  # The rescue path's boot safety depends on each batch committing on its own:
+  # inside a wrapping migration transaction a rescued error would still abort
+  # the transaction, and with it the boot.
+  it "runs outside a wrapping transaction" do
+    expect(described_class.disable_ddl_transaction).to be(true)
+  end
+
   describe "#up" do
     context "with rows shaped as the pre-fix producer and the failed-task path wrote them" do
       let!(:create_row) do
@@ -203,6 +210,10 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
         expect(events.last["timestamp"]).to eq("2026-09-18T10:00:00Z")
       end
 
+      it "does not bump updated_at: the row is the same row with the secret gone, not a new edit" do
+        expect(create_row.reload.updated_at).to eq(create_row.updated_at)
+      end
+
       it "leaves a same-command row that never carried a secret byte-identical" do
         expect(row_text(delete_row.id)).to eq(delete_before)
       end
@@ -259,7 +270,9 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
 
     # The value arm is literal: a password made of regex and LIKE metacharacters,
     # including the `]` the argv pattern cannot cross, is still removed because
-    # the row's own option value is what is searched for.
+    # the row's own option value is what is searched for. Asserted on the
+    # reloaded columns, not on row_to_json text, where the backslash is
+    # escaped and the raw string could never appear.
     it "redacts a password full of metacharacters, and one containing ']', through the row's own option value" do
       odd = "synthetic-]-%-_-\\-(not)-a-real-[smb]-password-#{SecureRandom.hex(4)}"
       row = task!(
@@ -270,13 +283,18 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
 
       run!
 
-      expect(row_text(row.id)).not_to include(odd)
-      expect(row.reload.error_message).to start_with("samba-tool [user create u-odd [REDACTED]]: exit status 255")
+      row.reload
+      expect(row.options["password"]).to eq(sentinel)
+      expect(row.error_message).not_to include(odd)
+      expect(row.error_message).to start_with("samba-tool [user create u-odd [REDACTED]]: exit status 255")
+      expect(row.events.last["message"]).not_to include(odd)
+      expect(row.events.last["message"]).to start_with("samba-tool [user create u-odd [REDACTED]]: exit status 255")
     end
 
     # The fallback for a row whose options no longer carry the value (scrubbed by
     # hand, or by a tool that only knew about options): the argv shape is still
-    # recognisable and is redacted by pattern.
+    # recognisable and is redacted by pattern. Argv only — this arm cannot know
+    # the value, so a repeat of it in the output tail is beyond it.
     context "when options were already stripped of the secret keys but the echo remains" do
       let!(:row) do
         task!(
@@ -332,8 +350,12 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
         set_raw(object_events.id, "events = '{\"message\": \"not an array\"}'::jsonb")
       end
 
-      it "does not raise, scrubs what it can and skips the rest" do
-        expect { run! }.not_to raise_error
+      # `up` rescues, so "does not raise" alone proves nothing; the abort line
+      # must be absent too.
+      it "does not abort, scrubs what it can and skips the rest" do
+        run!
+
+        expect(@printed).not_to include("scrub aborted")
 
         expect(scalar_options.reload.options).to eq("not an object")
         expect(array_options.reload.options).to eq([ "password" ])
@@ -354,10 +376,12 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
       it "reports the skipped shapes by count and still terminates when re-run" do
         run!
 
+        expect(@printed).not_to include("scrub aborted")
         expect(@printed).to match(/2 .*options is not a JSON object/)
         expect(@printed).to match(/1 .*events is not a JSON array/)
         expect(@printed).not_to include(marker)
         expect(run!).to eq(0)
+        expect(@printed).not_to include("scrub aborted")
       end
     end
 
@@ -366,22 +390,118 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
 
       expect(run!).to eq(0)
       expect(@printed).to match(/nothing to scrub/)
+      expect(@printed).not_to include("scrub aborted")
       expect(rows_containing(marker)).to eq(1)
     end
 
-    # Boot safety: a failure inside the scrub must not crash-loop Rails, and the
-    # thing it prints must not be the exception message, which can carry SQL
-    # context and with it row data.
-    it "does not raise when a batch fails, and names only the exception class" do
+    it "sets a bounded lock_timeout for the scrub and restores the session's own afterwards" do
+      conn.execute("SET lock_timeout = '12345ms'")
+
+      run!
+
+      expect(@sql.join("\n")).to include("SET lock_timeout = '#{described_class::LOCK_TIMEOUT}'")
+      expect(conn.select_value("SHOW lock_timeout")).to eq("12345ms")
+    ensure
+      conn.execute("SET lock_timeout = 0")
+    end
+
+    # Boot safety: a failure inside the scrub must not crash-loop Rails, the
+    # thing it prints must not be the exception message (which can carry SQL
+    # context and with it row data), and the leftover count must be visible so
+    # "stamped but not scrubbed" is readable in the boot log.
+    it "does not raise when a batch fails; names the exception class, the leftover count and the rake re-run" do
       task!(options: options_for(action: "create", username: "u-f", "password" => marker))
       allow(migration).to receive(:scrub_batch).and_raise(ActiveRecord::StatementInvalid, "boom with #{marker}")
       allow(Rails.logger).to receive(:error)
 
       expect { run! }.not_to raise_error
 
-      expect(@printed).to include("ActiveRecord::StatementInvalid")
+      expect(@printed).to include("scrub aborted by ActiveRecord::StatementInvalid after 0 row(s); 1 candidate row(s) left")
+      expect(@printed).to include("re-run with rails system:storage:scrub_smb_task_secrets")
       expect(@printed).not_to include(marker)
       expect(Rails.logger).to have_received(:error).with(a_string_including("ActiveRecord::StatementInvalid").and(satisfy { |s| !s.include?(marker) }))
+      expect(conn.select_value("SHOW lock_timeout")).not_to eq(described_class::LOCK_TIMEOUT)
+    end
+
+    it "says the leftover count is unknown when even counting fails" do
+      allow(migration).to receive(:candidate_count).and_raise(ActiveRecord::StatementInvalid, "boom")
+
+      outcome = migration.suppress_messages { migration.scrub }
+
+      expect(outcome.aborted_by).to eq("ActiveRecord::StatementInvalid")
+      expect(outcome.left).to be_nil
+      expect(outcome.scrubbed).to eq(0)
+    end
+  end
+
+  # Row locks held by ANOTHER connection. Transactional fixtures cannot show
+  # this (rows inside the example's transaction are invisible to a second
+  # connection), so these examples commit their rows and delete them by id.
+  describe "rows a concurrent transaction holds" do
+    self.use_transactional_tests = false
+
+    let(:other) { ActiveRecord::Base.connection_pool.checkout }
+
+    before { other.begin_db_transaction }
+
+    after do
+      other.rollback_db_transaction
+      ActiveRecord::Base.connection_pool.checkin(other)
+      System::Task.where(id: @ids).delete_all if @ids
+      System::Node.where(id: @node_ids).delete_all if @node_ids
+      Account.find_by(id: account.id)&.destroy
+    end
+
+    def committed_rows(count)
+      rows = Array.new(count) do |i|
+        task!(options: options_for(action: "create", username: "u-#{i}", "password" => marker),
+              error_message: create_echo("u-#{i}", marker))
+      end
+      @ids = rows.map(&:id)
+      @node_ids = rows.map(&:operable_id).uniq
+      rows
+    end
+
+    it "skips a row another transaction holds FOR UPDATE, reports it, and scrubs it on the next run" do
+      rows = committed_rows(3)
+      held = rows.last
+      other.execute("SELECT id FROM system_tasks WHERE id = #{other.quote(held.id)} FOR UPDATE")
+
+      expect(run!).to eq(2)
+
+      expect(@printed).to match(/scrubbed 2 /)
+      expect(@printed).to include("1 candidate row(s) not scrubbed (locked by a concurrent transaction")
+      expect(@printed).to include("re-run with rails system:storage:scrub_smb_task_secrets")
+      expect(row_text(held.id)).to include(marker)
+      rows.first(2).each { |row| expect(row_text(row.id)).not_to include(marker) }
+
+      other.rollback_db_transaction
+      other.begin_db_transaction # so the after hook's rollback has one to roll back
+
+      expect(run!).to eq(1)
+      expect(row_text(held.id)).not_to include(marker)
+    end
+
+    # A table-level lock is the one wait SKIP LOCKED cannot avoid; lock_timeout
+    # turns it into the rescued path, leaving the row for the rake re-run.
+    it "gives up on a table lock after the lock_timeout instead of hanging, and leaves the row for the re-run" do
+      rows = committed_rows(1)
+      other.execute("LOCK TABLE system_tasks IN ACCESS EXCLUSIVE MODE")
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect { run! }.not_to raise_error
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      expect(@printed).to include("scrub aborted by ActiveRecord::LockWaitTimeout")
+      expect(@printed).to include("leftover candidate count unknown")
+      expect(elapsed).to be < 30
+      expect(conn.select_value("SHOW lock_timeout")).not_to eq(described_class::LOCK_TIMEOUT)
+
+      other.rollback_db_transaction
+      other.begin_db_transaction
+
+      expect(run!).to eq(1)
+      expect(row_text(rows.first.id)).not_to include(marker)
     end
   end
 

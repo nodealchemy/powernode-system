@@ -35,15 +35,21 @@
 #   1. VALUE arm: literal replace() of the row's own password and new_password
 #      (whatever characters they contain) with the sentinel. The secret never
 #      leaves the database — it is read and compared inside the one statement.
+#      Deliberately NOT gated on the value's length: a very short password that
+#      is also a substring of ordinary message text over-redacts that text,
+#      and over-redaction is the right failure direction here; a length gate
+#      would under-redact instead.
 #   2. PATTERN arm: regexp_replace of the two argv shapes above, for rows whose
 #      options no longer carry the value (stripped by hand or by a tool that
 #      only knew about options). Negated character classes, not lazy
 #      quantifiers: PostgreSQL's ARE gives a whole branch the greediness of its
 #      first quantified atom, so `.*?` would eat through the output tail. The
 #      redacted form "[REDACTED]]: " contains a `]` the class cannot cross, so
-#      the pattern never re-matches its own output. A password containing `]`
-#      is beyond the pattern arm; the value arm still removes it whenever
-#      options is intact.
+#      the pattern never re-matches its own output. This arm knows only the
+#      argv: on such a row a repeat of the value inside the "(output: ...)"
+#      tail survives, and a password containing `]` makes the argv pattern
+#      fail to match at all, so the whole value stays. The value arm removes
+#      both whenever options is intact.
 #
 # The option keys KEEP their names with the sentinel as value, so a reader can
 # tell the row was scrubbed rather than wonder whether it ever carried one.
@@ -51,6 +57,10 @@
 # migration must not depend on app code). The post-fix agent's own forward
 # redaction writes bare REDACTED; the two are deliberately not unified, since
 # the forward path no longer puts the value on argv at all.
+#
+# The UPDATE is raw SQL on purpose: updated_at is not bumped, and no model
+# callback, validation, audit hook or broadcast fires. The row's history is
+# the same row with the secret gone, not a new edit of it.
 #
 # BOOT SAFETY. This runs at boot on a self-hosted control plane that cannot
 # recover from a crash-looping Rails, so nothing here may raise on data it did
@@ -67,32 +77,64 @@
 #     are carried through unchanged. Only `message` is rewritten: the failed
 #     and progress writers put their text there, and `data` is {} on both.
 #   - every batch is one statement with LIMIT and FOR UPDATE SKIP LOCKED, so a
-#     row a running task holds is skipped, not waited on.
+#     row some concurrent transaction holds a row lock on is skipped, not
+#     waited on. (A running task holds no row lock between its status writes;
+#     the skip is for whatever transaction happens to be inside one.)
+#   - a session lock_timeout (LOCK_TIMEOUT below) bounds the one wait SKIP
+#     LOCKED cannot avoid — a table-level lock, such as a concurrent DDL or
+#     VACUUM FULL — so it becomes the rescued path rather than a hung boot.
 #   - termination is by a STRICTLY DECREASING candidate count, re-measured
 #     after each batch, not by trusting that the predicate and the rewrite
 #     agree. A batch that updates rows without shrinking the set, or that
 #     updates none, ends the loop and the leftover count is reported.
 #   - any StandardError ends the run with a message naming the exception CLASS
-#     only (StatementInvalid messages embed SQL context) and returns the count
-#     so far. The migration is then stamped as run; re-run it with
-#     `bin/rails db:migrate:redo VERSION=20261001120000` (down is a no-op).
+#     only (StatementInvalid messages embed SQL context), prints the leftover
+#     count so "stamped but not scrubbed" is visible in the boot log, and
+#     returns the count so far. The migration is then stamped as run; re-run
+#     the scrub with the rake task below, never through db:migrate (a
+#     production control plane declares several databases, so Rails refuses
+#     the un-suffixed up/down/redo tasks there).
+#
+# RE-RUN PATH: `rails system:storage:scrub_smb_task_secrets`
+# (server/lib/tasks/scrub_smb_task_secrets.rake). The rake task loads THIS
+# file and calls #scrub, so the SQL lives in exactly one place and that place
+# is the migration — a historical artifact that must keep running on a fresh
+# database long after any service class it might have delegated to has been
+# renamed or deleted. The dependency points one way: the rake task depends on
+# the migration, never the reverse. The task never touches schema_migrations.
 #
 # NEVER THE VALUE. Output is counts only; the SQL is static text with constant
 # binds (command, sentinel, patterns), so ActiveRecord's SQL log carries no
 # row data. No backup column, no audit metadata: the point is that the
-# plaintext stops existing in this table. What this does NOT reach — dead
-# tuples until vacuum, WAL and archives, base backups and dumps, replicas'
-# own backups, agent and request logs, the /proc cmdline exposure c9eb9e72
-# recorded — is written up next to the SMB rotation preflight in
-# docs/STORAGE_SUBSYSTEM.md. Rotation is the remedy; this removes the copy.
+# plaintext stops existing in system_tasks. It does NOT stop existing in the
+# database as a whole: a task created through the REST door passed the core
+# autonomy gate, which stores the task attributes — options included,
+# unfiltered — in ai_deferred_operations.params under task_attributes.options.
+# That is a core table and widening the scrub to it is an operator decision,
+# filed separately; docs/STORAGE_SUBSYSTEM.md carries the count query. What
+# else this does not reach — dead tuples until vacuum, WAL and archives, base
+# backups and dumps, replicas' own backups, agent and request logs, the /proc
+# cmdline exposure c9eb9e72 recorded — is written up there too, next to the
+# SMB rotation preflight. Rotation is the remedy; this removes a copy.
 class ScrubSmbUserApplyTaskSecrets < ActiveRecord::Migration[8.1]
   # Each batch commits on its own, so an interrupted run keeps what it did
-  # and the re-run picks up the rest.
+  # and the re-run picks up the rest. The rescue path's boot safety depends on
+  # this too: with a wrapping transaction a rescued error would still abort it.
   disable_ddl_transaction!
 
   COMMAND = "storage.smb_user.apply"
   SENTINEL = "[REDACTED]"
   BATCH_SIZE = 500
+  RERUN = "rails system:storage:scrub_smb_task_secrets"
+
+  # Rows are selected with SKIP LOCKED, so a row lock never waits; the only
+  # wait left is a table-level lock (concurrent DDL, VACUUM FULL, a long
+  # transaction holding a relation lock). At boot that wait blocks Rails from
+  # serving anything, so it is bounded: 5 seconds is longer than any ordinary
+  # statement-level lock handoff on this table and short enough that a held
+  # table lock turns into a rescued, logged, re-runnable scrub instead of a
+  # hung boot.
+  LOCK_TIMEOUT = "5s"
 
   # The two argv shapes the pre-fix agent echoed, and their redacted forms.
   # Single-quoted on purpose: these are PostgreSQL ARE patterns passed as
@@ -102,9 +144,51 @@ class ScrubSmbUserApplyTaskSecrets < ActiveRecord::Migration[8.1]
   SETPW_ARGV_PATTERN = 'samba-tool \[user setpassword ([^]\s]+) --newpassword=[^]]*\]: '
   SETPW_ARGV_REDACTED = 'samba-tool [user setpassword \1 --newpassword=[REDACTED]]: '
 
+  # $1 command, $2 sentinel, $3 create pattern, $4 setpassword pattern,
+  # $5 create replacement, $6 setpassword replacement. Constants only, never
+  # row data. The predicate uses the first four; PostgreSQL refuses a bind
+  # list longer than the statement references, so the count passes just those.
+  PREDICATE_BINDS = [ COMMAND, SENTINEL, CREATE_ARGV_PATTERN, SETPW_ARGV_PATTERN ].freeze
+  REWRITE_BINDS = (PREDICATE_BINDS + [ CREATE_ARGV_REDACTED, SETPW_ARGV_REDACTED ]).freeze
+
+  # What one run did. `left` is the candidate count after the run (nil when
+  # even counting failed); `aborted_by` is the class name of the rescued error.
+  Outcome = Struct.new(:scrubbed, :left, :aborted_by, keyword_init: true) do
+    def clean?
+      aborted_by.nil? && left == 0
+    end
+  end
+
   # Returns the number of rows rewritten, so the spec can assert that a second
   # run does nothing rather than merely rewriting identical bytes.
   def up
+    scrub.scrubbed
+  end
+
+  # Deliberately a no-op. The plaintext was overwritten in place and there is
+  # nothing to restore it from. Re-running the scrub is the rake task's job,
+  # not a down/up cycle.
+  def down
+    say "#{self.class.name}: irreversible by design; nothing to undo"
+  end
+
+  # The whole scrub, shared by #up and the rake task. Never raises. The lock
+  # timeout wraps the rescue too, so the leftover count the rescue prints is
+  # bounded by it as well — otherwise a held table lock would be rescued once
+  # and then waited on forever by the count that reports it.
+  def scrub
+    with_lock_timeout { guarded_scrub }
+  rescue StandardError => e
+    # Only reachable from SHOW/SET lock_timeout themselves.
+    line = "#{self.class.name}: scrub aborted by #{e.class.name} before it started; re-run with #{RERUN}"
+    say line
+    Rails.logger.error(line)
+    Outcome.new(scrubbed: 0, left: nil, aborted_by: e.class.name)
+  end
+
+  private
+
+  def guarded_scrub
     total = 0
     remaining = candidate_count
 
@@ -117,33 +201,20 @@ class ScrubSmbUserApplyTaskSecrets < ActiveRecord::Migration[8.1]
       remaining = left
     end
 
-    report(total: total, left: candidate_count)
-    total
+    left = candidate_count
+    report(total: total, left: left)
+    Outcome.new(scrubbed: total, left: left, aborted_by: nil)
   rescue StandardError => e
     # Class only. The message of a StatementInvalid carries the statement and
     # can carry row context; neither belongs in a boot log.
+    left = safe_candidate_count
     line = "#{self.class.name}: scrub aborted by #{e.class.name} after #{total} row(s); " \
-           "re-run with bin/rails db:migrate:redo VERSION=#{redo_version}"
+           "#{left.nil? ? 'leftover candidate count unknown (the count failed too)' : "#{left} candidate row(s) left"}; " \
+           "re-run with #{RERUN}"
     say line
     Rails.logger.error(line)
-    total
+    Outcome.new(scrubbed: total, left: left, aborted_by: e.class.name)
   end
-
-  # Deliberately a no-op. The plaintext was overwritten in place and there is
-  # nothing to restore it from; a no-op down also makes db:migrate:redo the
-  # re-run path after a rescued failure or a locked-row skip.
-  def down
-    say "#{self.class.name}: irreversible by design; nothing to undo"
-  end
-
-  private
-
-  # $1 command, $2 sentinel, $3 create pattern, $4 setpassword pattern,
-  # $5 create replacement, $6 setpassword replacement. Constants only, never
-  # row data. The predicate uses the first four; PostgreSQL refuses a bind
-  # list longer than the statement references, so the count passes just those.
-  PREDICATE_BINDS = [ COMMAND, SENTINEL, CREATE_ARGV_PATTERN, SETPW_ARGV_PATTERN ].freeze
-  REWRITE_BINDS = (PREDICATE_BINDS + [ CREATE_ARGV_REDACTED, SETPW_ARGV_REDACTED ]).freeze
 
   # One batch: rewrite up to BATCH_SIZE candidate rows, all columns at once.
   def scrub_batch
@@ -169,6 +240,24 @@ class ScrubSmbUserApplyTaskSecrets < ActiveRecord::Migration[8.1]
       "SELECT count(*) FROM system_tasks WHERE #{candidate_sql}",
       "scrub_smb_user_apply_task_secrets_count", PREDICATE_BINDS
     ).to_i
+  end
+
+  # For the rescue path: a count that cannot itself raise.
+  def safe_candidate_count
+    candidate_count
+  rescue StandardError
+    nil
+  end
+
+  # Session-level, because without a wrapping transaction SET LOCAL would not
+  # outlive the statement that set it. Restored whatever happens, so the
+  # connection goes back to the pool as it came.
+  def with_lock_timeout
+    previous = connection.select_value("SHOW lock_timeout")
+    connection.execute("SET lock_timeout = #{connection.quote(LOCK_TIMEOUT)}")
+    yield
+  ensure
+    connection.execute("SET lock_timeout = #{connection.quote(previous)}") if previous
   end
 
   # A row is a candidate while it still holds something one of the two arms
@@ -208,9 +297,10 @@ class ScrubSmbUserApplyTaskSecrets < ActiveRecord::Migration[8.1]
     SQL
   end
 
-  # Value arm (both secrets, literal replace, skipped when the value is absent
-  # or empty — replace() with an empty needle is a no-op but is not worth
-  # relying on), then the pattern arm for both argv shapes. NULL in, NULL out.
+  # Value arm (both secrets, literal replace, skipped only when the value is
+  # absent or empty — replace() with an empty needle is a no-op but is not
+  # worth relying on), then the pattern arm for both argv shapes. NULL in,
+  # NULL out.
   def redacted_sql(text)
     value_arm = text
     %w[password new_password].each do |key|
@@ -254,12 +344,7 @@ class ScrubSmbUserApplyTaskSecrets < ActiveRecord::Migration[8.1]
     return unless left.positive?
 
     say "#{self.class.name}: #{left} candidate row(s) not scrubbed (locked by a concurrent transaction, " \
-        "or of a shape the rewrite cannot change); re-run with bin/rails db:migrate:redo VERSION=#{redo_version}"
-  end
-
-  # `version` is set by the migrator, not by `new`; fall back to the file's own.
-  def redo_version
-    version || File.basename(__FILE__)[/\A\d+/]
+        "or of a shape the rewrite cannot change); re-run with #{RERUN}"
   end
 
   def count_where(predicate)
