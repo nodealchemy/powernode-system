@@ -299,6 +299,17 @@ type Reconciler struct {
 	deferralSince      map[string]int64
 	nowUnix            func() int64
 
+	// agentConditions is the PUBLISHED standing-condition list (agent_conditions.go),
+	// read by buildHeartbeat from another goroutine, so atomic like the fields
+	// above. condPending is the pass-local accumulator, sudoersConds the latest
+	// sudoers-render verdict (it persists across passes that skip the render),
+	// condFirstSeen each live condition's unbroken-run start; all touched only
+	// under mu.
+	agentConditions atomic.Pointer[[]AgentCondition]
+	condPending     []AgentCondition
+	sudoersConds    []AgentCondition
+	condFirstSeen   map[string]string
+
 	// tickIdentityManifests (T1, final review on f3339424, HIGH) is THIS
 	// tick's own full identity/sudoers manifest set — every currently
 	// desired/attached module's manifest, with any actively-bumping
@@ -693,6 +704,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// land between a later reset point and its own recording call.
 	r.resetSecurityFailClosed()
 	r.resetAssignmentDeferralPending()
+	r.resetAgentConditionPending()
 
 	// E8: realize the durable-storage binding before module attaches,
 	// so any module unit start (e.g. postgres) finds its data
@@ -2198,6 +2210,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 	// tick, not just while some OTHER bump is in flight — see this
 	// function's own doc for why nothing lighter already covers this.
 	r.reportKnownDegradedUnits(ctx, current)
+	r.publishAgentConditions()
 
 	if err := mount.SaveState(r.cfg.StatePath, current); err != nil {
 		r.lastError = fmt.Errorf("save state: %w", err)
@@ -2244,8 +2257,10 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 // about security drop-in writes, not general unit health; ModuleVerifyState
 // is the opt-in probe checked above) — reported through r.cfg.OnError
 // directly instead: the log/stderr sink every OnError call already reaches,
-// with no server-side contract change. A dedicated heartbeat field is a
-// follow-up for the platform side, not this commit.
+// with no server-side contract change. IMP-a6d61b01490d is that follow-up:
+// each still-degraded unit is also recorded as an AgentCondition
+// (agent_conditions.go) and rides the heartbeat, so the platform can show it.
+// It still never enters convergeFailures.
 func (r *Reconciler) reportKnownDegradedUnits(ctx context.Context, current *mount.State) {
 	for i, m := range current.AttachedModules {
 		if len(m.KnownDegradedUnits) == 0 {
@@ -2259,6 +2274,8 @@ func (r *Reconciler) reportKnownDegradedUnits(ctx context.Context, current *moun
 				continue // recovered — drop it, no separate event
 			}
 			stillDegraded = append(stillDegraded, unit)
+			r.recordAgentCondition(ConditionKnownDegradedUnit, unit,
+				fmt.Sprintf("module %s: Result=%q since an earlier upgrade committed despite it", m.ID, result))
 			r.cfg.OnError("reconciler:known_degraded_unit", fmt.Errorf(
 				"module %s: unit %s remains degraded (Result=%q) since an earlier upgrade committed despite it (V1: it was already failing before that whole episode started) — operator action needed (e.g. configure the missing credential); not blocking any commit, and NOT counted as a convergence failure (F1: an apply_config task must not fail forever over a pre-existing condition), just staying visible until it recovers",
 				m.ID, unit, result))
@@ -2838,7 +2855,9 @@ func (r *Reconciler) applyIdentityAndSudoers(manifests []*manifest.Manifest, sta
 	// platform source of truth) and /home must stay traversable, else sshd
 	// and any unprivileged service with HOME there break. Idempotent.
 	reconcileHomeOwnership(identitySet, "", r.cfg.OnError)
-	if err := applySudoers(etcsudoers.CollectFromManifests(manifests)); err != nil {
+	sudoersErr := applySudoers(etcsudoers.CollectFromManifests(manifests))
+	r.noteSudoersVerdict(sudoersErr)
+	if err := sudoersErr; err != nil {
 		if etcsudoers.RefusalsOnly(err) {
 			// IMP-3f6c2f35c50d: grants refused for an illegal or colliding
 			// drop-in name are one module's own defect, not a failure of the

@@ -198,6 +198,16 @@ type HeartbeatPayload struct {
 	// means no deferral is in force, or an agent too old to say; the platform
 	// must treat absence as UNREPORTED, never as a measured all-clear.
 	AssignmentDeferral []AssignmentDeferralReport `json:"assignment_deferral,omitempty"`
+	// AgentConditions (IMP-a6d61b01490d) lists the standing conditions the agent
+	// keeps off the failure path on purpose but an operator must see: a
+	// known-degraded unit and a refused sudoers grant today (agent_conditions.go).
+	// It rides the heartbeat, not a one-shot fleet event, because the heartbeat
+	// is the lane that carries STANDING state and is resent every tick, which is
+	// what lets a cleared condition be reported as cleared. A POINTER so the
+	// three states stay distinct on the wire: nil is omitted and means the agent
+	// has not measured yet or is too old to report (the platform must read it as
+	// UNREPORTED); a non-nil empty list is sent as [] and means measured, none.
+	AgentConditions *[]AgentCondition `json:"agent_conditions,omitempty"`
 	// SSHHostKeys are this host's SSH host PUBLIC keys, read from
 	// /etc/ssh/ssh_host_*_key.pub (IMP-190834701b0a; see hostkeys.go). The
 	// platform verifies every SSH connection it makes to this node against
