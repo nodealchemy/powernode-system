@@ -217,6 +217,8 @@ module System
         project.target_unmeasurable_investigate
         system.cloud_sync_terminated_guest_investigate
         system.cloud_sync_check_stale_investigate
+        system.ssh_host_key_changed_investigate
+        system.ssh_host_key_coverage_investigate
       ].freeze
 
       # The same exemption, keyed by SIGNAL KIND instead of action_category —

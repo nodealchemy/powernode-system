@@ -129,6 +129,26 @@ RSpec.describe System::SshHostKeyWriter do
       expect(audits.last.metadata["boot_id_changed"]).to be(false)
     end
 
+    # IMP-e744d96da817 (review): nil == nil must not read as "the same boot", or a
+    # reimage reported by an agent with no boot_id is paged as the tamper shape.
+    it "leaves boot_id_changed UNKNOWN (absent, never false) when either side has no boot_id" do
+      instance.update_columns(ssh_host_keys: nil)
+      write!([ ed25519 ], boot_id: nil)
+
+      expect(write!([ replacement ], boot_id: nil)).to eq(:changed)
+
+      expect(audits.last.metadata).not_to have_key("boot_id_changed")
+      event = System::FleetEvent.where(kind: described_class::CHANGED_EVENT_KIND, node_instance_id: instance.id).sole
+      expect(event.payload).not_to have_key("boot_id_changed")
+      expect(event.severity).to eq("high") # still on the feed, as before; just not classified
+    end
+
+    it "leaves it unknown when only the new report has no boot_id" do
+      expect(write!([ replacement ], boot_id: nil)).to eq(:changed)
+
+      expect(audits.last.metadata).not_to have_key("boot_id_changed")
+    end
+
     it "emits a MEDIUM changed event for a change across a reboot (what a reimage looks like)" do
       write!([ replacement ], boot_id: "boot-2")
 

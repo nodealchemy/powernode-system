@@ -704,6 +704,15 @@ module System
         # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
         "system.cloud_sync_check_stale_investigate" => "notify_and_proceed",
 
+        # IMP-e744d96da817 — SshHostKeySensor. A recorded SSH host key that changed
+        # with no boot between is a person's decision, so require_approval (never
+        # auto_approve: nothing here can act, and a quiet approval reaches no
+        # one). The coverage gap is notify_and_proceed: "proceed" means "notify the
+        # operator", and the fix is finding out why an agent is not reporting. Both
+        # are in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
+        "system.ssh_host_key_changed_investigate" => "require_approval",
+        "system.ssh_host_key_coverage_investigate" => "notify_and_proceed",
+
         # StuckTaskBacklogSensor — "tasks are piling up behind the janitor".
         #
         # notify_and_proceed, never auto_approve: there is no applier and can be

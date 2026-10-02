@@ -183,7 +183,7 @@ module System
           previous_fingerprints: old_fingerprints,
           fingerprints: new_fingerprints,
           key_types: entries.map { |entry| entry["type"] },
-          boot_id_changed: outcome == :changed ? !same_boot : nil
+          boot_id_changed: outcome == :changed ? boot_id_changed(document, boot_id, same_boot) : nil
         }.compact
 
         instance.update_columns(ssh_host_keys: {
@@ -193,6 +193,18 @@ module System
         })
         write_audit!(instance, outcome, details)
         [ outcome, details ]
+      end
+
+      # Whether the boot differs across a change, or nil when that is UNKNOWN: a
+      # blank boot_id on either side (an older agent, a capped or empty report)
+      # makes nil == nil read as "the same boot", and a reimage would then be filed
+      # as the no-boot-between tamper shape (IMP-e744d96da817 pages on exactly
+      # that). An unknown classification is omitted from the details (compact), so
+      # nothing downstream can mistake it for either answer.
+      def boot_id_changed(document, boot_id, same_boot)
+        return nil if boot_id.blank? || document.nil? || document["boot_id"].blank?
+
+        !same_boot
       end
 
       def confirm_boot!(instance, document, boot_id)

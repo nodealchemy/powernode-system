@@ -538,7 +538,13 @@ module System
         # system.cloud_sync_terminated_guest_investigate lane (notify-only; no
         # applier exists — see the sensor's own doc for why) when a terminated
         # row's guest is still listed at the provider.
-        ::System::Fleet::Sensors::TerminatedGuestPresentSensor
+        ::System::Fleet::Sensors::TerminatedGuestPresentSensor,
+        # IMP-e744d96da817 — SSH host keys: a change with no boot between
+        # (system.ssh_host_key_changed_in_boot -> require_approval, no applier)
+        # and fleet coverage (system.ssh_host_key_uncovered notify-only;
+        # system.ssh_host_key_coverage_complete the positive "zero uncovered"
+        # fact, bound to system.observation).
+        ::System::Fleet::Sensors::SshHostKeySensor
       ].freeze
 
       # Scoped to THIS account. The fleet agents are seeded global (account_id

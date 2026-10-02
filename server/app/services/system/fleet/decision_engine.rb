@@ -1133,6 +1133,39 @@ module System
         "system.cloud_sync_check_stale" => {
           skill: nil,
           action_category: "system.cloud_sync_check_stale_investigate"
+        },
+        # IMP-e744d96da817 — SshHostKeySensor, arm b: a recorded SSH host key
+        # changed with the SAME boot_id on both sides, the impersonation or
+        # tamper shape (a reimage changes the boot). skill: nil, and none can be
+        # named: the remedies (clear the recorded key, isolate the node) are
+        # human acts. require_approval, so it reaches a person; DO NOT collapse
+        # to system.observation (auto_approve reaches no operator). In
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES: nothing here
+        # converges, a person decides.
+        #
+        # advisory: true, for the capability_gap reason: with no applier an APPROVED
+        # request would otherwise be re-minted every DEDUP_TTL while the event stays
+        # inside the sensor's lookback (up to ~6 approvals for one change). The
+        # payload carries no module_id, so the consent budget is inert here.
+        "system.ssh_host_key_changed_in_boot" => {
+          skill: nil,
+          action_category: "system.ssh_host_key_changed_investigate",
+          advisory: true
+        },
+        # Arm a: instances with no recorded host key. Notify-only, no applier:
+        # an operator finds out why that agent is not reporting. Its own category,
+        # separable from the change lane above, so resolving one cannot dismiss
+        # the other. Also non-remediating: it stands until agents report.
+        "system.ssh_host_key_uncovered" => {
+          skill: nil,
+          action_category: "system.ssh_host_key_coverage_investigate"
+        },
+        # Arm a, the positive fact: zero uncovered across a non-empty fleet.
+        # system.observation (auto_approve) is right HERE and wrong for the two
+        # above: this one files for dashboards and is not meant to page anyone.
+        "system.ssh_host_key_coverage_complete" => {
+          skill: nil,
+          action_category: "system.observation"
         }
       }.freeze
 
