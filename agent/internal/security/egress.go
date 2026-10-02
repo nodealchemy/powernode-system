@@ -16,6 +16,7 @@ import (
 
 	"github.com/nodealchemy/powernode-system/agent/internal/fsutil"
 	"github.com/nodealchemy/powernode-system/agent/internal/mount"
+	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
 )
 
 // EgressTable is the nftables table name the agent uses for module-level
@@ -488,6 +489,11 @@ func SetEgressForceCleanupForTest(v bool) (restore func()) {
 
 func applyEgressScript(ctx context.Context, runner mount.Runner, script string) error {
 	dir := filepath.Dir(egressScriptPath)
+	// Before the directory is created or chmod'ed: under a test the staging
+	// path must be inside the sandbox (SetEgressScriptPathForTest).
+	if err := writeguard.Check(egressStagingPath()); err != nil {
+		return fmt.Errorf("egress script %s: %w", egressStagingPath(), err)
+	}
 	if err := ensureEgressScriptDir(dir); err != nil {
 		return fmt.Errorf("egress script dir %s: %w", dir, err)
 	}
@@ -510,7 +516,7 @@ func applyEgressScript(ctx context.Context, runner mount.Runner, script string) 
 	if !testing.Testing() || egressForceCleanupForTest {
 		defer os.Remove(path)
 	}
-	if err := runner.Run(ctx, "nft", "-f", path); err != nil {
+	if err := runHost(ctx, runner, "nft", "-f", path); err != nil {
 		return fmt.Errorf("nft -f %s: %w", path, err)
 	}
 	return nil
@@ -1023,7 +1029,7 @@ func parseEgressGrammar(entry string) (host string, port int, literals []egressD
 // is detached.
 func RemoveEgressAllowlist(ctx context.Context, runner mount.Runner) error {
 	chain := "powernode_egress_filter"
-	return runner.Run(ctx, "nft", "delete", "chain", "inet", EgressTable, chain)
+	return runHost(ctx, runner, "nft", "delete", "chain", "inet", EgressTable, chain)
 }
 
 // resolveProtectedHost normalises a protected-host entry to one or

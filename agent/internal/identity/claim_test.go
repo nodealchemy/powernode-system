@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -66,6 +68,7 @@ func TestClaimStrategy_BootHasNoServer(t *testing.T) {
 }
 
 func TestClaimStrategy_PollPendingThenClaimed(t *testing.T) {
+	sandboxClaimConsole(t)
 	// First poll → pending. Second → claimed. ClaimStrategy should return
 	// completed identity after the second poll.
 	pollCount := 0
@@ -136,6 +139,7 @@ func TestClaimStrategy_PollPendingThenClaimed(t *testing.T) {
 }
 
 func TestClaimStrategy_RetryOnTransientError(t *testing.T) {
+	sandboxClaimConsole(t)
 	// First poll → 503. Second → claimed. Strategy must keep polling
 	// through transient platform errors rather than failing the chain.
 	pollCount := 0
@@ -177,6 +181,7 @@ func TestClaimStrategy_RetryOnTransientError(t *testing.T) {
 }
 
 func TestClaimStrategy_MaxPollsExhausted(t *testing.T) {
+	sandboxClaimConsole(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(claimResponseEnvelope{
@@ -203,6 +208,7 @@ func TestClaimStrategy_MaxPollsExhausted(t *testing.T) {
 }
 
 func TestClaimStrategy_RequestPayloadShape(t *testing.T) {
+	sandboxClaimConsole(t)
 	// Verify the agent sends the fields the platform expects.
 	var captured claimRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -243,6 +249,7 @@ func TestClaimStrategy_RequestPayloadShape(t *testing.T) {
 }
 
 func TestClaimStrategy_TrailingSlashOnPlatformURL(t *testing.T) {
+	sandboxClaimConsole(t)
 	// Operators sometimes include a trailing slash. Strategy must
 	// normalize so the endpoint isn't /api/v1/system/node_api//claim.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -273,6 +280,7 @@ func TestClaimStrategy_TrailingSlashOnPlatformURL(t *testing.T) {
 }
 
 func TestClaimStrategy_PollAfterSecondsHonored(t *testing.T) {
+	sandboxClaimConsole(t)
 	// Platform returns poll_after_seconds=0 (falsy → ignored), then
 	// returns claimed. The strategy uses its own PollInterval, but if
 	// the platform sent a non-zero hint we'd expect it to override.
@@ -315,4 +323,18 @@ func TestClaimStrategy_PollAfterSecondsHonored(t *testing.T) {
 	if elapsed < 4*time.Millisecond {
 		t.Errorf("poll loop ran too fast (%v) — PollAfterSeconds=0 may have been mishandled", elapsed)
 	}
+}
+
+// sandboxClaimConsole points the claim code's console at a file in the test's
+// own temp dir, so a claim flow that reaches surfaceClaimCode never writes the
+// machine's real /dev/tty1 (IMP-d869a06dfc57; the writeguard refuses it).
+func sandboxClaimConsole(t *testing.T) {
+	t.Helper()
+	console := filepath.Join(t.TempDir(), "tty1")
+	if err := os.WriteFile(console, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := claimConsolePath
+	claimConsolePath = console
+	t.Cleanup(func() { claimConsolePath = prev })
 }

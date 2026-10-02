@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
 )
 
 // ClaimStrategy completes the physical-device enrollment loop on devices
@@ -222,6 +224,10 @@ func (s *ClaimStrategy) httpClient(boot *Identity) *http.Client {
 	}
 }
 
+// claimConsolePath is the machine's own console, where the claim code is shown.
+// A var so a test can point it at a file in its sandbox.
+var claimConsolePath = "/dev/tty1"
+
 // surfaceClaimCode writes the claim code to /dev/tty1 (HDMI console)
 // so an operator with a monitor sees the code without needing UI access.
 // Best-effort — failures are silent.
@@ -230,9 +236,13 @@ func (s *ClaimStrategy) surfaceClaimCode(code string) {
 		return
 	}
 	msg := fmt.Sprintf("\n=== Powernode claim code: %s ===\n  Confirm in operator UI to enroll this device.\n\n", code)
-	if f, err := os.OpenFile("/dev/tty1", os.O_WRONLY, 0); err == nil {
-		_, _ = f.WriteString(msg)
-		_ = f.Close()
+	// Under a test the console must be a file in the sandbox: a root test run on
+	// a real node would otherwise print on the machine's own screen.
+	if writeguard.Check(claimConsolePath) == nil {
+		if f, err := os.OpenFile(claimConsolePath, os.O_WRONLY, 0); err == nil {
+			_, _ = f.WriteString(msg)
+			_ = f.Close()
+		}
 	}
 	// Always log to stderr too so journalctl picks it up.
 	fmt.Fprint(os.Stderr, msg)

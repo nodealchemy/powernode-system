@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/nodealchemy/powernode-system/agent/internal/writeguard"
 )
 
 // writeDropInFile is the ONE tmp-write-then-rename implementation shared by
@@ -49,6 +51,14 @@ import (
 // ordinary first-ever-write case) counts as changed — going from "absent"
 // to "present" is exactly the kind of change a caller must act on.
 func writeDropInFile(dropInDir, filename, body string) (changed bool, err error) {
+	// The ONE choke point every drop-in writer reaches (capabilities, seccomp,
+	// userns, the restore path): under a test the directory must be inside the
+	// sandbox, so a default /etc/systemd/system root is refused before any I/O.
+	// The checked path is the FILE, so a filename that climbs out of the
+	// directory (".." in it) is judged by where it really lands.
+	if err := writeguard.Check(filepath.Join(dropInDir, filename)); err != nil {
+		return false, fmt.Errorf("writeDropInFile: %w", err)
+	}
 	if err := os.MkdirAll(dropInDir, 0o755); err != nil {
 		return false, fmt.Errorf("writeDropInFile: mkdir %s: %w", dropInDir, err)
 	}
@@ -101,6 +111,9 @@ func writeDropInFile(dropInDir, filename, body string) (changed bool, err error)
 // caller needs to restart/reload for.
 func removeDropInFile(dropInDir, filename string) (changed bool, err error) {
 	path := filepath.Join(dropInDir, filename)
+	if err := writeguard.Check(path); err != nil {
+		return false, fmt.Errorf("removeDropInFile: %w", err)
+	}
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil

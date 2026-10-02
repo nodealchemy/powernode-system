@@ -39,7 +39,7 @@ func LoadSELinuxProfile(ctx context.Context, runner mount.Runner, name string) e
 	if !selinuxAvailable() {
 		return ErrSELinuxNotAvailable
 	}
-	return runner.Run(ctx, "semodule", "-i", resolved)
+	return runHost(ctx, runner, "semodule", "-i", resolved)
 }
 
 // LoadAppArmorProfile installs an AppArmor profile via apparmor_parser
@@ -59,7 +59,7 @@ func LoadAppArmorProfile(ctx context.Context, runner mount.Runner, name string) 
 	if !apparmorAvailable() {
 		return ErrAppArmorNotAvailable
 	}
-	return runner.Run(ctx, "apparmor_parser", "-r", resolved)
+	return runHost(ctx, runner, "apparmor_parser", "-r", resolved)
 }
 
 // ApplySeccompProfile validates that security.seccomp_profile resolves to a
