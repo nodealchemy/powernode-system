@@ -147,11 +147,15 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_clear_ssh_host_key" do
       expect(deferred.params.dig("tool_params", "expected_fingerprints")).to eq([ fingerprint ])
     end
 
-    it "mints the expected fingerprints itself: a caller-supplied value is overwritten" do
-      deferred = parked_after(clear!(expected_fingerprints: [ "SHA256:attacker" ]))
+    # expected_fingerprints is the platform's own stamp, so it is not a declared
+    # parameter: with strict parameters a caller cannot supply one at all, and the
+    # gate still mints the value itself (the example above).
+    it "refuses a caller-supplied expected_fingerprints as an unrecognized parameter and parks nothing" do
+      response = clear!(expected_fingerprints: [ "SHA256:attacker" ])
 
-      expect(deferred.params.dig("tool_params", "expected_fingerprints"))
-        .to eq([ SshHostKeyFixtures.fingerprint(ed25519["key"]) ])
+      expect(response[:success]).to be false
+      expect(response[:error]).to include("Unrecognized parameter(s)").and include("expected_fingerprints")
+      expect(Ai::DeferredOperation.count).to eq(0)
     end
 
     it "refuses on approval, and keeps the key, when the node re-recorded a DIFFERENT key while the request was parked" do
