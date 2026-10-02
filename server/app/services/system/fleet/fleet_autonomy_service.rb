@@ -487,6 +487,14 @@ module System
         # applier — the repair is a deliberate unassignment or a servable
         # manifest).
         ::System::Fleet::Sensors::AssignmentDeferralSensor,
+        # IMP-a6d61b01490d — the agent's standing conditions (a known-degraded
+        # unit, a refused sudoers grant), which it keeps off the failure path
+        # on purpose and used to report only on stderr. It reports them on its
+        # heartbeat (agent_conditions, [] when cleared, absent when it cannot
+        # say); BootLkgStateWriter persists them and this sensor alerts on a
+        # non-empty list. Emits system.node_agent_condition ->
+        # system.node_agent_condition_investigate (notify-only; no applier).
+        ::System::Fleet::Sensors::AgentConditionSensor,
         # N4 (review round 11, IMP-caef5c00d63f) — the pending-upgrade-digest
         # oracle. System::PendingModuleDigestsWriter has persisted the
         # agent's PendingModuleDigests heartbeat lane (M9, round 9) since

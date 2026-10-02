@@ -668,6 +668,13 @@ module System
         # applier. Also in RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
         "system.node_assignment_deferred_investigate" => "notify_and_proceed",
 
+        # IMP-a6d61b01490d — AgentConditionSensor. A live node reports a
+        # standing agent condition (known-degraded unit, refused sudoers grant).
+        # notify_and_proceed, never auto_approve: the repair is an operator
+        # decision with no applier. Also in
+        # RemediationValidator::NON_REMEDIATING_ACTION_CATEGORIES.
+        "system.node_agent_condition_investigate" => "notify_and_proceed",
+
         # N4 (review round 11, IMP-caef5c00d63f) — PendingDigestStuckSensor.
         # A module has held the same in-place-upgrade PendingDigest past the
         # sensor's threshold.

@@ -249,6 +249,67 @@ RSpec.describe System::BootLkgStateWriter do
     end
   end
 
+  # IMP-a6d61b01490d — the agent's standing-conditions lane (known-degraded unit,
+  # refused sudoers grant). UNLIKE every list above it, an EMPTY list is
+  # meaningful here: the agent sends [] to say "I looked, nothing is wrong" and
+  # omits the key when it has not measured or is too old to report. So the three
+  # states stay distinct: nil (unreported), [] (measured, none), entries.
+  describe "agent_conditions" do
+    let(:wire) do
+      [ { "kind" => "known_degraded_unit", "subject" => "powernode-m1-credential.service",
+          "detail" => "module m1: Result=\"exit-code\"", "first_seen" => "2026-10-01T10:00:00Z" },
+        { "kind" => "sudoers_refused", "subject" => "mod-a/bad name",
+          "detail" => "illegal drop-in name", "first_seen" => "2026-10-01T11:00:00Z" } ]
+    end
+
+    it "stores the reported conditions normalized" do
+      write("agent_conditions" => wire)
+
+      expect(stored["agent_conditions"]).to eq(wire)
+    end
+
+    it "stores [] for an explicit empty report (measured, none) and nil when the key is absent" do
+      write("agent_conditions" => wire)
+      write("agent_conditions" => [])
+      expect(stored["agent_conditions"]).to eq([])
+
+      write("lkg_present" => true)
+      expect(stored["agent_conditions"]).to be_nil
+    end
+
+    it "clears a standing condition when the next heartbeat reports the empty list" do
+      write("agent_conditions" => wire)
+      write("agent_conditions" => [])
+
+      expect(stored["agent_conditions"]).to eq([])
+    end
+
+    it "counts as a report for the first-write rule, including a clean one" do
+      expect(write("agent_conditions" => [])).to be_present
+      expect(stored["agent_conditions"]).to eq([])
+    end
+
+    it "drops entries that are not hashes and bounds what a node can make the platform store" do
+      big = Array.new(100) { |i| { "kind" => "k#{i}", "subject" => "s" * 5000, "detail" => "d" * 5000, "first_seen" => "x" } }
+      write("agent_conditions" => [ "junk", 7 ] + big)
+
+      expect(stored["agent_conditions"].size).to eq(described_class::MAX_AGENT_CONDITIONS)
+      expect(stored["agent_conditions"].first["subject"].length).to be <= described_class::MAX_IDENTIFIER_CHARS
+    end
+
+    it "strips NUL bytes so a hostile detail cannot make the document write raise" do
+      write("agent_conditions" => [ { "kind" => "k\u0000", "subject" => "s\u0000x", "detail" => "d\u0000", "first_seen" => nil } ])
+
+      expect(stored["agent_conditions"].first.slice("kind", "subject", "detail")).to eq("kind" => "k", "subject" => "sx", "detail" => "d")
+    end
+
+    it "treats a non-array value as unreported, never as a clean report" do
+      write("agent_conditions" => "all good")
+
+      expect(stored["agent_conditions"]).to be_nil
+    end
+  end
+
   describe "pivot_security_fail_closed_units / runtime_security_fail_closed_units" do
     # IMP-caef5c00d63f phase 4 — producer-side contract: a heartbeat carrying
     # either key persists it. Same list-or-nil discipline as

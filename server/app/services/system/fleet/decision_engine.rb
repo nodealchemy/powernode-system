@@ -715,6 +715,16 @@ module System
           skill: nil,
           action_category: "system.node_assignment_deferred_investigate"
         },
+
+        # IMP-a6d61b01490d — AgentConditionSensor. A live node reports a
+        # standing condition the agent keeps off the failure path on purpose (a
+        # known-degraded unit, a refused sudoers grant). skill: nil: the repair
+        # is configuring the missing credential or fixing the grant, both
+        # operator decisions with no safe applier.
+        "system.node_agent_condition" => {
+          skill: nil,
+          action_category: "system.node_agent_condition_investigate"
+        },
         # N4 (review round 11, IMP-caef5c00d63f) — PendingDigestStuckSensor.
         # A module has held the same in-place-upgrade PendingDigest past the
         # sensor's threshold. skill: nil, and there is no safe applier to

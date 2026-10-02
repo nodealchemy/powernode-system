@@ -179,6 +179,14 @@ module System
       #                                            no applier: the repair is a
       #                                            deliberate unassignment or
       #                                            a servable manifest.
+      #   system.node_agent_condition_investigate — IMP-a6d61b01490d. A live
+      #                                            node reports a standing
+      #                                            agent condition (a known-
+      #                                            degraded unit, a refused
+      #                                            sudoers grant). There is no
+      #                                            applier: the repair is
+      #                                            configuring the credential
+      #                                            or fixing the grant.
       #
       # system.instance_replace WAS LISTED HERE and is not any more
       # (IMP-555db48d41f1, APO-4). The exemption was correct while the lane had
@@ -204,6 +212,7 @@ module System
         system.node_security_fail_closed_investigate
         system.node_pending_digest_stuck_investigate
         system.node_assignment_deferred_investigate
+        system.node_agent_condition_investigate
         system.module_promotion_investigate
         project.target_unmeasurable_investigate
         system.cloud_sync_terminated_guest_investigate

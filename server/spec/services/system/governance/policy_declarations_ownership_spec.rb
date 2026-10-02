@@ -157,8 +157,10 @@ RSpec.describe System::Governance::PolicyDeclarations, "ownership (HIER-P2A)" do
     # (SecurityFailClosedSensor) and system.node_pending_digest_stuck_investigate
     # (N4, PendingDigestStuckSensor). 24 with IMP-9f4e162d9ed1's
     # system.node_assignment_deferred_investigate (AssignmentDeferralSensor).
-    it "is 56 keys smaller by the 16 P2A moved and the 21 wave 1 moved, plus organic growth since (24)" do
-      expect(d::FLEET_AUTONOMY_POLICIES.size).to eq(24)
+    # 25 with IMP-a6d61b01490d's system.node_agent_condition_investigate
+    # (AgentConditionSensor).
+    it "is 56 keys smaller by the 16 P2A moved and the 21 wave 1 moved, plus organic growth since (25)" do
+      expect(d::FLEET_AUTONOMY_POLICIES.size).to eq(25)
     end
   end
 
@@ -258,8 +260,8 @@ RSpec.describe System::Governance::PolicyDeclarations, "wave 1 managers (HIER-P2
     # tracking comment (pre-existing organic growth to 21, plus this
     # round's own 2: SecurityFailClosedSensor + PendingDigestStuckSensor). 24 with
     # IMP-9f4e162d9ed1's AssignmentDeferralSensor.
-    it "leaves Fleet Autonomy the node_lifecycle / remediation core (24), no longer merged with the groups" do
-      expect(d::FLEET_AUTONOMY_POLICIES.size).to eq(24)
+    it "leaves Fleet Autonomy the node_lifecycle / remediation core (25), no longer merged with the groups" do
+      expect(d::FLEET_AUTONOMY_POLICIES.size).to eq(25)
       moved = d::CAPACITY_MANAGER_POLICIES.keys + d::STORAGE_MANAGER_POLICIES.keys +
               d::INGRESS_MANAGER_POLICIES.keys + d::SUPPLY_CHAIN_MANAGER_POLICIES.keys +
               d::TOPOLOGY_DESIGNER_POLICIES.keys

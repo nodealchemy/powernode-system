@@ -11,9 +11,9 @@ module System
   # producer whose payload nothing consumes is invisible to unit specs on both
   # sides, because both pass while the wire between them is cut.
   #
-  # WIRE SHAPE (runtime.HeartbeatPayload — TEN TOP-LEVEL KEYS, nine scalars or
-  # string lists plus assignment_deferral, a list of objects, not a nested
-  # block like the two sibling lanes):
+  # WIRE SHAPE (runtime.HeartbeatPayload — ELEVEN TOP-LEVEL KEYS, nine scalars or
+  # string lists plus assignment_deferral and agent_conditions, lists of
+  # objects, not a nested block like the two sibling lanes):
   #
   #   lkg_present, lkg_confirmed_at, lkg_module_count   — ARM telemetry (HIGH-1):
   #     emitted on every boot from the on-disk frozen LKG, so an operator can
@@ -91,7 +91,7 @@ module System
       booted_from_lkg lkg_age_seconds lkg_present lkg_confirmed_at
       lkg_module_count boot_incomplete pivot_confinement_omitted
       pivot_security_fail_closed_units runtime_security_fail_closed_units
-      assignment_deferral
+      assignment_deferral agent_conditions
     ].freeze
 
     # Caps. The payload arrives from a node — a compromised or simply buggy
@@ -100,6 +100,8 @@ module System
     MAX_CONFINEMENTS     = 32
     # Entries in assignment_deferral (the agent has two reasons today).
     MAX_DEFERRALS        = 8
+    # Entries in agent_conditions (one per known-degraded unit or refused grant).
+    MAX_AGENT_CONDITIONS = 32
     # Stated once in System::IdentifierCaps — same bound, different write surface.
     MAX_IDENTIFIER_CHARS = ::System::IdentifierCaps::MAX_IDENTIFIER_CHARS
     # Digits, not value: the two numeric fields are an int64 and an int on the
@@ -130,6 +132,19 @@ module System
         # "still says armed" failure this lane exists to prevent.
         written = merge_config_key!(instance, document, allow_first_write: reported_anything?(readable))
         written ? document : nil
+      end
+
+      # The conditions the agent last reported for this instance, plus whether it
+      # reported at all: { "reported" => false, "conditions" => [] } for an agent
+      # with no document or no list (unreported), { "reported" => true, ... }
+      # otherwise. Shared by the sensor and the fleet instance read so neither
+      # re-derives the nil/[] distinction.
+      def agent_conditions_for(instance)
+        document = instance.config.is_a?(Hash) ? instance.config[CONFIG_KEY] : nil
+        list = document.is_a?(Hash) ? document["agent_conditions"] : nil
+        return { "reported" => false, "conditions" => [] } unless list.is_a?(Array)
+
+        { "reported" => true, "conditions" => list.select { |c| c.is_a?(Hash) } }
       end
 
       private
@@ -191,7 +206,19 @@ module System
           # identity render, because the platform's answer cannot be trusted.
           # List-or-nil like its siblings: absence is "none, or an agent too old
           # to say", never a measured all-clear. AssignmentDeferralSensor reads it.
-          "assignment_deferral" => normalize_deferrals(fetch(payload, :assignment_deferral))
+          "assignment_deferral" => normalize_deferrals(fetch(payload, :assignment_deferral)),
+
+          # IMP-a6d61b01490d — the agent's standing conditions (a known-degraded
+          # unit, a refused sudoers grant). The ONE list here where [] is
+          # stored: the agent sends an explicit empty list to say "measured,
+          # nothing wrong" and omits the key when it has not measured or is too
+          # old, so nil (unreported), [] (cleared) and entries stay distinct.
+          # AgentConditionSensor reads it. KNOWN, ACCEPTED: a current agent
+          # omits the key until its first reconcile pass after a restart, so
+          # those first heartbeats store nil (the sensor goes quiet for them and
+          # the standing fingerprint repeats, which the notification rate limit
+          # absorbs) rather than carrying the previous value forward.
+          "agent_conditions" => normalize_agent_conditions(fetch(payload, :agent_conditions))
         }
       end
 
@@ -237,6 +264,27 @@ module System
           }
         end
         entries.empty? ? nil : entries
+      end
+
+      # A list of { kind, subject, detail, first_seen }, [] for an explicit empty
+      # report, or nil when the wire carried no list at all (absent, or a value
+      # that is not an array). Unlike every sibling, [] is a MEASURED answer and
+      # must survive, otherwise a cleared condition could never be told apart
+      # from an agent that does not report. The node controls this payload, so
+      # it is capped in count and every string is bounded.
+      def normalize_agent_conditions(raw)
+        return nil unless raw.is_a?(Array)
+
+        raw.first(MAX_AGENT_CONDITIONS * 4).filter_map do |entry|
+          next unless entry.respond_to?(:key?)
+
+          {
+            "kind"       => identifier(fetch(entry, :kind)).presence || "unnamed",
+            "subject"    => identifier(fetch(entry, :subject)),
+            "detail"     => identifier(fetch(entry, :detail)),
+            "first_seen" => timestamp_or_nil(fetch(entry, :first_seen))
+          }
+        end.first(MAX_AGENT_CONDITIONS)
       end
 
       # true or nil — never false. See the class doc: `omitempty` makes a
@@ -285,7 +333,10 @@ module System
       def identifier(raw)
         return nil if raw.nil?
 
-        value = raw.to_s
+        # NUL is stripped: Postgres jsonb rejects \u0000, the write would raise
+        # inside the heartbeat's rescue, and the WHOLE document would then stop
+        # refreshing (a stale reading is the failure this lane exists to prevent).
+        value = raw.to_s.delete("\u0000")
         value.length > MAX_IDENTIFIER_CHARS ? value[0, MAX_IDENTIFIER_CHARS] : value
       end
 

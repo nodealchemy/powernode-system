@@ -45,6 +45,20 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_get_instance boot-LKG surface
     expect(doc["lkg_module_count"]).to eq(7)
   end
 
+  # IMP-a6d61b01490d — the agent's standing conditions on the instance read, with
+  # the three states explicit: an agent that did not say, one that said "nothing
+  # wrong", and one with conditions.
+  it "exposes agent_conditions as unreported, cleared, or the standing list, never conflating them" do
+    expect(get_instance[:instance][:agent_conditions]).to eq({ "reported" => false, "conditions" => [] })
+
+    ::System::BootLkgStateWriter.write!(instance: instance, payload: { "agent_conditions" => [] })
+    expect(get_instance[:instance][:agent_conditions]).to eq({ "reported" => true, "conditions" => [] })
+
+    cond = { "kind" => "sudoers_refused", "subject" => "mod-a/g", "detail" => "illegal drop-in name", "first_seen" => "2026-10-01T10:00:00Z" }
+    ::System::BootLkgStateWriter.write!(instance: instance, payload: { "agent_conditions" => [ cond ] })
+    expect(get_instance[:instance][:agent_conditions]).to eq({ "reported" => true, "conditions" => [ cond ] })
+  end
+
   it "surfaces an unreported arm state as unreported, never as armed" do
     ::System::BootLkgStateWriter.write!(
       instance: instance,

@@ -696,6 +696,20 @@ RSpec.describe "Api::V1::System::NodeApi::Status#heartbeat", type: :request do
       expect(recorded["assignment_deferral"]).to be_nil
     end
 
+    # IMP-a6d61b01490d — the agent-conditions wire is connected end to end, and
+    # an explicit empty list (cleared) is not the same as an absent key.
+    it "records the agent conditions, an explicit [] as cleared, and nil when the key is absent" do
+      cond = { kind: "known_degraded_unit", subject: "powernode-m1-credential.service", detail: "module m1", first_seen: "2026-10-01T10:00:00Z" }
+      post_heartbeat(agent_conditions: [ cond ])
+      expect(recorded["agent_conditions"]).to eq([ cond.stringify_keys ])
+
+      post_heartbeat(agent_conditions: [])
+      expect(recorded["agent_conditions"]).to eq([])
+
+      post_heartbeat(lkg_present: true)
+      expect(recorded["agent_conditions"]).to be_nil
+    end
+
     # `lkg_confirmed_at` is the AGENT's clock for the on-disk LKG. The
     # document's own observed_at is only when the report reached us — an agent
     # whose LKG froze keeps re-shipping the same confirmed_at while the server

@@ -7749,6 +7749,12 @@ module Ai
           # Reads the ONE key rather than handing the caller the whole `config`
           # jsonb, which also holds operator- and provider-written material.
           boot_lkg: i.config&.dig(::System::BootLkgStateWriter::CONFIG_KEY),
+          # IMP-a6d61b01490d — the agent's standing conditions (known-degraded
+          # unit, refused sudoers grant), lifted out of the boot_lkg document so
+          # the three states are explicit: reported=false is an agent that did
+          # not say (too old, or not measured yet), reported=true with no
+          # conditions is "measured, nothing wrong", never the same thing.
+          agent_conditions: ::System::BootLkgStateWriter.agent_conditions_for(i),
           # IMP-0467eee9fc57 — the cordon marker (who/why/when, and the
           # pool_state an uncordon restores), or nil when not cordoned. Same
           # one-key read as boot_lkg: a mode nobody can read back is the
