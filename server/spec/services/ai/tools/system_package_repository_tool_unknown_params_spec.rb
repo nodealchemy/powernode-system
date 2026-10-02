@@ -16,7 +16,7 @@ RSpec.describe Ai::Tools::SystemPackageRepositoryTool, "unknown parameters" do
   let(:valid) do
     { action: "system_create_package_repository", name: "strict-params-repo", kind: "apt",
       base_url: "https://repo.example.test/debian",
-      apt_config: { suite: "stable", components: ["main"] } }
+      apt_config: { suite: "stable", components: [ "main" ] } }
   end
 
   it "creates the repository from declared keys only" do
