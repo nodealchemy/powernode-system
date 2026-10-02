@@ -243,25 +243,32 @@ RSpec.describe "SystemFleetTool instance-pool gating (IMP-067f39468350)" do
 
     # THE FENCE. The baseline rides inside caller-shaped params, so a caller
     # who could author it would author a guard that always passes.
-    it "ignores a caller-supplied baseline and stamps its own" do
-      update!(target_size: 4, replay_baseline: { target_size: 999, max_size: 999 })
-      operation = latest_deferred
+    #
+    # Two fences now. BaseTool refuses the key outright (it is not in the
+    # action's schema, and nothing parked), and the gate context still drops a
+    # copy and stamps its own, so the premise stays the PERSISTED row even if the
+    # first fence is ever loosened.
+    it "refuses a caller-supplied baseline before anything parks" do
+      result = update!(target_size: 4, replay_baseline: { target_size: 999, max_size: 999 })
 
-      expect(operation.params["tool_params"]["replay_baseline"])
-        .to eq("target_size" => 2)
-
-      update!(target_size: 1)
-      operation.execute_now!
-
-      expect(pool.reload.target_size).to eq(1)
+      expect(result[:success]).to be(false)
+      expect(result[:error]).to include("replay_baseline")
+      expect(::Ai::DeferredOperation.where(account_id: account.id)).to be_empty
     end
 
-    # A forged baseline on a DIRECT (ungated, non-replay) call is inert — it is
-    # honoured only on an #approved_replay?, and it is not a writable column.
-    it "neither writes nor honours a baseline key on an inline call" do
-      expect(update!(target_size: 1, replay_baseline: { target_size: 999 })[:success]).to be(true)
+    it "still stamps its own baseline when the gate context is handed a forged one" do
+      context = tool.send(:instance_pool_update_gate_context,
+                          { action: "system_update_instance_pool", pool_id: pool.id, target_size: 4,
+                            replay_baseline: { target_size: 999, max_size: 999 } })
 
-      expect(pool.reload.target_size).to eq(1)
+      expect(context.dig(:executor_params, "tool_params", "replay_baseline")).to eq("target_size" => 2)
+    end
+
+    # A forged baseline on a DIRECT call is refused, and it is not a writable column.
+    it "neither writes nor honours a baseline key on an inline call" do
+      expect(update!(target_size: 1, replay_baseline: { target_size: 999 })[:success]).to be(false)
+
+      expect(pool.reload.target_size).to eq(2)
       expect(pool).not_to respond_to(:replay_baseline)
     end
   end

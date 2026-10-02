@@ -66,7 +66,13 @@ RSpec.describe Ai::Tools::SystemFleetTool, "per-action permissions" do
   # True when the call cleared the per-action permission gate. The action's own
   # validation may still reject the payload — that is not what this file tests.
   def cleared_gate?(user, action, **params)
-    result = tool_for(user).execute(params: { action: action, **params }.with_indifferent_access)
+    tool = tool_for(user)
+    # Send only what the action declares: a key outside its schema is refused as
+    # an unrecognised parameter, which would be mistaken here for clearing the
+    # permission gate.
+    accepted = tool.send(:accepted_param_keys, action.to_s)
+    params = params.select { |key, _| accepted.include?(key.to_s) } if accepted
+    result = tool.execute(params: { action: action, **params }.with_indifferent_access)
     !(result.is_a?(Hash) && result[:success] == false &&
       result[:error].to_s.match?(/permission denied/i))
   rescue StandardError

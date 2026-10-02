@@ -2215,7 +2215,7 @@ RSpec.describe Ai::Tools::SdwanTool do
     let(:pristine_value) { "old-rule" }
     let(:pristine_failure_hint) { "MCP update_firewall_rule rewrote the nftables rule without an approval gate" }
 
-    let(:noop_request) { { firewall_rule_id: rule.id, bogus_field: "x" } }
+    let(:noop_request) { { firewall_rule_id: rule.id } }
 
     it_behaves_like "an approval-gated sdwan update"
     it_behaves_like "a loud no-op update refusal"
@@ -2279,7 +2279,7 @@ RSpec.describe Ai::Tools::SdwanTool do
     let(:pristine_value) { [] }
     let(:pristine_failure_hint) { "MCP update_virtual_ip moved the VIP without an approval gate" }
 
-    let(:noop_request) { { virtual_ip_id: vip.id, bogus_field: "x" } }
+    let(:noop_request) { { virtual_ip_id: vip.id } }
 
     it_behaves_like "an approval-gated sdwan update"
     it_behaves_like "a loud no-op update refusal"
@@ -2852,7 +2852,7 @@ RSpec.describe Ai::Tools::SdwanTool do
     it "surfaces the denial as an error_result rather than executing the action" do
       bare = described_class.new(account: account, user: nil)
 
-      expect { @result = bare.execute(params: { action: gated_action, name: "bare-net", cidr: "10.90.0.0/16" }) }
+      expect { @result = bare.execute(params: { action: gated_action, name: "bare-net", options: { cidr: "10.90.0.0/16" } }) }
         .not_to change(::Sdwan::Network, :count)
       expect(@result[:success]).to be false
       expect(@result[:error]).to include("permission denied")

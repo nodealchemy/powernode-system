@@ -242,21 +242,27 @@ RSpec.describe "SystemFleetTool terminate approval gating (IMP-d410a587d6bf)" do
     # inner name ("drain_instance" is in DESTRUCTIVE_TOOL_PATTERNS), match no
     # declaration, and fall through to #call — which dispatches on
     # params[:action]. #routed_action_name exists for exactly this.
-    it "still gates when a destructive inner-action key is also supplied" do
+    # IMP-217f4496a0a2: `op` is not a parameter of system_terminate_instance, so
+    # the call is now refused before it reaches the gate at all. The two fences
+    # are stated separately so loosening the outer one cannot silently drop the
+    # inner one: the registry key must stay the ROUTED name, never the widened one.
+    it "refuses a destructive inner-action key that the verb does not declare" do
       response = tool.execute(params: {
         action: "system_terminate_instance",
         instance_id: instance.id,
         op: "drain_instance"
       })
 
-      # `pending` is the assertion that discriminates. The two below it are
-      # redundant guards here — with the registry keyed off the widened name
-      # the call would fall through to #call and hit the gate_routed_only
-      # tripwire, which also terminates nothing — so they are stated as
-      # corroboration, not as the oracle.
-      expect(response[:data]).to include(pending: true)
+      expect(response).to include(success: false)
+      expect(response[:error]).to include("op")
       expect(instance.reload.status).not_to eq("terminated")
       expect(adapter).not_to have_received(:terminate_instance)
+    end
+
+    it "keys the registry off the routed action even when a destructive inner-action key rides along" do
+      params = { action: "system_terminate_instance", instance_id: instance.id, op: "drain_instance" }
+
+      expect(tool.send(:routed_action_name, params)).to eq("system_terminate_instance")
     end
   end
 

@@ -91,8 +91,9 @@ module Ai
                      refuses: [ "no accessible repository (this account's or a shared one) has that id", "the repository is shared and the caller lacks manage_shared", "the attributes fail validation" ]
 
       # Generic top-level definition consumed by BaseTool#validate_params!.
-      # Per-action schemas live in #action_definitions; this advertises the
-      # `action` discriminator + a free-form params surface.
+      # Per-action schemas live in #action_definitions, and those are what
+      # BaseTool enforces against: a key an action does not declare is refused.
+      # This advertises the `action` discriminator + the union of those keys.
       def self.definition
         {
           name: "system_package_repository",

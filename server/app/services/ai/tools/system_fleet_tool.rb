@@ -1425,6 +1425,7 @@ module Ai
               variety: { type: "string", required: false, description: "Module variety (e.g. subscription, instance)" },
               description: { type: "string", required: false, description: "Free-text description" },
               enabled: { type: "boolean", required: false, description: "Whether the module is enabled" },
+              auto_promote: { type: "boolean", required: false, description: "Whether a published version is promoted into the following environment automatically (default true); false withholds promotion" },
               public: { type: "boolean", required: false, description: "Whether the module is publicly visible" },
               priority: { type: "integer", required: false, description: "Composition priority (lower applies first)" },
               copy_path_id: { type: "string", required: false, description: "UUID of a module to copy paths from" },
@@ -1454,6 +1455,7 @@ module Ai
               description: { type: "string", required: false, description: "New description" },
               variety: { type: "string", required: false, description: "New variety" },
               enabled: { type: "boolean", required: false, description: "Enable or disable the module" },
+              auto_promote: { type: "boolean", required: false, description: "Whether a published version is promoted into the following environment automatically; false withholds promotion" },
               public: { type: "boolean", required: false, description: "Publicly visible or not" },
               priority: { type: "integer", required: false, description: "Composition priority" },
               node_platform_id: { type: "string", required: false, description: "Retarget to another NodePlatform" },
@@ -1613,10 +1615,18 @@ module Ai
           },
           "system_mint_peer_capability_token" => {
             description: "A2A capability token minting — NOT AVAILABLE on this surface and always refuses, whatever arguments you send (IMP-27cc7dceb97b). A tool result is persisted with the conversation and forwarded to the model provider, so the token's envelope+signature pair (Ed25519 signing material) cannot be delivered here; nothing is minted and no argument changes that. To CHECK whether a call is permitted use system_authorize_peer_call, which runs the same PeerCapabilityService.authorize gates and returns no secret. To PERFORM a CROSS-instance call use system_launch_agent_fleet, which mints the caller->target token server-side inside the delegation descriptor. For a peer to run its OWN offered skill use POST /api/v1/system/node_instance_peers/<peer_id>/execute (needs system.peers.execute).",
-            # Deliberately empty: the action refuses unconditionally, so
+            # The action refuses unconditionally, so none of these is REQUIRED:
             # advertising required arguments would only have every model
-            # assemble a call before learning it cannot work.
-            parameters: {}
+            # assemble a call before learning it cannot work. The legacy
+            # caller/target/skill shape is declared (and marked ignored) so a
+            # caller still holding it reaches the redirect text the description
+            # names rather than an unrecognised-parameter refusal that drops it
+            # (IMP-217f4496a0a2).
+            parameters: {
+              caller_instance_id: { type: "string", required: false, description: "Ignored: this action always refuses (legacy argument)" },
+              target_instance_id: { type: "string", required: false, description: "Ignored: this action always refuses (legacy argument)" },
+              skill: { type: "string", required: false, description: "Ignored: this action always refuses (legacy argument)" }
+            }
           },
           "system_list_isolation_tiers" => {
             description: "List the isolation tiers an agent deployment can request: native, gvisor, kata, firecracker, vm (L0). Each carries its Docker runtime / K8s RuntimeClass mapping, isolation strength, overhead, and host requirements. Pass isolation_tier inside a fleet_spec (system_launch_agent_fleet) to select one (default native).",
@@ -2229,6 +2239,8 @@ module Ai
             parameters: {
               op: { type: "string", required: true, enum: ::System::Ai::Skills::PlatformMaintenanceExecutor::ACTIONS,
                    description: "cert_status | cert_rotate | drift_check" },
+              maintenance_action: { type: "string", required: false, enum: ::System::Ai::Skills::PlatformMaintenanceExecutor::ACTIONS,
+                                    description: "Legacy alias of op, read only when op is absent" },
               certificate_id: { type: "string", required: false, description: "UUID of the certificate to act on (for cert_status/cert_rotate)" },
               deployment_id: { type: "string", required: false, description: "UUID of the deployment to scope the maintenance op to" },
               renewal_window_days: { type: "integer", required: false, description: "Days-before-expiry window that flags a cert for rotation" }
@@ -2244,6 +2256,8 @@ module Ai
               op: { type: "string", required: true,
                    enum: ::System::Ai::Skills::PlatformResilienceExecutor::ACTIONS,
                    description: "drain_instance | scale | failover_check" },
+              resilience_action: { type: "string", required: false, enum: ::System::Ai::Skills::PlatformResilienceExecutor::ACTIONS,
+                                   description: "Legacy alias of op, read only when op is absent" },
               instance_id: { type: "string", required: false, description: "UUID of the instance to drain (for op=drain_instance)" },
               deployment_id: { type: "string", required: false, description: "UUID of the deployment to scale or check failover for" },
               direction: { type: "string", required: false, enum: ::System::Ai::Skills::PlatformResilienceExecutor::SCALE_DIRECTIONS,
@@ -2387,10 +2401,10 @@ module Ai
                                  enum: ::System::InstancePool::LIFECYCLE_CLASSES,
                                  description: "Acquire from any matching pool when name/id absent: ephemeral | spot" },
               # IMP-68403ec0358d — DECLARED, not passed through undeclared.
-              # BaseTool#validate_params! only checks that required parameters
-              # are present and never rejects an unknown key, so an undeclared
-              # attribution argument is accepted and discarded in silence. That
-              # is what these two used to do.
+              # An undeclared attribution argument used to be accepted and
+              # discarded in silence; BaseTool now refuses a key outside the
+              # action's schema (IMP-217f4496a0a2), so these two must be
+              # declared to be accepted at all.
               acquired_by: { type: "string", required: false,
                              description: "Free text identifying the claiming actor, recorded on the durable claim record (e.g. a CI job id)" },
               acquired_for: { type: "string", required: false,
@@ -8768,8 +8782,9 @@ module Ai
       # runbook's phantom `cordon_only` parameter implied, as its own pair of
       # verbs rather than a flag on the drain: a drain STOPS, and a boolean
       # that turns a stop into a not-stop is the kind of parameter that gets
-      # dropped silently (BaseTool#validate_params! never rejects an extra
-      # key — which is exactly how `cordon_only: false` "worked" for years).
+      # dropped silently (BaseTool did not reject an extra key until
+      # IMP-217f4496a0a2 — which is exactly how `cordon_only: false` "worked"
+      # for years).
       #
       # Both verbs are approval-gated under INSTANCE_CORDON_CATEGORY (see the
       # declarations), so these bodies run on :proceed and on the replay; the

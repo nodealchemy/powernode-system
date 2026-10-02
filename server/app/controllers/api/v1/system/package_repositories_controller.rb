@@ -314,13 +314,9 @@ module Api
         # persists nothing depends on that: setting `:raise` in the test env
         # would turn it into an exception rather than a nil column.
         #
-        # Scope: this closes the REST surface only. Ai::Tools::
-        # SystemPackageRepositoryTool still drops an unknown
-        # `vault_credential_path` silently — BaseTool#validate_params! checks
-        # required-presence and never rejects unknown keys, for every tool. The
-        # field is not in that tool's declared schema, and fixing it properly is
-        # a platform-wide question about unknown-key handling, so it is left
-        # deliberately out of scope here rather than papered over.
+        # The MCP twin, Ai::Tools::SystemPackageRepositoryTool, refuses the same
+        # key through BaseTool's unrecognised-parameter check (IMP-217f4496a0a2):
+        # it is not in that tool's declared schema.
         def unsupported_credential_path?
           params.dig(:package_repository, :vault_credential_path).present?
         end

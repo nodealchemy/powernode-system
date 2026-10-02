@@ -147,18 +147,31 @@ RSpec.describe Ai::Tools::SystemIngressTool do
       expect(result.dig(:data, :public_enabled)).to be false
     end
 
-    it "ignores undeclared extra params instead of raising ArgumentError (fix #3)" do
+    # Was "ignores undeclared extra params instead of raising ArgumentError"
+    # (fix #3): the extra key was filtered out before the executor splat so that
+    # perform's strict kwargs would not raise, which answered success while
+    # dropping the key. It is refused by name now (IMP-217f4496a0a2), and the
+    # executor is never reached.
+    it "refuses an undeclared extra param by name instead of silently dropping it" do
       stub_executor("System::Ai::Skills::ReverseProxyComposeExecutor",
                     reverse_proxy_executor, { success: true, data: { composed: true } })
 
       result = tool.execute(params: {
         action: "system_reverse_proxy_compose",
         certificate_id: "cert-1",
-        bogus_extra_param: "should-be-dropped"
+        bogus_extra_param: "should-be-refused"
       })
 
-      # The executor only declares :certificate_id — the extra param must be
-      # filtered out before splatting so perform's strict kwargs don't raise.
+      expect(reverse_proxy_executor).not_to have_received(:execute)
+      expect(result).to include(success: false, error: /bogus_extra_param/)
+    end
+
+    it "still passes only declared params to the executor" do
+      stub_executor("System::Ai::Skills::ReverseProxyComposeExecutor",
+                    reverse_proxy_executor, { success: true, data: { composed: true } })
+
+      result = tool.execute(params: { action: "system_reverse_proxy_compose", certificate_id: "cert-1" })
+
       expect(reverse_proxy_executor).to have_received(:execute).with(certificate_id: "cert-1")
       expect(result).to eq(success: true, data: { composed: true })
     end
@@ -480,7 +493,7 @@ RSpec.describe Ai::Tools::SystemIngressTool do
                             expose_executor, { success: true, data: {} })
       bare = described_class.new(account: account, user: nil)
 
-      result = bare.execute(params: { action: gated_action, service_id: "svc-1" })
+      result = bare.execute(params: { action: gated_action, service_hostname: "svc.example.test" })
 
       expect(klass).not_to have_received(:new)
       expect(result[:success]).to be false
