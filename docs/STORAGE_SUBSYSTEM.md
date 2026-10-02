@@ -367,16 +367,55 @@ the two option keys keep their names with the value `[REDACTED]`, the row's own
 value is replaced wherever it appears in `error_message`, `description` and
 `events[].message`, and the argv shape (`samba-tool [user create <user> …]: `,
 `samba-tool [user setpassword <user> --newpassword=…]: `) is redacted by
-pattern for rows whose options no longer hold the value. Scope is the one
-command, exactly; other tasks are untouched. It is batched, idempotent, skips
-rows a running task holds locked, never raises on a row of an unexpected shape
-(it reports such rows by count), and prints counts only. `down` is a no-op; to
-re-run it after a reported leftover, `bin/rails db:migrate:redo
-VERSION=20261001120000`.
+pattern for rows whose options no longer hold the value — argv only, so on
+such a row a repeat of the value in the output tail survives. The value arm is
+deliberately not gated on the password's length: a very short password that is
+also a substring of ordinary message text over-redacts that text, never
+under-redacts. Scope is the one command, exactly; other tasks are untouched.
+The rewrite is raw SQL, so `updated_at` is not bumped and no callback, audit
+hook or broadcast fires. It is batched, idempotent, skips rows some concurrent
+transaction holds a row lock on (a running task holds none between its status
+writes), bounds the one wait it cannot skip (a table-level lock) with a 5s
+`lock_timeout`, never raises on a row of an unexpected shape (it reports such
+rows by count), and prints counts only. A rescued error or a locked row leaves
+the migration stamped with rows behind, and the boot log says so with the
+leftover count. `down` is a no-op.
+
+**Re-running the scrub.** Never through `db:migrate`: a production control
+plane declares several databases, so Rails refuses the un-suffixed
+`db:migrate:up/down/redo` there, and the suffixed form does not exist on
+single-database dev/test. Use the rake task, which loads the migration file and
+runs the same scrub, prints the same count lines plus the leftover count, and
+exits 0 when nothing is left, 2 when candidate rows remain, 1 when the scrub
+aborted; it never touches `schema_migrations`:
+
+```
+rails system:storage:scrub_smb_task_secrets
+```
+
+On a module-composed node run it through the node's rails exec wrapper
+(`powernode-rails-exec rake system:storage:scrub_smb_task_secrets`), not a bare
+`bundle exec`, which resolves a different extension set and rewrites the
+service's lockfile.
 
 **What the scrub does not reach.** The migration removes the copy in the live
 `system_tasks` heap. It does not reach:
 
+- **the second copy in the database.** A `storage.smb_user.apply` task created
+  through the REST door passed the core autonomy gate, which stores the task
+  attributes — options included, unfiltered — in
+  `ai_deferred_operations.params` at the JSON path
+  `{task_attributes,options}` (`action_category =
+  'system.task.storage.smb_user.apply'`). That is a core table and widening
+  the scrub to it is an operator decision filed separately. To see whether
+  this deployment holds any such row:
+
+  ```sql
+  SELECT count(*) FROM ai_deferred_operations
+  WHERE action_category = 'system.task.storage.smb_user.apply'
+    AND jsonb_typeof(params #> '{task_attributes,options}') = 'object'
+    AND params #> '{task_attributes,options}' ?| ARRAY['password', 'new_password'];
+  ```
 - dead tuples of the rewritten rows until `VACUUM` reclaims them (the migration
   deliberately does not `VACUUM FULL`);
 - the WAL that carried the original writes, WAL archives and any PITR base
