@@ -76,6 +76,38 @@ RSpec.describe "Api::V1::System::NodeModuleAssignments", type: :request do
     end
   end
 
+  # IMP-e96152e4f5ec — enabling is the moment a row joins the node's desired set, so it gets
+  # the same composition check system_assign_module_to_node runs (one shared analysis method).
+  describe "POST /api/v1/system/node_module_assignments/:id/enable composition guard" do
+    let(:other_module) { create(:system_node_module, account: account, node_platform: platform, category: create(:system_node_module_category, account: account)) }
+    let!(:disabled_row) do
+      ::System::NodeModuleAssignment.create!(node: node, node_module: other_module, enabled: false, priority: 50)
+    end
+
+    before do
+      create(:system_module_dependency, node_module: other_module, dependency: node_module,
+             dependency_type: "conflicts", required: false)
+    end
+
+    it "refuses with 422, names the modules, and leaves the row disabled" do
+      post "/api/v1/system/node_module_assignments/#{disabled_row.id}/enable",
+           headers: auth_headers_for(update_user).merge("Content-Type" => "application/json")
+
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(response.body).to include(node_module.name).and include(other_module.name)
+      expect(disabled_row.reload.enabled).to be(false)
+    end
+
+    it "does not re-check a row that is already enabled" do
+      disabled_row.update_columns(enabled: true)
+
+      post "/api/v1/system/node_module_assignments/#{disabled_row.id}/enable",
+           headers: auth_headers_for(update_user).merge("Content-Type" => "application/json")
+
+      expect(response).to have_http_status(:ok)
+    end
+  end
+
   describe "POST /api/v1/system/node_module_assignments/:id/disable" do
     it "flips enabled to false (idempotent)" do
       post "/api/v1/system/node_module_assignments/#{assignment.id}/disable",

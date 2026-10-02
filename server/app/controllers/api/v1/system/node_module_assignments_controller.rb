@@ -39,6 +39,16 @@ module Api
         def enable
           require_permission("system.modules.update")
 
+          # A row BECOMING enabled joins the node's desired set, so it gets the same
+          # composition and dependency check system_assign_module_to_node runs
+          # (IMP-e96152e4f5ec) — one shared analysis method, not a copy. An
+          # already-enabled row is a no-op and is not re-judged.
+          unless @assignment.enabled
+            check = ::System::TemplateCompositionAnalysis.new(@account)
+                                                         .node_addition_check(node: @assignment.node, node_module: @assignment.node_module)
+            return render_error(check.message, status: :unprocessable_content) if check.refused?
+          end
+
           if @assignment.update(enabled: true)
             render_success(
               node_module_assignment: serialize_assignment(@assignment.reload),

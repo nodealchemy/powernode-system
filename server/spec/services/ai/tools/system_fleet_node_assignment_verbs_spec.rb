@@ -95,6 +95,120 @@ RSpec.describe Ai::Tools::SystemFleetTool, "node module assignment verbs" do
     end
   end
 
+  # IMP-e96152e4f5ec — system_assign_module_to_node runs the composition and
+  # dependency checks even for a DISABLED create, so a disabled row cannot smuggle
+  # a conflict in. The sibling toggle must run the SAME check when a row becomes
+  # enabled, or create-disabled-then-enable (or any pre-existing unchecked
+  # disabled row) reaches the node's desired set unvalidated.
+  describe "system_update_module_assignment enabling an assignment" do
+    let(:installed) { composition_module("enable-installed") }
+    let(:incoming)  { composition_module("enable-incoming", category: cat_b) }
+    let!(:installed_row) { create(:system_node_module_assignment, node: node, node_module: installed, enabled: true) }
+    let!(:disabled_row)  { create(:system_node_module_assignment, node: node, node_module: incoming, enabled: false) }
+
+    def enable(row = disabled_row, enabled: true)
+      call("system_update_module_assignment", assignment_id: row.id, enabled: enabled)
+    end
+
+    context "with a declared Conflicts: relation to an enabled assignment" do
+      before do
+        create(:system_module_dependency, node_module: incoming, dependency: installed,
+               dependency_type: "conflicts", required: false)
+      end
+
+      it "refuses, names both modules, and leaves the row disabled" do
+        result = enable
+
+        expect(result[:success]).to be false
+        expect(result[:error]).to include(installed.name).and include(incoming.name)
+        expect(disabled_row.reload.enabled).to be false
+      end
+
+      it "refuses a string 'true' the same way (the flag is cast, not compared)" do
+        expect(enable(enabled: "true")[:success]).to be false
+        expect(disabled_row.reload.enabled).to be false
+      end
+
+      it "still disables freely, and leaves an already-enabled row alone (a node that composes badly stays editable)" do
+        disabled_row.update_columns(enabled: true)
+
+        expect(enable(enabled: true)[:success]).to be true
+        expect(enable(enabled: false)[:success]).to be true
+        expect(disabled_row.reload.enabled).to be false
+      end
+    end
+
+    it "refuses an instance-variety collision on enable" do
+      a = composition_module("enable-inst-a", variety: "instance")
+      b = composition_module("enable-inst-b", variety: "instance")
+      create(:system_node_module_assignment, node: node, node_module: a, enabled: true)
+      row = create(:system_node_module_assignment, node: node, node_module: b, enabled: false)
+
+      result = enable(row)
+
+      expect(result[:success]).to be false
+      expect(result[:error]).to include(a.name).and include(b.name)
+      expect(row.reload.enabled).to be false
+    end
+
+    context "with a hard dependency" do
+      let(:needed) { composition_module("enable-needed", category: cat_b) }
+      let(:consumer) { composition_module("enable-consumer") }
+      let!(:consumer_row) { create(:system_node_module_assignment, node: node, node_module: consumer, enabled: false) }
+
+      before do
+        create(:system_module_dependency, node_module: consumer, dependency: needed,
+               dependency_type: "requires", required: true)
+      end
+
+      it "refuses to enable while the dependency is neither enabled on the node nor supplied by its template, naming it" do
+        result = enable(consumer_row)
+
+        expect(result[:success]).to be false
+        expect(result[:error]).to include(needed.name).and include(consumer.name)
+        expect(consumer_row.reload.enabled).to be false
+      end
+
+      it "enables once the dependency is assigned and enabled" do
+        create(:system_node_module_assignment, node: node, node_module: needed, enabled: true)
+
+        expect(enable(consumer_row)[:success]).to be true
+        expect(consumer_row.reload.enabled).to be true
+      end
+
+      it "enables when the node's template supplies the dependency" do
+        create(:system_template_module, node_template: template, node_module: needed, enabled: true)
+
+        expect(enable(consumer_row)[:success]).to be true
+      end
+    end
+
+    it "enables a clean assignment and returns protected_spec warnings like the assign verb" do
+      installed.update!(protected_spec: "/etc/shadow")
+      incoming.update!(file_spec: "/etc/**")
+
+      result = enable
+
+      expect(result[:success]).to be true
+      expect(disabled_row.reload.enabled).to be true
+      expect(Array(result.dig(:data, :warnings)).first[:kind]).to eq("protected_spec_overlap")
+    end
+
+    it "runs the same check as system_assign_module_to_node, through one shared analysis method" do
+      seen = []
+      allow_any_instance_of(System::TemplateCompositionAnalysis).to receive(:node_addition_check).and_wrap_original do |orig, **kw|
+        seen << kw[:node_module]
+        orig.call(**kw)
+      end
+      fresh = composition_module("shared-path", category: cat_b)
+
+      enable
+      call("system_assign_module_to_node", node_id: node.id, module_id: fresh.id)
+
+      expect(seen).to eq([ incoming, fresh ])
+    end
+  end
+
   describe "system_assign_module_to_node" do
     let(:mod) { composition_module("assignable") }
 
@@ -154,9 +268,8 @@ RSpec.describe Ai::Tools::SystemFleetTool, "node module assignment verbs" do
     end
 
     it "refuses a declared Conflicts: relation even when the new assignment is created disabled" do
-      # A disabled row can be enabled later by system_update_module_assignment,
-      # which runs no composition check — so the create is the only place the
-      # conflict can be stopped.
+      # A disabled row can be enabled later, so the create is the earliest place
+      # the conflict can be stopped (the enable runs the same check).
       installed = composition_module("conf-installed")
       incoming  = composition_module("conf-incoming", category: cat_b)
       create(:system_module_dependency, node_module: incoming, dependency: installed,

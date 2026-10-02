@@ -2457,7 +2457,7 @@ module Ai
             }
           },
           "system_assign_module_to_node" => {
-            description: "Create a node-level NodeModuleAssignment, the way a node gains a module its template does not name. A node whose template carries no modules can gain one no other way. Refuses a module disabled in the catalog (the row would never ship). Refuses when the module is already assigned to the node, enabled or not: toggle that row with system_update_module_assignment instead; a duplicate is never created. Refuses when the module has a HARD dependency (a required edge, transitively) that the node neither has assigned and enabled nor gets from its template's closure, or that is disabled in the catalog, and names the missing modules — nothing is auto-assigned for it; assign them first (template-apply expands a closure, a single node-level row does not). Refuses when the assignment would introduce an error-severity composition conflict against the node's ENABLED assignments (declared Conflicts: relation, or a second instance-variety module in one category) and names the modules involved — the same check system_assign_module_to_template runs, applied here whatever `enabled` is (as is the dependency check), because system_update_module_assignment runs neither check when it later enables the row. Soft protected_spec overlaps come back under `warnings` without blocking. The row is hand-authored (source_template_module_id null, auto_resolved false), so template reconciliation neither adds nor reaps it. Nothing is pushed to the node: its agent picks the row up on its next module sync, exactly as after system_update_module_assignment. Note the conflict check only sees DECLARED relations — two modules that provide the same thing without declaring a conflict are not detected.",
+            description: "Create a node-level NodeModuleAssignment, the way a node gains a module its template does not name. A node whose template carries no modules can gain one no other way. Refuses a module disabled in the catalog (the row would never ship). Refuses when the module is already assigned to the node, enabled or not: toggle that row with system_update_module_assignment instead; a duplicate is never created. Refuses when the module has a HARD dependency (a required edge, transitively) that the node neither has assigned and enabled nor gets from its template's closure, or that is disabled in the catalog, and names the missing modules — nothing is auto-assigned for it; assign them first (template-apply expands a closure, a single node-level row does not). Refuses when the assignment would introduce an error-severity composition conflict against the node's ENABLED assignments (declared Conflicts: relation, or a second instance-variety module in one category) and names the modules involved — the same check system_assign_module_to_template runs, applied here whatever `enabled` is (as is the dependency check), and re-run through the same code when system_update_module_assignment later enables the row. Soft protected_spec overlaps come back under `warnings` without blocking. The row is hand-authored (source_template_module_id null, auto_resolved false), so template reconciliation neither adds nor reaps it. Nothing is pushed to the node: its agent picks the row up on its next module sync, exactly as after system_update_module_assignment. Note the conflict check only sees DECLARED relations — two modules that provide the same thing without declaring a conflict are not detected.",
             parameters: {
               node_id:   { type: "string", required: true, description: "UUID of the node to assign the module to (account-scoped)" },
               module_id: { type: "string", required: true, description: "UUID of the NodeModule to assign (account-scoped)" },
@@ -2465,7 +2465,7 @@ module Ai
             }
           },
           "system_update_module_assignment" => {
-            description: "Enable or disable a NodeModuleAssignment (per-(node, module) toggle). enabled=true enables the assignment; enabled=false disables it. The assignment row is preserved either way — disabling drops the module from neighbor union mounts / rsync_spec generation without losing priority/config. Mirrors the NodeModuleAssignmentsController enable/disable member actions. Idempotent.",
+            description: "Enable or disable a NodeModuleAssignment (per-(node, module) toggle). enabled=true enables the assignment; enabled=false disables it. The assignment row is preserved either way — disabling drops the module from neighbor union mounts / rsync_spec generation without losing priority/config. Mirrors the NodeModuleAssignmentsController enable/disable member actions. Idempotent. Enabling a currently-disabled row runs the same composition and hard-dependency check as system_assign_module_to_node and refuses (naming the modules) when it would introduce an error-severity conflict or leave a required dependency undelivered; soft protected_spec overlaps come back under `warnings`. Disabling, or enabling an already-enabled row, is never refused.",
             parameters: {
               assignment_id: { type: "string", required: true, description: "UUID of the NodeModuleAssignment to enable/disable (account-scoped via its Node)" },
               enabled:       { type: "boolean", required: true, description: "true → enable, false → disable" }
@@ -8932,12 +8932,25 @@ module Ai
           return error_result("enabled is required (true to enable, false to disable)")
         end
 
+        # Only a row BECOMING enabled joins the node's desired set, so only that
+        # transition is checked (IMP-e96152e4f5ec) — through the same method
+        # system_assign_module_to_node uses, never a copy of it. Disabling, or
+        # re-sending enabled on an enabled row, introduces nothing, so a node
+        # that already composes badly stays editable.
+        warnings = []
+        if ::ActiveModel::Type::Boolean.new.cast(enabled) && !assignment.enabled
+          check = ::System::TemplateCompositionAnalysis.new(@account)
+                                                       .node_addition_check(node: assignment.node, node_module: assignment.node_module)
+          return error_result(check.message) if check.refused?
+
+          warnings = check.warnings
+        end
+
         assignment.update!(enabled: enabled)
 
-        success_result(
-          updated: true,
-          assignment: serialize_module_assignment(assignment)
-        )
+        payload = { updated: true, assignment: serialize_module_assignment(assignment) }
+        payload[:warnings] = warnings if warnings.any?
+        success_result(payload)
       end
 
       def list_node_module_assignments(params)
@@ -8981,24 +8994,13 @@ module Ai
         end
 
         # Unlike assign_module_to_template, the check runs for a DISABLED
-        # create too: a template join is re-checked when it is enabled
-        # (update_template_module), but system_update_module_assignment runs no
-        # composition check, so skipping it here would make create-disabled-
-        # then-enable a way around it.
-        analysis = ::System::TemplateCompositionAnalysis.new(@account)
-        verdict = analysis.node_additions_verdict(node: node, node_modules: [ node_module ])
-        return error_result(verdict.message) if verdict.blocked?
-
-        # Refuse rather than auto-create: a dependency row the caller did not
-        # ask for is a second, unreviewed module on the node. Runs for a
-        # disabled create for the same reason as the conflict check.
-        missing = analysis.missing_node_dependencies(node: node, node_module: node_module)
-        if missing.any?
-          raise CallerFacingError, "Module '#{node_module.name}' requires #{missing.join(', ')}, which node " \
-                                   "'#{node.name}' neither has assigned and enabled nor gets from its template " \
-                                   "(or which is disabled in the catalog) — assign #{missing.size == 1 ? 'it' : 'them'} " \
-                                   "first with system_assign_module_to_node"
-        end
+        # create too: system_update_module_assignment re-runs the same check
+        # when it enables a row, but a disabled row that was never checked
+        # could still be enabled by a writer that does not, so the create is
+        # the earliest place the conflict can be stopped.
+        check = ::System::TemplateCompositionAnalysis.new(@account).node_addition_check(node: node, node_module: node_module)
+        return error_result(check.message) if check.kind == :conflict
+        raise CallerFacingError, check.message if check.kind == :dependency
 
         enabled = ::ActiveModel::Type::Boolean.new.cast(params[:enabled])
         assignment = node.node_module_assignments.create!(
@@ -9008,7 +9010,7 @@ module Ai
         )
 
         payload = { assigned: true, assignment: serialize_module_assignment(assignment) }
-        payload[:warnings] = verdict.warnings if verdict.warnings.any?
+        payload[:warnings] = check.warnings if check.warnings.any?
         success_result(payload)
       rescue ActiveRecord::RecordNotUnique
         # Lost a race with a concurrent create of the same (node, module).

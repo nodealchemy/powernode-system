@@ -16,6 +16,10 @@ module System
   #     disabled React button as the only enforcement.
   #   - the node-level assignment write (the system_assign_module_to_node MCP
   #     action, #node_additions_verdict), which refuses on the same terms.
+  #   - the node-level ENABLE (system_update_module_assignment and the REST
+  #     enable member action): a row becoming enabled is the moment it joins the
+  #     node's desired set, so it gets the same check through #node_addition_check
+  #     rather than a second copy of it (IMP-e96152e4f5ec).
   #   - the other TemplateModule writers, which used to bypass that guard
   #     entirely and so could land a conflict as permanent BASELINE — which
   #     the delta then treats as acceptable forever after. Gitops::ApplyService
@@ -169,6 +173,42 @@ module System
     # a module its template does not name.
     def node_additions_verdict(node:, node_modules:)
       introduced_verdict(node.node_module_assignments.enabled.pluck(:node_module_id), node_modules)
+    end
+
+    # What a node-level row's JOINING the node's enabled set must clear: the
+    # introduced-conflict verdict, then the hard-dependency check. ONE definition
+    # for every writer that puts a row into that set — creating it enabled or
+    # disabled (system_assign_module_to_node: a disabled row can be enabled
+    # later) and flipping it enabled (system_update_module_assignment, REST
+    # enable). The baseline is the node's ENABLED rows, so judging a row that is
+    # itself still disabled is the same delta as judging a row not yet created.
+    #
+    # `kind` says which check refused (:conflict / :dependency) because callers
+    # surface the two differently; `message` is nil when nothing refused.
+    # Only DECLARED conflicts are seen: two modules that provide the same thing
+    # without a `conflicts:` entry are caught by no writer.
+    NodeAddition = Struct.new(:kind, :message, :warnings, keyword_init: true) do
+      def refused?
+        !message.nil?
+      end
+    end
+
+    def node_addition_check(node:, node_module:)
+      verdict = node_additions_verdict(node: node, node_modules: [ node_module ])
+      return NodeAddition.new(kind: :conflict, message: verdict.message, warnings: verdict.warnings) if verdict.blocked?
+
+      missing = missing_node_dependencies(node: node, node_module: node_module)
+      if missing.any?
+        # Refuse rather than auto-create: a dependency row the caller did not
+        # ask for is a second, unreviewed module on the node.
+        message = "Module '#{node_module.name}' requires #{missing.join(', ')}, which node " \
+                  "'#{node.name}' neither has assigned and enabled nor gets from its template " \
+                  "(or which is disabled in the catalog) — assign and enable #{missing.size == 1 ? 'it' : 'them'} " \
+                  "first (system_assign_module_to_node, system_update_module_assignment)"
+        return NodeAddition.new(kind: :dependency, message: message, warnings: verdict.warnings)
+      end
+
+      NodeAddition.new(kind: nil, message: nil, warnings: verdict.warnings)
     end
 
     # Names of the HARD dependencies (required edges, transitively, through the
