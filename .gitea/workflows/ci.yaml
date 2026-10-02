@@ -895,6 +895,12 @@ jobs:
             ruby -c "$f" >/dev/null || { echo "syntax error: $f"; fail=1; }
           done < <(find server worker -name '*.rb' 2>/dev/null)
           exit $fail
+      - name: Shell syntax check on every workflow run block
+        # bash -n over each `run:` block with ${{ }} neutralised. A stray
+        # apostrophe in a single-quoted `docker exec bash -c '...'` broke every
+        # disk-image build for 11 days (52a5e06c -> ed67e862) and no job parsed
+        # it. Ruby is already set up above; no yq/shellcheck dependency.
+        run: ruby scripts/ci-lint-workflow-shell.rb .gitea/workflows
 
   todo-audit:
     runs-on: ubuntu-24.04
