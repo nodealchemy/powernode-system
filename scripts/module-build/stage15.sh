@@ -1415,8 +1415,24 @@ case "$MODULE" in
     # let Stage 2 carve + push a hollow erofs.
     test -s /tmp/powernode-agent || { echo "[stage-1.5] FATAL: agent binary not built"; exit 1; }
     echo "[stage-1.5] agent built: $(stat -c%s /tmp/powernode-agent) bytes"
+    # powernode-acme (IMP-fdc3b6a53d77) — the ACME client Acme::LegoClient shells out to. It
+    # ships HERE, beside the agent, because the extension-system module masks agent/dist and
+    # every node (the hub included) unions this module; /usr/sbin/powernode-acme is where
+    # LegoClient looks first. Same pinned toolchain, same static flags, stamped like the agent.
+    echo "[stage-1.5] cross-compiling powernode-acme for amd64…"
+    ( cd agent && \
+      CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+      /usr/local/go/bin/go build -trimpath \
+        -ldflags "-s -w \
+          -X main.Version=${agent_version_str} \
+          -X main.GitCommit=${agent_source_sha} \
+          -X main.BuildDate=${agent_build_date}" \
+        -o /tmp/powernode-acme ./cmd/powernode-acme )
+    test -s /tmp/powernode-acme || { echo "[stage-1.5] FATAL: powernode-acme binary not built"; exit 1; }
+    echo "[stage-1.5] acme built: $(stat -c%s /tmp/powernode-acme) bytes"
     mkdir -p /tmp/fat/usr/sbin /tmp/fat/sbin /tmp/fat/etc/powernode
     install -m 0755 /tmp/powernode-agent /tmp/fat/usr/sbin/powernode-agent
+    install -m 0755 /tmp/powernode-acme /tmp/fat/usr/sbin/powernode-acme
     # /sbin/powernode-agent symlink — initramfs/dracut
     # hook looks at /sbin first; post-switch_root systemd
     # unit uses /usr/sbin/. Both paths kept for either
@@ -1439,6 +1455,9 @@ case "$MODULE" in
     if [ -L /tmp/fat/usr/sbin/powernode-agent ] || [ "$(stat -c%s /tmp/fat/usr/sbin/powernode-agent 2>/dev/null || echo 0)" -lt 1000000 ]; then
       echo "[stage-1.5] FATAL: /tmp/fat/usr/sbin/powernode-agent is not a real >1MB binary (usrmerge clobber?)"; exit 1
     fi
+    # Same guard for powernode-acme, on what SHIPS, plus a real `version` run (fail-loud presence
+    # check, IMP-fdc3b6a53d77): a hub without it fails every certificate operation at runtime.
+    bash "$SCRIPT_DIR/verify-acme-binary.sh" /tmp/fat/usr/sbin/powernode-acme || { echo "[stage-1.5] FATAL: powernode-acme did not verify in the staged layer"; exit 1; }
     ;;
   base-os-ubuntu-noble)
     # OS-specific layer: Ubuntu's apt-installed userland

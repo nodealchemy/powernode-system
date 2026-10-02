@@ -2,7 +2,7 @@ schema_version: 1
 
 name: powernode-system-base
 display_name: "Powernode System Base (minimal — agent runtime only)"
-description: "The truly-minimal Powernode base — ships the cross-compiled Go agent binary at /sbin/powernode-agent and an /etc/powernode/ skeleton. NOT bootable alone (no init system, no userland). Designed as the shared substrate that every OS-specific base module (powernode-system-base-ubuntu-noble, -debian-trixie, -alpine, etc.) depends on, so the agent binary is built once + signed once + verified once regardless of which OS variant a node runs. Capability provided: powernode.agent."
+description: "The truly-minimal Powernode base — ships the cross-compiled Go agent binary at /sbin/powernode-agent, the powernode-acme ACME client at /usr/sbin/powernode-acme, and an /etc/powernode/ skeleton. NOT bootable alone (no init system, no userland). Designed as the shared substrate that every OS-specific base module (powernode-system-base-ubuntu-noble, -debian-trixie, -alpine, etc.) depends on, so the agent binary is built once + signed once + verified once regardless of which OS variant a node runs. Capability provided: powernode.agent."
 license: "MIT"
 category: system-base
 
@@ -15,12 +15,17 @@ package_spec: []
 # Only ships what's needed for the agent contract:
 #   /usr/sbin/powernode-agent — canonical location, what the
 #                                post-switch_root systemd unit invokes
+#   /usr/sbin/powernode-acme  — ACME client (DNS-01 issue/renew/revoke) that the
+#                                Rails Acme::LegoClient shells out to
 #   /sbin/powernode-agent     — symlink to /usr/sbin/powernode-agent
 #                                for the initramfs/dracut hook + legacy
 #                                lookups that still expect /sbin
 #   /etc/powernode/           — config skeleton; OS variants + boot.go fill it
 file_spec:
   - "/usr/sbin/powernode-agent"
+  # The ACME client Acme::LegoClient shells out to (IMP-fdc3b6a53d77). Shipped here, beside the
+  # agent, because the extension-system module masks agent/dist and every node unions this one.
+  - "/usr/sbin/powernode-acme"
   - "/sbin/powernode-agent"
   - "/etc/powernode/**"
   # Recovery console drop-in (see the file's own header). Narrow glob on
@@ -81,6 +86,8 @@ dependency_spec: []
 # OS variant could swap the agent for a backdoored copy.
 protected_spec:
   - "/usr/sbin/powernode-agent"
+  # No higher module may shadow the binary that receives the DNS provider token.
+  - "/usr/sbin/powernode-acme"
   - "/sbin/powernode-agent"
 
 reboot_required: false

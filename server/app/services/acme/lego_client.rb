@@ -11,8 +11,12 @@ module Acme
   #
   # Binary resolution:
   #   1. POWERNODE_ACME_BIN env (absolute path)
-  #   2. <Rails.root>/../extensions/system/agent/dist/powernode-acme-linux-<arch>
-  #   3. raise IntegrationError with build instructions
+  #   2. SHIPPED_BINARY — /usr/sbin/powernode-acme, built by stage15 into
+  #      powernode-system-base beside the agent (IMP-fdc3b6a53d77). This is the
+  #      one a built hub has: the extension-system module masks agent/dist.
+  #   3. <Rails.root>/../extensions/system/agent/dist/powernode-acme-linux-<arch>
+  #      (a dev tree built with `make build-acme`)
+  #   4. raise IntegrationError naming where it looked
   #
   # Token handling: the Cloudflare API token is read from Vault on the
   # Rails side and passed to the child process via an env var. We
@@ -29,6 +33,9 @@ module Acme
       "letsencrypt-prod"    => "https://acme-v02.api.letsencrypt.org/directory",
       "letsencrypt-staging" => "https://acme-staging-v02.api.letsencrypt.org/directory"
     }.freeze
+
+    # Where powernode-system-base ships the binary on a built node.
+    SHIPPED_BINARY = "/usr/sbin/powernode-acme"
 
     DEFAULT_TIMEOUT = 300 # seconds — covers DNS propagation + LE polling
 
@@ -262,7 +269,8 @@ module Acme
 
     def resolve_binary_path
       explicit = ENV["POWERNODE_ACME_BIN"]
-      return explicit if explicit.present? && ::File.executable?(explicit)
+      return explicit if explicit.present? && ::File.file?(explicit) && ::File.executable?(explicit)
+      return SHIPPED_BINARY if ::File.file?(SHIPPED_BINARY) && ::File.executable?(SHIPPED_BINARY)
 
       arch = case `uname -m`.strip
       when "x86_64" then "amd64"
@@ -274,11 +282,12 @@ module Acme
       candidate = ::Rails.root.join(
         "..", "extensions", "system", "agent", "dist", "powernode-acme-linux-#{arch}"
       ).to_s
-      return candidate if ::File.executable?(candidate)
+      return candidate if ::File.file?(candidate) && ::File.executable?(candidate)
 
-      raise IntegrationError, "powernode-acme binary not found. " \
-        "Build it via: cd extensions/system/agent && make build-acme. " \
-        "Or set POWERNODE_ACME_BIN to its absolute path."
+      raise IntegrationError, "powernode-acme binary not found (looked at POWERNODE_ACME_BIN, " \
+        "#{SHIPPED_BINARY} — shipped by the powernode-system-base module — and #{candidate}). " \
+        "On a built node, rebuild/promote powernode-system-base; in a dev tree run: " \
+        "cd extensions/system/agent && make build-acme. Or set POWERNODE_ACME_BIN to its absolute path."
     end
 
     # Invokes the binary with stdin closed, captures stdout (the JSON
