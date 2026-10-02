@@ -257,7 +257,17 @@ class ScrubSmbUserApplyTaskSecrets < ActiveRecord::Migration[8.1]
     connection.execute("SET lock_timeout = #{connection.quote(LOCK_TIMEOUT)}")
     yield
   ensure
-    connection.execute("SET lock_timeout = #{connection.quote(previous)}") if previous
+    restore_lock_timeout(previous) if previous
+  end
+
+  # Rescued on its own: a restore that fails after a completed scrub must not
+  # turn into "aborted before it started" and discard the real outcome.
+  def restore_lock_timeout(previous)
+    connection.execute("SET lock_timeout = #{connection.quote(previous)}")
+  rescue StandardError => e
+    line = "#{self.class.name}: could not restore the session lock_timeout (#{e.class.name}); the scrub outcome stands"
+    say line
+    Rails.logger.error(line)
   end
 
   # A row is a candidate while it still holds something one of the two arms

@@ -62,8 +62,10 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
   # Seeds a row AS THE PRE-FIX WRITERS LEFT IT. `update_columns` so no model
   # callback or validation reshapes it; the migration must clean what is
   # actually in the table, not what the model would write today.
-  def task!(options:, command: self.command, error_message: nil, events: [], description: nil, status: "failed")
-    task = create(:system_task, account: account, command: command, status: status)
+  def task!(options:, command: self.command, error_message: nil, events: [], description: nil, status: "failed", operable: nil)
+    attrs = { account: account, command: command, status: status }
+    attrs[:operable] = operable if operable
+    task = create(:system_task, **attrs)
     task.update_columns(options: options, error_message: error_message, events: events, description: description)
     task
   end
@@ -423,6 +425,29 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
       expect(conn.select_value("SHOW lock_timeout")).not_to eq(described_class::LOCK_TIMEOUT)
     end
 
+    it "reports a failed lock_timeout restore as its own line and keeps the real outcome" do
+      task!(options: options_for(action: "create", username: "u-r", "password" => marker))
+      # Only the RESTORING set fails; disarmed before this example's own reset.
+      armed = true
+      allow(migration.send(:connection)).to receive(:execute).and_wrap_original do |original, sql, *rest, **kw|
+        if armed && sql.start_with?("SET lock_timeout") && !sql.include?(described_class::LOCK_TIMEOUT)
+          raise ActiveRecord::StatementInvalid, "boom with #{marker}"
+        end
+        original.call(sql, *rest, **kw)
+      end
+      allow(Rails.logger).to receive(:error)
+
+      expect(run!).to eq(1)
+
+      expect(@printed).to include("could not restore the session lock_timeout (ActiveRecord::StatementInvalid)")
+      expect(@printed).to include("scrubbed 1 ")
+      expect(@printed).not_to include("before it started")
+      expect(@printed).not_to include(marker)
+    ensure
+      armed = false
+      conn.execute("SET lock_timeout = 0")
+    end
+
     it "says the leftover count is unknown when even counting fails" do
       allow(migration).to receive(:candidate_count).and_raise(ActiveRecord::StatementInvalid, "boom")
 
@@ -436,30 +461,65 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
 
   # Row locks held by ANOTHER connection. Transactional fixtures cannot show
   # this (rows inside the example's transaction are invisible to a second
-  # connection), so these examples commit their rows and delete them by id.
+  # connection), so these examples commit their rows. Cleanup is two-layered:
+  # what the examples mint themselves (tasks, the node and its chain) is
+  # deleted by exact id, recorded as each row is created; what creating an
+  # account seeds behind it (System::AccountBootstrapService writes templates,
+  # platforms, modules, categories, a provider with regions and instance
+  # types, the architecture catalog, default environments and roles across a
+  # dozen tables, and the account's destroy is RESTRICTED while any of it
+  # exists) is cleared the way the suite itself clears committed data —
+  # DatabaseCleaner deletion, the before(:suite) mechanism — rather than by a
+  # hand-kept mirror of that seed. Not the `truncation: true` tag: its
+  # before(:each) flips the transactional flag after the example's transaction
+  # has already begun, so the rows never reach the second connection.
   describe "rows a concurrent transaction holds" do
     self.use_transactional_tests = false
 
     let(:other) { ActiveRecord::Base.connection_pool.checkout }
 
+    # Every row this group mints, recorded AS IT IS CREATED, so a failure
+    # partway through still leaves a complete list for the cleanup.
+    let(:created) { Hash.new { |h, k| h[k] = [] } }
+
+    def remember(kind, record)
+      created[kind] << record.id
+      record
+    end
+
+    # One node for the whole example, built with the spec's own account at
+    # every level (the bare factory associations each mint a fresh account).
+    let(:node) do
+      owner = account
+      architecture = remember(:architectures, create(:system_node_architecture))
+      platform = remember(:platforms, create(:system_node_platform, account: owner, node_architecture: architecture))
+      template = remember(:templates, create(:system_node_template, account: owner, node_platform: platform))
+      remember(:nodes, create(:system_node, account: owner, node_template: template))
+    end
+
     before { other.begin_db_transaction }
 
+    # Children before parents; then the account's seeded catalog, by deletion
+    # (DELETE takes only a row lock; TRUNCATE's exclusive lock is what the
+    # suite avoids too).
     after do
       other.rollback_db_transaction
+    ensure
       ActiveRecord::Base.connection_pool.checkin(other)
-      System::Task.where(id: @ids).delete_all if @ids
-      System::Node.where(id: @node_ids).delete_all if @node_ids
-      Account.find_by(id: account.id)&.destroy
+      System::Task.where(id: created[:tasks]).delete_all
+      System::Node.where(id: created[:nodes]).delete_all
+      System::NodeTemplate.where(id: created[:templates]).delete_all
+      System::NodePlatform.where(id: created[:platforms]).delete_all
+      System::NodeArchitecture.where(id: created[:architectures]).delete_all
+      DatabaseCleaner.clean_with(:deletion, except: %w[ar_internal_metadata schema_migrations])
     end
 
     def committed_rows(count)
-      rows = Array.new(count) do |i|
-        task!(options: options_for(action: "create", username: "u-#{i}", "password" => marker),
-              error_message: create_echo("u-#{i}", marker))
+      operable = node
+      Array.new(count) do |i|
+        remember(:tasks, task!(options: options_for(action: "create", username: "u-#{i}", "password" => marker),
+                               error_message: create_echo("u-#{i}", marker), operable: operable))
       end
-      @ids = rows.map(&:id)
-      @node_ids = rows.map(&:operable_id).uniq
-      rows
     end
 
     it "skips a row another transaction holds FOR UPDATE, reports it, and scrubs it on the next run" do
