@@ -101,6 +101,7 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 		Data    struct {
 			Modules                   *[]AssignedModule `json:"modules"`
 			Hostname                  string            `json:"hostname,omitempty"`
+			Timezone                  string            `json:"timezone,omitempty"`
 			LKGStalenessThresholdSecs int64             `json:"lkg_staleness_threshold_seconds,omitempty"`
 			LKGAppHealthURL           string            `json:"lkg_app_health_url,omitempty"`
 			LKGAppHealthRequiredN     int               `json:"lkg_app_health_required_consecutive,omitempty"`
@@ -123,6 +124,10 @@ func FetchAssignedModules(ctx context.Context, c ModulesClient) ([]AssignedModul
 	// /etc/hostname is correct before switch_root + DHCP. Best-effort; empty is
 	// a no-op.
 	persistAssignedHostname(env.Data.Hostname)
+	// The per-node timezone rides the same envelope (IMP-87ce46b9a1aa) and is
+	// persisted the same way, before the pass renders it. Shape-checked, and an
+	// empty value is a no-op (absence is not a clearance).
+	persistAssignedTimezone(env.Data.Timezone)
 	_ = ctx // ctx reserved for future cancellation hook in the GetJSON impl
 
 	// A confirmation authorises a detach only alongside a list the platform

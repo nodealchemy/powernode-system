@@ -99,6 +99,11 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 		r.cfg.OnError("compose:sudoers_write", err)
 	}
 
+	// The declared timezone, into the same composed union, for the same reason:
+	// the union's /etc is fresh every boot, so the zone must be rendered before
+	// switch_root or the node boots in UTC until the first live tick.
+	r.renderTimezoneInto(sysroot)
+
 	// Set the node's hostname in the composed union so the switch_root'd system
 	// boots with its platform-assigned name. base-os masks /etc/hostname out of
 	// its erofs (build-chroot identity must not ship fleet-wide), so without

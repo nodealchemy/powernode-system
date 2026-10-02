@@ -1626,6 +1626,17 @@ func (r *Reconciler) RunOnce(ctx context.Context) error {
 		}
 	}
 
+	// Reassert the declared timezone every tick: /etc/localtime + /etc/timezone
+	// live on the root overlay of a module-composed node, so a zone set by hand
+	// reverts to UTC at the next boot. Nothing is rendered when the platform
+	// declared none, and a zone the image does not carry is refused (and
+	// reported) rather than rendered as a dangling link.
+	if tz := desiredTimezone(); tz != "" {
+		if _, err := applyTimezone("", tz); err != nil {
+			r.cfg.OnError("reconciler:timezone_write", err)
+		}
+	}
+
 	// Attaches in priority order (low → high). Walks toAttach (new
 	// mounts: fresh erofs pull + verify + mount, then materialize, then
 	// attachModuleServices) and toReattach (already-mounted but

@@ -7,6 +7,13 @@ module Api
         # Module data endpoint for node instances
         # Provides modules assigned to the instance's node
         class ModulesController < BaseController
+          # Same shape the agent enforces (etcidentity.ValidTimezoneName): path
+          # segments of [A-Za-z0-9_+-] joined by "/", at most 64 chars. A
+          # malformed node value falls through to the site setting; the agent
+          # still checks the zone against its own image.
+          TIMEZONE_NAME_RE = %r{\A[A-Za-z0-9_+\-]+(?:/[A-Za-z0-9_+\-]+)*\z}
+          TIMEZONE_NAME_MAX = 64
+
           before_action :set_module, only: [ :show, :download, :resource ]
 
           # GET /api/v1/system/node_api/modules
@@ -57,6 +64,11 @@ module Api
               # node with no fw-cfg instance_name still gets the right hostname
               # before DHCP/DNS. See agent runtime/hostname.go.
               hostname: current_node&.name,
+              # The node's IANA zone (e.g. "Region/City"), a deployment-local
+              # fact: the node's own config, then the site-wide setting; nil when
+              # neither is a valid zone name. The agent persists it and renders
+              # /etc/localtime + /etc/timezone. See agent runtime/timezone.go.
+              timezone: declared_timezone,
               # Boot-LKG config (#39 Level-1 boot-independence). The agent stamps
               # these onto the boot breadcrumb → frozen last-known-good at capture.
               # All 0/"" when unset → the agent uses its compile-time defaults /
@@ -204,6 +216,19 @@ module Api
           end
 
           private
+
+          def declared_timezone
+            node_cfg = current_node&.config
+            node_value = node_cfg.is_a?(Hash) ? node_cfg["timezone"] : nil
+            valid_timezone(node_value) || valid_timezone(::SiteSetting.get("system.timezone"))
+          end
+
+          def valid_timezone(candidate)
+            return nil unless candidate.is_a?(String)
+
+            name = candidate.strip
+            name if name.length <= TIMEZONE_NAME_MAX && TIMEZONE_NAME_RE.match?(name)
+          end
 
           # Integer boot-LKG SiteSetting under the "system.boot_lkg." namespace.
           # Returns 0 when unset (the agent then uses its own compile-time default

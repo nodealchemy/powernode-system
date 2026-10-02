@@ -123,6 +123,13 @@ func TestMain(m *testing.M) {
 	}
 	sudoersTestDir := filepath.Join(sandbox, "sudoers.d")
 	assignedHostnamePath = filepath.Join(sandbox, "assigned-hostname")
+	// The declared timezone's persisted source and its live-root writer, redirected
+	// for the same reasons: a persisted zone on the host running the suite would
+	// drive the writer, and the persist would write the real /persist as root.
+	assignedTimezonePath = filepath.Join(sandbox, "assigned-timezone")
+	applyTimezone = func(_, name string) (bool, error) {
+		return false, nil
+	}
 	instanceNameFwCfgPath = filepath.Join(sandbox, "fw-cfg-instance-name-absent")
 	applyHostname = func(_, name string, _ bool) (bool, error) {
 		return etcidentity.ApplyHostname(hostnameTestRoot, name, false)
