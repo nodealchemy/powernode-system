@@ -1680,8 +1680,8 @@ module System
       # F3-11: best-effort streak read — a feedback-loop hiccup must never
       # break the decide path (it would take ALL remediation down with it).
       def ineffective_streak(signal)
-        ::System::Fleet::RemediationOutcome.ineffective_streak(
-          account: account, fingerprint: signal.fingerprint
+        ::System::Fleet::RemediationOutcome.stuck_streak(
+          account: account, fingerprint: signal.fingerprint, signal_kind: signal.kind
         )
       rescue StandardError => e
         Rails.logger.warn("[FleetDecisionEngine] ineffective-streak read failed: #{e.message}")

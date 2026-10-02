@@ -147,14 +147,95 @@ RSpec.describe System::Fleet::DecisionEngine do
                                        policy: "auto_approve", is_active: true)
       end
 
-      def record_ineffective!(fingerprint, count, kind: "system.cert_expiring")
+      def record_ineffective!(fingerprint, count, kind: "system.cert_expiring", age: 0.hours)
         count.times do |i|
           System::Fleet::RemediationOutcome.create!(
             account: account, signal_kind: kind, fingerprint: fingerprint,
             action_category: "system.cert_rotate", status: "ineffective",
-            acted_at: (count - i + 1).hours.ago, settle_until: (count - i).hours.ago,
-            validated_at: (count - i).hours.ago
+            acted_at: (count - i + 1).hours.ago - age, settle_until: (count - i).hours.ago - age,
+            validated_at: (count - i).hours.ago - age
           )
+        end
+      end
+
+      # IMP-a294e9db40ea — the streak lane had no escape. At the threshold decide()
+      # returns BEFORE the gate, so the fingerprint can never proceed, and only a
+      # proceeded decision mints an outcome: no newer row can ever lift the
+      # streak. On the production control plane 14 config_drift fingerprints sat
+      # pinned at three ineffective outcomes recorded in July and August, and
+      # re-escalated (a fresh approval, in lockstep, whenever the last one
+      # expired) every few hours for two months. For the kinds the engine can
+      # safely retry (RemediationOutcome::STUCK_STREAK_RETRY_KINDS) the streak now
+      # counts only outcomes inside STUCK_STREAK_WINDOW.
+      context "an aged-out streak on a retryable kind (IMP-a294e9db40ea)" do
+        let(:window) { System::Fleet::RemediationOutcome::STUCK_STREAK_WINDOW.seconds }
+        let(:threshold) { described_class::STUCK_STREAK_THRESHOLD }
+
+        before do
+          Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                         action_category: "system.module_assign",
+                                         policy: "auto_approve", is_active: true)
+        end
+
+        def drift_ineffective!(count, age: 0.hours)
+          count.times do |i|
+            System::Fleet::RemediationOutcome.create!(
+              account: account, signal_kind: "system.config_drift", fingerprint: "config_drift:a-1",
+              action_category: "system.module_assign", status: "ineffective",
+              acted_at: (count - i + 1).hours.ago - age, settle_until: (count - i).hours.ago - age,
+              validated_at: (count - i).hours.ago - age
+            )
+          end
+        end
+
+        def decide_drift
+          engine.decide(kind: "system.config_drift", severity: :medium,
+                        payload: { node_id: "n-1", module_id: "m-1", assignment_id: "a-1", instance_ids: [] },
+                        fingerprint: "config_drift:a-1")
+        end
+
+        it "still escalates while the streak is inside the window" do
+          drift_ineffective!(threshold, age: window - 6.hours)
+
+          expect { @decision = decide_drift }
+            .to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }.by(1)
+          expect(@decision[:remediation_stuck]).to be true
+        end
+
+        it "retries a fingerprint whose streak is older than the window, instead of escalating forever" do
+          drift_ineffective!(threshold, age: window + 1.hour)
+
+          expect { @decision = decide_drift }
+            .not_to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }
+
+          expect(@decision[:decision]).to eq(:proceed)
+          expect(@decision[:remediation_stuck]).to be_nil
+        end
+
+        it "counts only the recent part of a streak that straddles the window edge" do
+          drift_ineffective!(threshold, age: window + 1.hour)
+          drift_ineffective!(threshold - 1)
+
+          d = decide_drift
+
+          expect(d[:decision]).to eq(:proceed)
+          expect(d[:remediation_stuck]).to be_nil
+        end
+
+        it "trips again when the retry is ineffective too (a bounded burst per window, not a permanent resignation)" do
+          drift_ineffective!(threshold, age: window + 1.hour)
+          drift_ineffective!(threshold)
+
+          expect(decide_drift[:remediation_stuck]).to be true
+        end
+
+        it "does not age out a kind that is not on the retry list: a reboot lane stays spent" do
+          record_ineffective!("cert_expiring:c-9", threshold, age: window + 1.hour)
+
+          d = engine.decide(kind: "system.cert_expiring", severity: :medium,
+                            payload: { certificate_id: "c-9" }, fingerprint: "cert_expiring:c-9")
+
+          expect(d[:remediation_stuck]).to be true
         end
       end
 

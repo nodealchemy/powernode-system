@@ -29,7 +29,7 @@ RSpec.describe "GET /api/v1/system/fleet/remediation_outcomes", type: :request d
   end
 
   # `threshold` ineffective settles in a row for one fingerprint, oldest first.
-  def streak!(fingerprint, count:, signal_kind: "system.module_drift", starting: 2.days.ago, owner: account)
+  def streak!(fingerprint, count:, signal_kind: "system.module_drift", starting: 6.hours.ago, owner: account)
     count.times do |i|
       outcome!(status: "ineffective", fingerprint: fingerprint, signal_kind: signal_kind,
                acted_at: starting + i.hours, owner: owner)
@@ -81,7 +81,7 @@ RSpec.describe "GET /api/v1/system/fleet/remediation_outcomes", type: :request d
 
       # Same number of failures, but the newest settle was effective: the
       # engine's take_while resets, so this one is NOT stuck.
-      streak!("fp-recovered", count: threshold, starting: 3.days.ago)
+      streak!("fp-recovered", count: threshold, starting: 9.hours.ago)
       outcome!(status: "effective", fingerprint: "fp-recovered", acted_at: 1.hour.ago)
 
       streak!("fp-short", count: threshold - 1)
@@ -99,15 +99,25 @@ RSpec.describe "GET /api/v1/system/fleet/remediation_outcomes", type: :request d
       end
     end
 
-    # The engine's streak is not windowed, so neither is the list: a
-    # fingerprint the engine is escalating today is shown even when its
-    # failures predate the summary window.
-    it "is the engine's current view, not bounded by the summary window" do
-      streak!("fp-old-stuck", count: threshold, starting: 20.days.ago)
+    # The list is the engine's current view: bounded by the engine's own
+    # RemediationOutcome::STUCK_STREAK_WINDOW (a streak older than that is one the
+    # engine retries, IMP-a294e9db40ea), and NOT by the summary's `window_days`.
+    it "is bounded by the engine's streak window, not by the summary window" do
+      streak!("fp-aged-out", count: threshold, starting: 20.days.ago, signal_kind: "system.config_drift")
+      streak!("fp-current", count: threshold, starting: 6.hours.ago, signal_kind: "system.config_drift")
 
-      data = fetch
-      expect(data["totals"]["ineffective"]).to eq(0)
-      expect(data["stuck"]["fingerprints"].map { |f| f["fingerprint"] }).to eq([ "fp-old-stuck" ])
+      narrow = fetch(window_days: 1)
+      wide = fetch(window_days: 90)
+
+      expect(narrow["stuck"]["fingerprints"].map { |f| f["fingerprint"] }).to eq([ "fp-current" ])
+      expect(wide["stuck"]["fingerprints"].map { |f| f["fingerprint"] }).to eq([ "fp-current" ])
+    end
+
+    # Only the kinds the engine retries age out (RemediationOutcome::STUCK_STREAK_RETRY_KINDS).
+    it "keeps listing an old streak of a kind the engine does not retry" do
+      streak!("fp-old-module-drift", count: threshold, starting: 20.days.ago)
+
+      expect(fetch["stuck"]["fingerprints"].map { |f| f["fingerprint"] }).to eq([ "fp-old-module-drift" ])
     end
   end
 

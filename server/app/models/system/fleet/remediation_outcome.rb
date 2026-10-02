@@ -38,6 +38,51 @@ module System
         end
       end
 
+      # IMP-a294e9db40ea — how long a run of ineffective outcomes keeps a
+      # RETRYABLE fingerprint escalated instead of retried.
+      #
+      # THE SAME LOAD-BEARING SHAPE AS DEFERRED_BLOCK_WINDOW, and for the same
+      # reason. DecisionEngine#decide returns BEFORE the gate once the streak
+      # reaches the threshold, so a stuck fingerprint can never PROCEED, and only
+      # a proceeded decision mints an outcome: nothing the lane does can ever
+      # write the `effective` row that would lift it. The comment on the deferral
+      # lane below calls the streak's escape "real" — it is, but only BELOW the
+      # threshold. At the threshold the streak is pinned for the life of the
+      # fingerprint. On the production control plane that was 14 config_drift
+      # fingerprints whose three ineffective rows were written in July and
+      # August (a 20-minute burst each, on assignments to the control plane's own
+      # host and to dev-cell), re-escalated with a fresh approval each time the
+      # last one expired — in lockstep, because they had all been created in the
+      # same tick, which is what read as "eleven simultaneous escalations".
+      #
+      # Outcomes older than this are STALE EVIDENCE about the fingerprint: they
+      # say what happened to an apply weeks ago, before whatever has changed
+      # since. The lane resumes proceeding (a real retry, the only thing that can
+      # produce new evidence); if the fingerprint is still ineffective, three
+      # more rows inside the window trip the escalation again, so a genuinely
+      # stuck fingerprint costs one bounded retry burst per window rather than a
+      # permanent resignation.
+      #
+      # 72h: longer than the dedup TTL and the 4h approval expiry plus its
+      # rejection cooldown (so the escalation is always delivered, and re-raised
+      # on expiry, first), long enough to span a weekend of operator latency, and
+      # short enough that two-month-old evidence cannot hold a fingerprint.
+      # Floored at an hour so a mistyped override cannot switch F3-11 off.
+      STUCK_STREAK_WINDOW = begin
+        configured = ENV["FLEET_REMEDIATION_STUCK_WINDOW_SECONDS"].to_i
+        configured.positive? ? [ configured, 1.hour.to_i ].max : 72 * 60 * 60
+      end
+
+      # The signal kinds whose stuck streak AGES OUT (see STUCK_STREAK_WINDOW).
+      # An allow-list, not a rule: the retry is only harmless where the action is
+      # an idempotent re-apply. system.config_drift dispatches apply_config, which
+      # converges or fails and leaves the node as it was. system.instance_silent,
+      # by contrast, REBOOTS the instance, and InstanceUnrecoverableSensor reads
+      # the unbounded streak to declare its reboot lane spent; ageing that streak
+      # would reboot an unrecoverable instance three times a window forever.
+      # A lane earns its place here by being listed.
+      STUCK_STREAK_RETRY_KINDS = %w[system.config_drift].freeze
+
       # IMP-848c7e953e2d — how long a settled deferral keeps blocking.
       #
       # THIS WINDOW IS LOAD-BEARING, NOT A TUNABLE. Without it the block is
@@ -45,10 +90,11 @@ module System
       # branch that reads this returns BEFORE the gate, so a blocked
       # fingerprint can never PROCEED, and only a PROCEEDED decision mints an
       # outcome (RemediationValidator#record_proceeded!) — so no newer settled
-      # row can ever exist to lift the block. The streak lane has a real escape
-      # (it keeps proceeding below the threshold, so a reboot between windows
-      # produces an `effective` row and take_while resets); this lane has none,
-      # because one deferral is enough to stop it. And the fingerprint is
+      # row can ever exist to lift the block. The streak lane has an escape
+      # below the threshold (it keeps proceeding, so a reboot between windows
+      # produces an `effective` row and take_while resets) and, since
+      # IMP-a294e9db40ea, past it too (STUCK_STREAK_WINDOW); this lane has none
+      # but this window, because one deferral is enough to stop it. And the fingerprint is
       # per-instance, not per-drift (`module_drift:<instance_id>`), so an
       # unbounded block would silently disable autonomous remediation on that
       # instance for every FUTURE, live-fixable drift as well.
@@ -96,14 +142,33 @@ module System
       # the DecisionEngine's stuck-escalation consumer reads: N validated
       # remediations in a row that did NOT clear the signal mean re-proceeding
       # is futile and the action needs an operator.
-      def self.ineffective_streak(account:, fingerprint:, limit: 10)
-        where(account: account, fingerprint: fingerprint)
-          .where(status: %w[effective ineffective])
+      #
+      # `within:` (seconds) drops outcomes validated longer ago than that; callers
+      # that report "stuck" go through .stuck_streak, which applies it per kind.
+      # Left nil it is the unbounded count, which is what a reader that WANTS the
+      # lifetime history (InstanceUnrecoverableSensor's reboot-exhaustion test)
+      # keeps.
+      def self.ineffective_streak(account:, fingerprint:, limit: 10, within: nil)
+        scope = where(account: account, fingerprint: fingerprint)
+                .where(status: %w[effective ineffective])
+        scope = scope.where("validated_at >= ?", within.seconds.ago) if within
+        scope
           .order(validated_at: :desc)
           .limit(limit)
           .pluck(:status)
           .take_while { |s| s == "ineffective" }
           .size
+      end
+
+      # The streak the DecisionEngine escalates on, and the ONE definition every
+      # surface that reports "stuck" must share (the engine, the stuck list, the
+      # component-status source): windowed for STUCK_STREAK_RETRY_KINDS, lifetime
+      # for every other kind. `signal_kind:` saves a lookup when the caller has it;
+      # otherwise it is read off the fingerprint's newest outcome.
+      def self.stuck_streak(account:, fingerprint:, signal_kind: nil)
+        kind = signal_kind || where(account: account, fingerprint: fingerprint).order(acted_at: :desc).pick(:signal_kind)
+        within = STUCK_STREAK_RETRY_KINDS.include?(kind.to_s) ? STUCK_STREAK_WINDOW : nil
+        ineffective_streak(account: account, fingerprint: fingerprint, within: within)
       end
     end
   end

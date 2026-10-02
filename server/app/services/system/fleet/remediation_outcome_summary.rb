@@ -16,9 +16,10 @@ module System
     # settled reports nil rather than a misleading 0%.
     #
     # `stuck` is the set of fingerprints the DecisionEngine is escalating as
-    # stuck right now, computed with the engine's own ineffective_streak and
-    # STUCK_STREAK_THRESHOLD. It is not windowed, because the engine's streak
-    # is not.
+    # stuck right now, computed with the engine's own RemediationOutcome.stuck_streak
+    # and STUCK_STREAK_THRESHOLD. It is bounded by the engine's streak window for
+    # the kinds the engine retries (STUCK_STREAK_RETRY_KINDS), never by the
+    # summary's `window_days`.
     class RemediationOutcomeSummary
       DEFAULT_WINDOW_DAYS = 7
       STUCK_CANDIDATE_LIMIT = 200
@@ -67,7 +68,7 @@ module System
 
       # Only a fingerprint with at least `threshold` ineffective rows can have
       # a streak that long, so that is the cheap pre-filter; the verdict is
-      # the engine's own RemediationOutcome.ineffective_streak.
+      # the engine's own RemediationOutcome.stuck_streak.
       def stuck_remediations
         threshold = DecisionEngine::STUCK_STREAK_THRESHOLD
         candidates = RemediationOutcome
@@ -79,7 +80,8 @@ module System
           .pluck(:fingerprint, Arel.sql("MAX(signal_kind)"), Arel.sql("MAX(validated_at)"))
 
         fingerprints = candidates.filter_map do |fingerprint, signal_kind, last_validated_at|
-          streak = RemediationOutcome.ineffective_streak(account: @account, fingerprint: fingerprint)
+          streak = RemediationOutcome.stuck_streak(account: @account, fingerprint: fingerprint,
+                                                   signal_kind: signal_kind)
           next if streak < threshold
 
           { fingerprint: fingerprint, signal_kind: signal_kind, streak: streak,

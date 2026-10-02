@@ -180,9 +180,10 @@ module Api
         # settled reports nil rather than a misleading 0%.
         #
         # `stuck` is the set of fingerprints the DecisionEngine is escalating as
-        # stuck right now, computed with the engine's own ineffective_streak and
+        # stuck right now, computed with the engine's own stuck_streak and
         # STUCK_STREAK_THRESHOLD so it cannot become a rival definition. It is
-        # not windowed, because the engine's streak is not.
+        # bounded by the engine's own RemediationOutcome::STUCK_STREAK_WINDOW, not
+        # by `window_days`: a streak that aged out is one the engine retries.
         def remediation_outcomes
           require_permission("system.fleet.read")
 

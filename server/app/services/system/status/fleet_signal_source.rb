@@ -89,11 +89,12 @@ module System
       end
 
       # The DecisionEngine's own two triggers for escalate_stuck_remediation!:
-      # a streak of ineffective outcomes at the threshold, or a remediation
-      # that declared it could not converge.
+      # a streak of ineffective outcomes at the threshold (RemediationOutcome
+      # .stuck_streak, which ages out for the kinds the engine retries), or a
+      # remediation that declared it could not converge.
       def stuck?(account, fingerprint)
         outcomes = ::System::Fleet::RemediationOutcome
-        outcomes.ineffective_streak(account: account, fingerprint: fingerprint) >=
+        outcomes.stuck_streak(account: account, fingerprint: fingerprint) >=
           ::System::Fleet::DecisionEngine::STUCK_STREAK_THRESHOLD ||
           outcomes.deferred_convergence?(account: account, fingerprint: fingerprint)
       end
