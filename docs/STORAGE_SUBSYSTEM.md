@@ -356,6 +356,66 @@ that is not a pass carries a hint:
 | `backend_instance_not_found` | Point the storage at a live backend or retire it. |
 | `no_backend_instance_configured` | Confirm it is an external SMB server the platform provisions no users on. |
 
+### `smb_bulk_rotation.rb` — `SmbBulkRotation`
+
+Operator-run rotation of every live SMB credential (SMB remediation step 3),
+because a password issued before extension commit c9eb9e72 may sit in a
+historical task row. The loop ships the tooling; a person runs it. It reuses
+`CredentialIssuer#rotate!` per credential, so the row lock, the successor
+ordering and the deferred retirement of an old-scheme user until its consumer's
+remount confirms all hold per item. Nothing in it reads or prints credential
+material: rows carry ids, statuses and timestamps.
+
+Runbook, in order (run from `server/` on the host that owns the target database):
+
+1. `rails system:storage:smb_rotation_preflight` must exit `0` (`safe_to_rotate`).
+   Resolve every `fail` and `unknown` first; the bulk task re-checks it at
+   execute time and refuses anything else.
+2. `rails system:storage:smb_rotate_all` is a **dry run** (the default). It names
+   the environment and database, prints the preflight verdict, states
+   `This will rotate N SMB credential(s)`, and shows the first 3 and the last 1.
+   Confirm the database is the intended one and N is the number you expect.
+3. `CONFIRM=N rails system:storage:smb_rotate_all` executes. `N` must equal the
+   count the dry run printed; a different number refuses (exit `3`) and rotates
+   nothing, so a fleet that changed since the dry run cannot be rotated on a
+   stale confirmation. Credentials are rotated one at a time with a
+   `[i/N]` progress line each.
+4. It **stops at the first server-side failure** (exit `1`); the exception class is
+   printed, never its message. Fix the cause, then
+   resume with `SINCE=<the started_at it printed before item 1> CONFIRM=<new dry-run count>
+   rails system:storage:smb_rotate_all`; `SINCE` skips credentials already
+   rotated at or after that time.
+5. `rails system:storage:smb_rotate_verify` (read-only, re-runnable) until it
+   exits `0` (`COMPLETE`). Rotation dispatches work and does not wait for agents.
+   The remount is dispatched when the agent completes the rotation task, and a
+   mounted consumer that has not confirmed is re-dispatched by the drift sweep
+   (`StorageAssignment.mount_credential_mismatch`). Verify reports each consumer
+   as `confirmed` (the agent confirmed `mounted_credential_id` equals the active
+   credential) or `stale_mount` (still on the superseded credential), counts
+   credentials still `rotating`, and lists excluded assignments (below).
+
+Pilot first: the stop-at-first-failure only sees server-side failures (vault,
+database, no backend configured), because rotation merely enqueues tasks; a
+broken agent shows up later, in verify. So run `LIMIT=1` (the dry run says
+`limit=1 of N eligible`; `CONFIRM` then restates 1), run verify until that one
+consumer is `confirmed`, and only then run the rest.
+
+Excluded, never rotated by this tool: assignments that are disabled, are not
+`mounted`/`degraded`, or have no confirmed mount (`mounted_credential_id` NULL).
+RemountCoordinator and the drift sweep cannot remount a consumer with no
+confirmed mount, so rotating it would lock the consumer out once the sweeper
+retires the old user. The dry run and verify list each with its reason; an
+operator handles them separately (a disabled assignment is also not in verify's
+`COMPLETE` check).
+
+What it does not cover: it does not wait for or retry agents, it does not roll a
+rotation back, and an assignment with no active credential is not in the plan
+(it has nothing to rotate). Re-running without `SINCE` after a complete run
+rotates everything again; `SINCE` must carry a zone and must not be in the future. Every rotation of an old-scheme credential changes
+the samba username (a new per-assignment user is created and the old shared user
+is deleted once no sibling uses it), so the consumer's remount, not the
+rotation, is what makes it work again.
+
 #### Historical rows: the `storage.smb_user.apply` secret scrub
 
 Before extension commit c9eb9e72 the task payload carried the SMB password in
