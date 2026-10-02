@@ -62,10 +62,8 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
   # Seeds a row AS THE PRE-FIX WRITERS LEFT IT. `update_columns` so no model
   # callback or validation reshapes it; the migration must clean what is
   # actually in the table, not what the model would write today.
-  def task!(options:, command: self.command, error_message: nil, events: [], description: nil, status: "failed", operable: nil)
-    attrs = { account: account, command: command, status: status }
-    attrs[:operable] = operable if operable
-    task = create(:system_task, **attrs)
+  def task!(options:, command: self.command, error_message: nil, events: [], description: nil, status: "failed")
+    task = create(:system_task, account: account, command: command, status: status)
     task.update_columns(options: options, error_message: error_message, events: events, description: description)
     task
   end
@@ -461,85 +459,72 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
 
   # Row locks held by ANOTHER connection. Transactional fixtures cannot show
   # this (rows inside the example's transaction are invisible to a second
-  # connection), so these examples commit their rows. Cleanup is two-layered:
-  # what the examples mint themselves (tasks, the node and its chain) is
-  # deleted by exact id, recorded as each row is created; what creating an
-  # account seeds behind it (System::AccountBootstrapService writes templates,
-  # platforms, modules, categories, a provider with regions and instance
-  # types, the architecture catalog, default environments and roles across a
-  # dozen tables, and the account's destroy is RESTRICTED while any of it
-  # exists) is cleared the way the suite itself clears committed data —
-  # DatabaseCleaner deletion, the before(:suite) mechanism — rather than by a
-  # hand-kept mirror of that seed. Not the `truncation: true` tag: its
-  # before(:each) flips the transactional flag after the example's transaction
-  # has already begun, so the rows never reach the second connection.
+  # connection), so these examples commit their rows — and ONLY their rows.
+  # The account is inserted without callbacks: Account's two
+  # after_create_commit hooks (ensure_default_environments and
+  # run_account_bootstrap) seed environments, roles and a dozen-table node
+  # catalog with restrict_with_error back on the account, which no exact-id
+  # cleanup can follow. The tasks are inserted with no operable: the schema
+  # allows it and the scrub never reads it. Every id is recorded as it is
+  # inserted, and the after hook deletes exactly those.
   describe "rows a concurrent transaction holds" do
     self.use_transactional_tests = false
 
     let(:other) { ActiveRecord::Base.connection_pool.checkout }
 
-    # Every row this group mints, recorded AS IT IS CREATED, so a failure
+    # Every row this group inserts, recorded AS IT IS INSERTED, so a failure
     # partway through still leaves a complete list for the cleanup.
     let(:created) { Hash.new { |h, k| h[k] = [] } }
 
-    def remember(kind, record)
-      created[kind] << record.id
-      record
-    end
-
-    # One node for the whole example, built with the spec's own account at
-    # every level (the bare factory associations each mint a fresh account).
-    let(:node) do
-      owner = account
-      architecture = remember(:architectures, create(:system_node_architecture))
-      platform = remember(:platforms, create(:system_node_platform, account: owner, node_architecture: architecture))
-      template = remember(:templates, create(:system_node_template, account: owner, node_platform: platform))
-      remember(:nodes, create(:system_node, account: owner, node_template: template))
+    let(:account_id) do
+      id = UUID7.generate
+      Account.insert!({ id: id, name: "scrub-spec-#{SecureRandom.hex(4)}" })
+      created[:accounts] << id
+      id
     end
 
     before { other.begin_db_transaction }
 
-    # Children before parents; then the account's seeded catalog, by deletion
-    # (DELETE takes only a row lock; TRUNCATE's exclusive lock is what the
-    # suite avoids too).
     after do
       other.rollback_db_transaction
     ensure
       ActiveRecord::Base.connection_pool.checkin(other)
       System::Task.where(id: created[:tasks]).delete_all
-      System::Node.where(id: created[:nodes]).delete_all
-      System::NodeTemplate.where(id: created[:templates]).delete_all
-      System::NodePlatform.where(id: created[:platforms]).delete_all
-      System::NodeArchitecture.where(id: created[:architectures]).delete_all
-      DatabaseCleaner.clean_with(:deletion, except: %w[ar_internal_metadata schema_migrations])
+      Account.where(id: created[:accounts]).delete_all
     end
 
+    # Returns the inserted task ids.
     def committed_rows(count)
-      operable = node
       Array.new(count) do |i|
-        remember(:tasks, task!(options: options_for(action: "create", username: "u-#{i}", "password" => marker),
-                               error_message: create_echo("u-#{i}", marker), operable: operable))
+        id = UUID7.generate
+        System::Task.insert!({
+          id: id, account_id: account_id, command: command, status: "failed", progress: 0,
+          options: { "action" => "create", "username" => "u-#{i}", "password" => marker },
+          error_message: create_echo("u-#{i}", marker), events: []
+        })
+        created[:tasks] << id
+        id
       end
     end
 
     it "skips a row another transaction holds FOR UPDATE, reports it, and scrubs it on the next run" do
       rows = committed_rows(3)
       held = rows.last
-      other.execute("SELECT id FROM system_tasks WHERE id = #{other.quote(held.id)} FOR UPDATE")
+      other.execute("SELECT id FROM system_tasks WHERE id = #{other.quote(held)} FOR UPDATE")
 
       expect(run!).to eq(2)
 
       expect(@printed).to match(/scrubbed 2 /)
       expect(@printed).to include("1 candidate row(s) not scrubbed (locked by a concurrent transaction")
       expect(@printed).to include("re-run with rails system:storage:scrub_smb_task_secrets")
-      expect(row_text(held.id)).to include(marker)
-      rows.first(2).each { |row| expect(row_text(row.id)).not_to include(marker) }
+      expect(row_text(held)).to include(marker)
+      rows.first(2).each { |id| expect(row_text(id)).not_to include(marker) }
 
       other.rollback_db_transaction
       other.begin_db_transaction # so the after hook's rollback has one to roll back
 
       expect(run!).to eq(1)
-      expect(row_text(held.id)).not_to include(marker)
+      expect(row_text(held)).not_to include(marker)
     end
 
     # A table-level lock is the one wait SKIP LOCKED cannot avoid; lock_timeout
@@ -561,7 +546,7 @@ RSpec.describe ScrubSmbUserApplyTaskSecrets do
       other.begin_db_transaction
 
       expect(run!).to eq(1)
-      expect(row_text(rows.first.id)).not_to include(marker)
+      expect(row_text(rows.first)).not_to include(marker)
     end
   end
 
