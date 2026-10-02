@@ -318,6 +318,10 @@ func (moduleBuildJob) run(ctx context.Context, h *ModuleBuildHandler, task *task
 	}
 	stdout, stderr, runErr := execer.Run(ctx, moduleForgeBuildScript, env)
 	tail := scrubbedLogTail(stdout, stderr, bctx.SourceToken, bctx.ParentPAT, bctx.OrasPassword)
+	// IMP-dbc22946e05c: the whole scrubbed log, not just the tail, on the failure
+	// path too (the cause often scrolled out of the tail). Best-effort: it never
+	// fails the build or masks the build's own error.
+	logUploaded := uploadBuildLog(h.HTTP, task.ID, stdout, stderr, bctx.SourceToken, bctx.ParentPAT, bctx.OrasPassword)
 	if runErr != nil {
 		return nil, fmt.Errorf("ci.module_build %s: %w (log_tail: %s)", opts.Module, runErr, tail)
 	}
@@ -332,6 +336,7 @@ func (moduleBuildJob) run(ctx context.Context, h *ModuleBuildHandler, task *task
 		"fsverity_root":  parsed.FsverityRoot,
 		"built_from_sha": parsed.BuiltFromSHA,
 		"log_tail":       tail,
+		"log_uploaded":   logUploaded,
 	}
 	if n, convErr := parsed.Size.Int64(); convErr == nil {
 		result["size"] = n
