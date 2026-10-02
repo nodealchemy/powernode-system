@@ -49,13 +49,20 @@ module System
 
       include ::System::Autonomy::SelfManagementFence
 
-      Result = Struct.new(:inv1, :inv2, :inv6, :scanned_at, :live, keyword_init: true) do
+      Result = Struct.new(:inv1, :inv2, :inv6, :fence, :scanned_at, :live, keyword_init: true) do
         def violations
           Array(inv1) + Array(inv2) + Array(inv6)
         end
 
         def clean?
           violations.empty?
+        end
+
+        # The INV-1 fence is only as good as its setting: unset or dangling
+        # means the fence is not protecting the control plane's own node, which
+        # `clean?` cannot say (no violations is the same answer either way).
+        def needs_attention?
+          fence && fence[:state] != "armed"
         end
       end
 
@@ -66,8 +73,10 @@ module System
       def scan(account:, live: false)
         raise ArgumentError, "account required" unless account
 
+        fence = fence_status(account)
         Result.new(
-          inv1: scan_inv1(account),
+          inv1: dangling_fence_findings(fence) + scan_inv1(account),
+          fence: fence,
           inv2: scan_inv2(account),
           inv6: scan_inv6(account, live: live),
           scanned_at: Time.current,
@@ -76,6 +85,60 @@ module System
       end
 
       private
+
+      # IMP-a2b9f3df64c0 — whether the INV-1 fence is ARMED: SiteSetting
+      # self_hosting_node_id set AND naming a System::Node that exists. Three
+      # states, because a violation list cannot tell them apart:
+      #   unset    — fence fully inert (right for dev, wrong for a control plane)
+      #   dangling — set but resolves to no node: also inert, and worse, because
+      #              it looks configured
+      #   armed    — set and resolving. node_in_scanned_account says whether that
+      #              node is in the account being scanned (the setting is global).
+      # Read-only; never writes the setting. Whether the node IS this
+      # deployment's own host cannot be known from here — an operator confirms it
+      # from the printed name.
+      UUID_SHAPE = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/
+
+      def fence_status(account)
+        raw = self_hosting_node_id
+        if raw.nil?
+          return { state: "unset", severity: :medium, configured_node_id: nil,
+                   detail: "self_hosting_node_id is unset: the INV-1 self-management fence is fully inert. " \
+                           "Correct for a workstation or dev plane; on a control plane nothing stops fleet " \
+                           "autonomy acting on its own hosting node." }
+        end
+
+        # Armed means the FENCE would match, not that a lookup succeeds: the
+        # fence compares the setting to node ids as raw strings, while
+        # Node.find_by normalizes (an upper-case or brace-wrapped value would
+        # find the node and still never match). So the verdict comes from the
+        # fence's own predicate, and a non-String value never reaches the query.
+        node = raw.is_a?(String) && raw.match?(UUID_SHAPE) ? ::System::Node.find_by(id: raw) : nil
+        unless node && self_managed_target?(node)
+          return { state: "dangling", severity: :critical, configured_node_id: raw.to_s[0, 64],
+                   detail: "self_hosting_node_id #{raw.to_s[0, 64].inspect} matches no System::Node id exactly " \
+                           "(it must be the node's lower-case UUID): the fence protects nothing. Point it at " \
+                           "the control plane's own node (an operator action)." }
+        end
+
+        # The setting is global; another account's node is not this account's to
+        # see, so its name and ids are withheld from this account's scan.
+        return { state: "armed", severity: nil, node_in_scanned_account: false,
+                 detail: "self_hosting_node_id resolves to a node in another account; details withheld." } unless node.account_id == account.id
+
+        { state: "armed", severity: nil, configured_node_id: node.id, node_name: node.name,
+          node_account_id: node.account_id, node_in_scanned_account: true,
+          detail: "self_hosting_node_id resolves to node #{node.name.inspect}; confirm that is this " \
+                  "control plane's own host." }
+      end
+
+      # A dangling value is never a legitimate state (unlike unset, which is
+      # right on a dev plane), so it is a real INV-1 finding, not just a status.
+      def dangling_fence_findings(fence)
+        return [] unless fence[:state] == "dangling"
+
+        [ { invariant: "INV-1", severity: :critical, node_id: nil, instance_id: nil, detail: fence[:detail] } ]
+      end
 
       # INV-1 — surfaces which CURRENTLY-RUNNING instances sit on this
       # deployment's own hosting node, per the configured

@@ -148,6 +148,14 @@ node (INV-1: no self-management):
   anything is queued ("it is this control plane's own hosting node");
 - the boot-image drift rollout lists the node under `self_managed_excluded` and skips it.
 
+The fence is inert while `self_hosting_node_id` is unset, and also while it names no
+existing node (a dangling value looks configured and protects nothing). Check it
+read-only before relying on it: `rails rcp:invariant_scan` prints `INV-1 fence:
+ARMED | UNSET | DANGLING` with the node name to confirm against this control plane's
+own host, and the same field is `inv1_fence` in the compliance snapshot. UNSET and
+DANGLING also print an ATTENTION line, since a scan with no violations reads the
+same for an armed fence and one that was never set.
+
 The upgrade is an **operator action on the node itself**, with the same agent code the
 dispatched task runs (`bootupgrade.Apply`):
 

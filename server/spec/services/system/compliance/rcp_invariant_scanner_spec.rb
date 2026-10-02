@@ -63,6 +63,85 @@ RSpec.describe System::Compliance::RcpInvariantScanner do
       end
     end
 
+    # IMP-a2b9f3df64c0 (proving-ground gate zero) — the INV-1 fence is INERT
+    # unless SiteSetting self_hosting_node_id names the control plane's own
+    # System::Node. The scan must say which of three states the setting is in,
+    # because "no violations" is the same answer for an armed fence and for one
+    # that was never set.
+    describe "INV-1 fence status" do
+      it "reports an unset fence as a warning finding, and does not make the scan unclean" do
+        status = described_class.scan(account: account).fence
+
+        expect(status).to include(state: "unset", severity: :medium, configured_node_id: nil)
+        expect(status[:detail]).to match(/inert/i)
+        expect(described_class.scan(account: account).clean?).to be true
+      end
+
+      it "reports a value that resolves to an existing node as armed, with the node name" do
+        node = create(:system_node, account: account)
+        SiteSetting.set("self_hosting_node_id", node.id)
+
+        status = described_class.scan(account: account).fence
+
+        expect(status).to include(state: "armed", configured_node_id: node.id, node_name: node.name)
+        expect(status[:severity]).to be_nil
+      end
+
+      it "reports a value that names no node as dangling AND adds a critical INV-1 finding" do
+        SiteSetting.set("self_hosting_node_id", SecureRandom.uuid)
+
+        result = described_class.scan(account: account)
+
+        expect(result.fence).to include(state: "dangling", severity: :critical)
+        expect(result.fence[:detail]).to match(/matches no System::Node/)
+        expect(result.inv1.map { |f| f[:severity] }).to eq([ :critical ])
+        expect(result.clean?).to be false
+      end
+
+      it "reports a value the fence would never match (upper-case UUID) as dangling, not armed" do
+        node = create(:system_node, account: account)
+        SiteSetting.set("self_hosting_node_id", node.id.upcase)
+
+        expect(described_class.scan(account: account).fence).to include(state: "dangling")
+      end
+
+      it "reports a non-string value as dangling rather than raising" do
+        account # create first: bootstrap reads other settings through the real SiteSetting.get
+        allow(SiteSetting).to receive(:get).and_call_original
+        allow(SiteSetting).to receive(:get).with("self_hosting_node_id").and_return({ "a" => 1 })
+
+        expect(described_class.scan(account: account).fence).to include(state: "dangling")
+      end
+
+      it "reports a value that is not even a UUID as dangling rather than raising" do
+        SiteSetting.set("self_hosting_node_id", "not-a-uuid")
+
+        expect(described_class.scan(account: account).fence).to include(state: "dangling")
+      end
+
+      it "reports a node in another account as armed but withholds its name and ids" do
+        other = create(:system_node, account: create(:account))
+        SiteSetting.set("self_hosting_node_id", other.id)
+
+        status = described_class.scan(account: account).fence
+
+        expect(status).to include(state: "armed", node_in_scanned_account: false)
+        expect(status.keys).not_to include(:node_name, :node_account_id, :configured_node_id)
+        expect(status.values.join).not_to include(other.id)
+        expect(status.values.join).not_to include(other.name)
+      end
+
+      it "needs_attention? is true for unset and dangling, false for armed" do
+        expect(described_class.scan(account: account).needs_attention?).to be true
+
+        SiteSetting.set("self_hosting_node_id", create(:system_node, account: account).id)
+        expect(described_class.scan(account: account).needs_attention?).to be false
+
+        SiteSetting.set("self_hosting_node_id", SecureRandom.uuid)
+        expect(described_class.scan(account: account).needs_attention?).to be true
+      end
+    end
+
     describe "INV-2" do
       it "does not flag the cloud_init boot_mode (not a pivot-boot mode)" do
         instance_on(connection_config: {}, boot_mode: "cloud_init")

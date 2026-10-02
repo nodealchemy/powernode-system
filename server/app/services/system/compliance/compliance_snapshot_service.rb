@@ -293,6 +293,7 @@ module System
           scanned_at: result.scanned_at.iso8601,
           live_verified: result.live,
           inv1_self_management: result.inv1,
+          inv1_fence: result.fence,
           inv2_boot_network_dependency: result.inv2,
           inv6_storage_locality: result.inv6,
           violation_count: result.violations.size

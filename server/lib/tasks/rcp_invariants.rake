@@ -37,7 +37,13 @@ namespace :rcp do
       end
     end
 
+    fence = result.fence
+    puts "\nINV-1 fence: #{fence[:state].upcase}#{" (#{fence[:severity]})" if fence[:severity]}"
+    puts "  node=#{fence[:configured_node_id] || 'none'}#{" name=#{fence[:node_name]}" if fence[:node_name]}"
+    puts "  #{fence[:detail]}"
+
     puts "\n#{'=' * 100}"
+    puts "ATTENTION — the INV-1 fence is #{fence[:state]}: an empty INV-1 list does not mean it is protecting anything." if result.needs_attention?
     puts result.clean? ? "CLEAN — no violations found." : "#{result.violations.size} total finding(s) — see above."
     puts "(static pass — INV-6 findings are unverified against live Proxmox; re-run with LIVE=1 to confirm)" unless live
   end

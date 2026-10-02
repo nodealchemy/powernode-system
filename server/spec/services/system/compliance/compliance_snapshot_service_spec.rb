@@ -60,6 +60,12 @@ RSpec.describe System::Compliance::ComplianceSnapshotService do
       end
     end
 
+    it "carries the INV-1 fence status next to the violations (IMP-a2b9f3df64c0)" do
+      result = described_class.snapshot!(account: account)
+
+      expect(result.snapshot[:rcp_invariants][:inv1_fence]).to include(state: "unset", severity: :medium)
+    end
+
     it "fails on missing account" do
       result = described_class.snapshot!(account: nil)
       expect(result.ok?).to be false
