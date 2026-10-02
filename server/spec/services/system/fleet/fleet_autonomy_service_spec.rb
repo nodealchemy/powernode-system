@@ -383,7 +383,9 @@ RSpec.describe System::Fleet::FleetAutonomyService do
       expect { gate_gap! }.not_to change(Ai::ApprovalRequest, :count)
 
       # ...and once that window passes the gap comes BACK, instead of being
-      # durably silenced by a decision nobody made.
+      # durably silenced by a decision nobody made. (IMP-44ae4d4b2811's backoff for
+      # clock-fired rejections does not apply here: an advisory request is exempt, it
+      # is meant to carry no deadline, and this spec simulates one that leaked.)
       timed_out.update_columns(completed_at: 2.hours.ago)
       expect { gate_gap! }.to change(Ai::ApprovalRequest, :count).by(1)
     end

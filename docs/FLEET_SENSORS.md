@@ -822,6 +822,17 @@ Action executors live at:
 
 - `extensions/system/server/app/services/system/ai/skills/*_executor.rb`
 
+**A request nobody answers backs off instead of re-parking** (IMP-44ae4d4b2811). A non-advisory request that expires unattended (the fleet chain's `timeout_action` is `reject` at 4h) is not an operator's answer, and a condition that is still standing used to mint a fresh card every ~5h (the rejected-cooldown that followed was only 1h, 4h for the advancement actions): ~90 clock-fired rejections a day on ops-hub, none seen by a person. `FleetAutonomyService#unattended_expiry_backoff?` now makes the SAME condition wait `base × 2^(n−1)` after its n-th unattended expiry in the last 30 days, capped: `system.fleet.unattended_expiry_cooldown_seconds` (default 24h) and `system.fleet.unattended_expiry_max_cooldown_seconds` (default 7d), SiteSettings that fall back to the defaults for anything not a positive whole number. The condition is never lost, only re-parked at a falling rate. What it deliberately does NOT touch:
+
+- **Security conditions and critical signals** (`system.instance_terminate`, `system.cert_revoke`, `system.cert_rotate`, any `signal_severity: critical`): the dedup key can be coarser than the condition (a quarantine keyed on the module), so one expiry would silence every later probe for up to a week with no card. They keep the 1h/4h cooldown.
+- **A different condition on the same key**: when the signal carries a fingerprint and a severity, the expiries must carry the same ones. A new fingerprint, or the same one at a higher severity, mints.
+- **A recurrence after a person answered**: any approved or rejected decision on the key restarts the count.
+- **A person's own rejection** (a `rejected` decision row exists) keeps the cooldown it always had; a request only delegated or abstained on and then clock-expired still counts as clock-fired.
+- **The action-level fallback** (a category with no natural key) keeps the short cooldown, because it would hide unrelated conditions.
+- **Advisory requests**: they carry no deadline at all.
+
+`open_operator_request?` answers the same, so the stuck and standing escalation lanes stay quiet inside the backoff. The adaptation gate keeps seeing the existing `rejection_cooldown` cause.
+
 **Which PLANE a remediation is gated in.** The policy lookup above is only the
 floor: `Ai::AutonomyGate` also resolves the environment of the action's subject
 (`System::EnvironmentResolver` — the extension's answer to core's

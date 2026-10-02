@@ -347,8 +347,12 @@ RSpec.describe System::Fleet::DecisionEngine do
           description: "Remediation stuck",
           request_data: {
             "action_category" => "system.module_assign",
+            # signal_severity: every real gate request carries it (the gate stamps the
+            # signal's severity into the payload), and the unattended-expiry backoff
+            # matches on it (IMP-44ae4d4b2811).
             "payload" => { "module_id" => (module_id || node_module.id),
-                           "signal_fingerprint" => (signal_fingerprint || fingerprint) }
+                           "signal_fingerprint" => (signal_fingerprint || fingerprint),
+                           "signal_severity" => "medium" }
           }
         )
         # update_columns: a status flip through the model fires
@@ -406,12 +410,24 @@ RSpec.describe System::Fleet::DecisionEngine do
         expect(node_module.reload.consent_budget_used_count).to eq(budget_before)
       end
 
-      # The other direction of the same choice: a lane that alerts once and
-      # then goes silent forever is worse than the noise. Once the rejection
-      # cooldown lapses (1h for a non-advancement action) and the condition is
-      # still stuck, the operator gets told again.
-      it "escalates again once the rejection cooldown has lapsed" do
+      # IMP-44ae4d4b2811: the escalation request here is a CLOCK-fired rejection (no
+      # decision row), so the same condition backs off for a day rather than the 1h
+      # cooldown: re-escalating on the old beat is the re-parking this stops.
+      it "stays quiet past the 1h cooldown while the unattended-expiry backoff holds" do
         escalation_request!(status: "rejected", completed_at: 3.hours.ago)
+
+        expect {
+          @decision = decide!
+        }.not_to change { System::FleetEvent.where(kind: "fleet.remediation_stuck").count }
+        expect(@decision[:decision]).to eq(:awaiting_operator)
+      end
+
+      # The other direction of the same choice: a lane that alerts once and
+      # then goes silent forever is worse than the noise. Once the backoff lapses
+      # (24h for the first unattended expiry) and the condition is still stuck,
+      # the operator gets told again.
+      it "escalates again once the rejection cooldown has lapsed" do
+        escalation_request!(status: "rejected", completed_at: 25.hours.ago)
 
         expect {
           @decision = decide!

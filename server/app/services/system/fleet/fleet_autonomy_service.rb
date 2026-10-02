@@ -627,6 +627,39 @@ module System
       SUPPRESSION_SETTLED_ADVISORY   = "settled_advisory"
       SUPPRESSION_NO_REQUEST_STORE   = "no_chain_or_request_store"
 
+      # IMP-44ae4d4b2811 — the UNATTENDED-EXPIRY BACKOFF.
+      #
+      # A non-advisory request that nobody answers is swept by the chain's
+      # timeout_action (4h on the fleet chain, reject), and the rejected-cooldown
+      # that follows is only 1h (4h for the advancement actions). A condition that
+      # is still standing therefore mints a fresh card every ~5h, forever: ~90
+      # clock-fired rejections a day on ops-hub, none seen by a person, burying the
+      # decisions that are. A rejection the CLOCK fired (no Ai::ApprovalDecision
+      # row) is not an operator's answer, so the same condition now waits longer
+      # each time it expires unattended: BASE, then 2x, 4x, ... up to MAX. The
+      # condition is never lost, only re-parked at a falling rate. A person's own
+      # rejection keeps the cooldown it always had.
+      #
+      # DB-driven like SignalState's settings: SiteSetting, then the constant, and
+      # anything that is not a positive whole number falls back to the constant.
+      UNATTENDED_EXPIRY_BASE_SETTING = "system.fleet.unattended_expiry_cooldown_seconds"
+      UNATTENDED_EXPIRY_MAX_SETTING  = "system.fleet.unattended_expiry_max_cooldown_seconds"
+      DEFAULT_UNATTENDED_EXPIRY_BASE_SECONDS = 24 * 3600
+      DEFAULT_UNATTENDED_EXPIRY_MAX_SECONDS  = 7 * 24 * 3600
+      # How far back the expiries of one condition are counted for the backoff.
+      UNATTENDED_EXPIRY_WINDOW = 30.days
+      # NEVER backed off: the conditions where one dropped card is worse than the
+      # noise. Their dedup key can be coarser than the condition (a quarantine keyed
+      # on the module, a revoke keyed on the instance), so a single expiry would
+      # otherwise silence every later probe for up to a week, with no card and no
+      # notification. They keep the 1h/4h cooldown they always had. A signal whose
+      # severity is critical is exempt wherever it is routed.
+      UNATTENDED_EXPIRY_EXEMPT_CATEGORIES = %w[
+        system.instance_terminate
+        system.cert_revoke
+        system.cert_rotate
+      ].freeze
+
       # The plane the gated action acts on, read from the signal metadata
       # (`instance_id`, `instance_ids`, `node_id`, ... at the top level or under
       # "payload"), so a protected plane escalates here exactly as it does in
@@ -860,6 +893,10 @@ module System
           return true if recently_rejected_approval?(action_category,
               [ "request_data->>'action_category' = ? AND request_data->'payload'->>? = ?",
                action_category, name, value ])
+
+          # Arm 2b (IMP-44ae4d4b2811): inside the unattended-expiry backoff the gate
+          # mints nothing either, so this must say "open" too.
+          return true if unattended_expiry_backoff?(action_category, name, value, metadata)
         end
 
         recently_rejected_approval?(action_category,
@@ -1170,6 +1207,18 @@ module System
             @suppression = SUPPRESSION_REJECTION_COOLDOWN
             return nil
           end
+
+          # IMP-44ae4d4b2811: only for a condition with a natural key. The
+          # action-level fallback below would hide UNRELATED conditions of the
+          # same category for the whole backoff, so it keeps the short cooldown.
+          # Same cause label as the cooldown above: it IS a rejection cooldown
+          # (AdaptationGate maps the label, and a timeout is a rejection).
+          if !advisory && unattended_expiry_backoff?(action_category, name, value, metadata)
+            Rails.logger.info("[FleetAutonomy] Skipped #{action_category} for #{name}=#{value} — " \
+                              "expired unattended, backing off")
+            @suppression = SUPPRESSION_REJECTION_COOLDOWN
+            return nil
+          end
         end
 
         # Fallback: action-level cooldown for actions without natural dedup keys.
@@ -1417,6 +1466,68 @@ module System
         request.update!(request_data: request.request_data.merge("execution" => stamp))
       rescue StandardError => e
         Rails.logger.error("[FleetAutonomy] could not stamp execution on ApprovalRequest #{request.id}: #{e.message}")
+      end
+
+      # Is this condition inside its unattended-expiry backoff? Counts the
+      # rejections the CLOCK fired (no `rejected` Ai::ApprovalDecision: a request a
+      # person rejected always has one, #expire_stale_approvals! -> check_expiration!
+      # never writes one) for the same condition, over UNATTENDED_EXPIRY_WINDOW; the
+      # wait after the latest is BASE * 2**(count - 1), capped at MAX.
+      #
+      # THE SAME CONDITION, not just the same card: the dedup key is coarser than a
+      # condition for several categories (module, template, platform keyed), so when
+      # the signal carries a fingerprint and a severity the expiries must carry the
+      # same ones. A different fingerprint, or the same one at another severity, is
+      # a new fact and mints. Any request on the key that a PERSON answered
+      # (approved or rejected) restarts the count: the condition was dealt with, and
+      # a recurrence is a new incident, not the same ignored one.
+      #
+      # Exempt: UNATTENDED_EXPIRY_EXEMPT_CATEGORIES and critical severity.
+      def unattended_expiry_backoff?(action_category, name, value, metadata = {})
+        meta = (metadata || {}).to_h.with_indifferent_access
+        return false if UNATTENDED_EXPIRY_EXEMPT_CATEGORIES.include?(action_category)
+        return false if meta[:signal_severity].to_s == "critical"
+
+        keyed = ::Ai::ApprovalRequest
+          .where(account: @account, source_type: SOURCE_TYPE)
+          .where("request_data->>'action_category' = ? AND request_data->'payload'->>? = ?",
+                 action_category, name, value)
+        scope = keyed.rejected
+        {
+          "signal_fingerprint" => meta[:signal_fingerprint],
+          "signal_severity" => meta[:signal_severity]
+        }.each do |field, wanted|
+          scope = scope.where("request_data->'payload'->>? = ?", field, wanted.to_s) if wanted.present?
+        end
+        window = UNATTENDED_EXPIRY_WINDOW.ago
+        restart_at = keyed.where(id: ::Ai::ApprovalDecision.where(decision: %w[approved rejected])
+                                                           .select(:approval_request_id))
+                          .where("completed_at > ?", window).maximum(:completed_at) || window
+
+        stamps = scope.where("completed_at > ?", restart_at)
+                      .where.not(id: ::Ai::ApprovalDecision.where(decision: "rejected").select(:approval_request_id))
+                      .pluck(:completed_at)
+        return false if stamps.empty?
+
+        stamps.max > unattended_expiry_wait(stamps.size).seconds.ago
+      end
+
+      def unattended_expiry_wait(count)
+        base = positive_setting(UNATTENDED_EXPIRY_BASE_SETTING) || DEFAULT_UNATTENDED_EXPIRY_BASE_SECONDS
+        max  = positive_setting(UNATTENDED_EXPIRY_MAX_SETTING) || DEFAULT_UNATTENDED_EXPIRY_MAX_SECONDS
+        [ base * (2**[ count - 1, 10 ].min), [ max, base ].max ].min
+      end
+
+      def positive_setting(key)
+        return nil unless defined?(::SiteSetting)
+
+        @positive_settings ||= {}
+        return @positive_settings[key] if @positive_settings.key?(key)
+
+        @positive_settings[key] = ::System::Fleet::SensorConfig.coerce_threshold(::SiteSetting.get(key))
+      rescue StandardError => e
+        Rails.logger.warn("[FleetAutonomy] setting #{key} fell back to its default: #{e.class}: #{e.message}")
+        nil
       end
 
       def recently_rejected_approval?(action_category, match_conditions)
