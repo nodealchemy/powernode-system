@@ -988,6 +988,8 @@ Rails.application.routes.draw do
           post "status/tasks/:id/acknowledge", to: "status#acknowledge_task"
           post "status/tasks/:id/complete", to: "status#complete_task"
           post "status/tasks/:id/fail", to: "status#fail_task"
+          # IMP-dbc22946e05c: the agent uploads a task's full scrubbed log.
+          post "status/tasks/:id/log", to: "status#upload_task_log"
 
           # In-place boot-image upgrade (campaign 019f505f inc 2): the agent
           # GETs the promoted UKI (proxied by digest) to write to its ESP.

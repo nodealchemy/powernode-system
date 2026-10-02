@@ -161,6 +161,9 @@ module Ai
         "system_update_sensor_config"   => "system.fleet.manage",
         "system_list_tasks"             => "system.infra_tasks.read",
         "system_get_task"               => "system.infra_tasks.read",
+        # IMP-dbc22946e05c — a page of a task's full stored log. Same read tier as
+        # system_get_task, whose events it extends.
+        "system_get_task_log"           => "system.infra_tasks.read",
         # IMP-054397261461 — a read of the module (its version and the nodes running it).
         "system_wait_for"               => "system.modules.read",
         # IMP-52762a704a3d — queues a probe.node_inspect task, so it takes the same
@@ -906,6 +909,9 @@ module Ai
       declare_action "system_get_storage_migration", mutating: false, returns: "storage_migration, full record", refuses: "no migration has that id"
       declare_action "system_get_storage_recommendations", mutating: false, returns: "the recommended mount points and size_gb per stateful role"
       declare_action "system_get_task", mutating: false
+      declare_action "system_get_task_log", mutating: false,
+                     returns: "one bounded page of the task's full stored log, redacted: content, offset, next_offset, has_more, total_bytes, truncated, original_bytes, expires_at",
+                     refuses: "the task does not exist in this account, an instance principal names a task that is not its own instance's (answered exactly as a missing task), or the task has no live stored log"
       declare_action "system_get_template", mutating: false, returns: "template with its assigned modules"
       declare_action "system_get_volume", mutating: false, returns: "volume, the full record"
       # IMP-0b4f18ae4384 — THE ONE GITOPS WRITE THAT REACHES LIVE FLEET STATE.
@@ -1903,6 +1909,15 @@ module Ai
                                 description: "When true, the reply also carries events (the newest #{TASK_EVENTS_LIMIT}, oldest first, each with its type, message, timestamp, data and any result such as log_tail), events_total and events_truncated. Every string in them, keys included, is REDACTED of credential-shaped tokens exactly as error_message is; a value under a secret-named key (password, token, api_key, cookie and the like) and an array of strings in which a credential is found are withheld whole. Strings are capped at 16 KB (marker included), a log_tail or stdout/stderr string keeps its END, and the reply holds #{TASK_EVENTS_MAX_CHARS / 1024} KB of text and #{TASK_EVENTS_MAX_NODES} values in all (newest events kept whole first, older ones collapsing into one marker). With wait_seconds, the events are those of the final snapshot. Absent or false leaves the reply unchanged; a value that is not true or false is refused." },
               wait_seconds: { type: "integer", required: false,
                               description: "Long-poll: when > 0, hold the call until the task is finished (complete, failed, aborted or cancelled) or this many seconds pass, clamped to the server cap of #{WAIT_MAX_SECONDS}, polling every #{WAIT_POLL_SECONDS}s. On expiry the reply is still a success, carrying timed_out: true and the current task. The reply then also carries wait_seconds, the value applied, and wait_degraded: true when the server was at its concurrent-wait limit and answered with one check. Absent or 0 answers at once, unchanged." }
+            }
+          },
+          # IMP-dbc22946e05c — step 2 of task log surfacing.
+          "system_get_task_log" => {
+            description: "Read the FULL stored log of one System::Task as a bounded page, for a failure whose cause scrolled out of the tail on system_get_task's events (a module build's log_tail keeps only the last 4 KB of stdout and 128 KB of stderr). The agent uploads the whole scrubbed build log (capped at #{::System::TaskLogStore::MAX_BYTES / 1024} KB, keeping the END; truncated and original_bytes say when and by how much it was cut), the platform redacts it of credential-shaped tokens when it is stored AND again on every read, and keeps it for #{::System::TaskLogStore::DEFAULT_RETENTION_DAYS} days by default (system.task_log.retention_days). The reply is one page: content, offset, next_offset, has_more, total_bytes, truncated, original_bytes, expires_at. Page by passing next_offset back as offset until has_more is false; offsets are BYTE offsets into the redacted text, always on a character boundary, so the pages concatenate to the whole log. limit defaults to #{::System::TaskLogStore::DEFAULT_PAGE_BYTES} and is clamped at #{::System::TaskLogStore::MAX_PAGE_BYTES}. A task with no stored log (it never uploaded one, or it expired) is an error saying so; a task that does not exist, belongs to another account, or (for an instance principal) to another instance is the same not-found error. SELF-ONLY for an instance principal: it may read only the logs of tasks of its own instance. Requires system.infra_tasks.read.",
+            parameters: {
+              task_id: { type: "string", required: true, description: "UUID of the System::Task whose stored log to read (account-scoped)" },
+              offset: { type: "integer", required: false, description: "Byte offset to start from (default 0; a negative or non-numeric value reads from 0). Pass the previous page's next_offset to continue." },
+              limit: { type: "integer", required: false, description: "Maximum bytes in this page (default #{::System::TaskLogStore::DEFAULT_PAGE_BYTES}, clamped at #{::System::TaskLogStore::MAX_PAGE_BYTES})." }
             }
           },
           "system_cancel_task" => {
@@ -2938,6 +2953,7 @@ module Ai
         when "system_drift_report"             then drift_report(params)
         when "system_list_tasks"               then list_tasks(params)
         when "system_get_task"                 then get_task(params)
+        when "system_get_task_log"             then get_task_log(params)
         when "system_wait_for"                 then wait_for_rollout(params)
         when "system_inspect_node"             then inspect_node(params)
         when "system_cancel_task"              then cancel_task(params)
@@ -6071,6 +6087,29 @@ module Ai
         reply.merge!({ timed_out: timed_out, wait_seconds: wait }.merge(wait_degraded_marker(degraded))) unless wait.zero?
         reply.merge!(task_events_payload(task)) if include_events
         success_result(reply)
+      end
+
+      # IMP-dbc22946e05c — one page of a task's full stored log. A task the caller
+      # may not read is answered EXACTLY as a task that does not exist, so the
+      # reply never confirms another instance's (or account's) task id. An instance
+      # principal sees only its own instance's tasks (the same operable the node
+      # API scopes by: current_instance.tasks); one with no node identity has none.
+      def get_task_log(params)
+        scope = ::System::Task.where(account: @account)
+        if instance_authorized?
+          own = node_instance
+          return error_result("system_get_task_log is refused: this principal carries no node identity, so it has no tasks of its own to read") if own.nil?
+
+          scope = scope.where(operable_type: "System::NodeInstance", operable_id: own.id)
+        end
+
+        task = scope.find_by(id: params[:task_id].presence)
+        return error_result("Task not found") unless task
+
+        page = ::System::TaskLogStore.read_page(task: task, offset: params[:offset], limit: params[:limit])
+        return error_result("Task #{task.id} has no stored log (it never uploaded one, or it expired)") unless page
+
+        success_result(page.merge(task_id: task.id))
       end
 
       # IMP-54c73634c1d7 — include_events. Strictly true/false (or the strings

@@ -102,6 +102,7 @@ Backed by `Ai::Tools::SystemFleetTool` (parent-registered, extension-implemented
 |---|---|
 | `system_list_tasks` | List Tasks (filter by `node_id`, `instance_id`) — newest first, one page at a time (`limit` / `cursor`, with `count` the uncapped total); there is no status or type filter |
 | `system_get_task` | Fetch one Task (account-scoped): command, status, progress, operable handle, timestamps and `error_message` (full stored failure reason, 16 KB cap, redacted of credential-shaped tokens). `include_events: true` adds its events — see "Task events" below; `wait_seconds` long-polls, see "Waiting instead of polling" |
+| `system_get_task_log` | One bounded page of a Task's FULL stored log (a module build's whole scrubbed output, not just the `log_tail` on its events) — see "Full task log" below. SELF-ONLY for an instance principal |
 | `system_cancel_task` | Cancel a pending or in-flight Task |
 
 ##### Task events (`include_events`)
@@ -121,6 +122,14 @@ The payload is bounded on every axis:
 - **Structure:** at most 5000 values per reply, 6 levels of nesting, 50 keys or items per container, and keys are capped at 200 characters. Two keys that come out the same after redaction or truncation stay apart as `<key>` and `<key>#2`.
 
 `error_message` itself is unchanged: head-bounded, marker added after the limit. Redaction is best-effort, the sanitizer's usual coverage: a secret shape with no pattern, under a key with no secret name, is not caught.
+
+##### Full task log (`system_get_task_log`)
+
+A module build's `log_tail` keeps only the last 4 KB of stdout and 128 KB of stderr, so a failure whose cause scrolled out of that window could not be diagnosed over MCP. The agent now also uploads the WHOLE scrubbed build log (`POST node_api/status/tasks/:id/log`, on the failure path as well as success), scrubbed on the node with the same secret scrub and private-key removal as `log_tail`, capped at 1 MiB with the END kept; `truncated` and `original_bytes` say when and by how much it was cut. The upload is best-effort and never fails a build. Only a task the instance itself owns, and only once it is running or finished, accepts a log.
+
+The platform stores it in `system_task_logs` (one row per task, replaced by a re-upload), redacts it through `System::StoredOutputRedactor` when it is written AND again over the whole text on every read (so a secret split across a page boundary is redacted whole, and a pattern learned later covers older rows), and keeps it for 14 days by default (`system.task_log.retention_days`); expired rows are neither served nor kept, and an instance's expired rows are pruned on each of its uploads.
+
+`system_get_task_log` returns one page: `content`, `offset`, `next_offset`, `has_more`, `total_bytes`, `truncated`, `original_bytes`, `expires_at`. Pass `next_offset` back as `offset` until `has_more` is false; offsets are byte offsets on a character boundary, so the pages concatenate to the whole log. `limit` defaults to 64 KiB and is clamped at 256 KiB. A task with no stored log (never uploaded, or expired) is an error saying so; a task that does not exist, is in another account, or (for an instance principal) belongs to another instance is the same not-found error. Only `ci.module_build` uploads a log today: `ci.package_build` and `ci.lint_discovery` still carry only their `log_tail`.
 
 #### Instance pools (slice 7)
 

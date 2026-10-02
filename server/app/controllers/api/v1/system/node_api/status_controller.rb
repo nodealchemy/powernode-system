@@ -456,6 +456,39 @@ module Api
             render_record_not_found("Operation")
           end
 
+          # POST /api/v1/system/node_api/status/tasks/:id/log
+          #
+          # IMP-dbc22946e05c: the agent uploads a task's FULL scrubbed log (the
+          # events carry only a tail). Scoped to current_instance.tasks like every
+          # other action here, so an instance can only ever write the log of a
+          # task it owns; a task that has not started yet is refused. The text
+          # is redacted and bounded by System::TaskLogStore before it is stored.
+          # The JSON BODY is read (see #heartbeat_payload), never the query string.
+          def upload_task_log
+            if request.content_length.to_i > ::System::TaskLogStore::MAX_UPLOAD_BYTES
+              return render_error("A task log upload is limited to #{::System::TaskLogStore::MAX_UPLOAD_BYTES} bytes",
+                                  status: :payload_too_large)
+            end
+
+            task = current_instance.tasks.find(params[:id])
+            unless task.running? || task.finished?
+              return render_error("A log can only be uploaded for a running or finished task (this one is #{task.status})",
+                                  status: :unprocessable_entity)
+            end
+
+            body = heartbeat_payload
+            log = body["log"]
+            return render_error("log must be a string", status: :unprocessable_entity) unless log.is_a?(::String)
+
+            ::System::TaskLogStore.write!(
+              task: task, instance: current_instance, text: log,
+              original_bytes: body["original_bytes"], truncated: body["truncated"] == true
+            )
+            render_success(task_id: task.id, stored: true)
+          rescue ActiveRecord::RecordNotFound
+            render_record_not_found("Operation")
+          end
+
           private
 
           # The heartbeat's wire contract is the JSON BODY the agent POSTs
