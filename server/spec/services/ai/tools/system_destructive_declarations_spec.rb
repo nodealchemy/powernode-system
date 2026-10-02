@@ -3,7 +3,7 @@
 require "rails_helper"
 
 # E2 (campaign 01a08c9b) gave declare_action a `destructive:` flag, which the
-# MCP catalog advertises as destructiveHint. The extension's 40 destroy-shaped (41 with system_out_of_band_exec, 42 with system_restart_unit, 43 with system_apply_unit_dropin, 44 with system_sdwan_rotate_peer_key)
+# MCP catalog advertises as destructiveHint. The extension's 40 destroy-shaped (41 with system_out_of_band_exec, 42 with system_restart_unit, 43 with system_apply_unit_dropin, 44 with system_sdwan_rotate_peer_key, 45 with system_clear_ssh_host_key)
 # verbs are those Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS already refuses to
 # an instance principal. Until each declares the flag, the catalog's
 # classification rests on the deny-overlay floor alone.
@@ -29,6 +29,7 @@ RSpec.describe "system extension destructive declarations" do
       system_replace_instance system_rotate_vault_transit_pepper system_stop_instance
       system_terminate_ci_worker system_upgrade_boot_image
       system_out_of_band_exec system_restart_unit system_apply_unit_dropin
+      system_clear_ssh_host_key
     ],
     Ai::Tools::SdwanTool => %w[
       system_sdwan_delete_firewall_rule system_sdwan_delete_ipfix_collector
@@ -50,9 +51,9 @@ RSpec.describe "system extension destructive declarations" do
   end
 
   # 44 since IMP-2e7816b5ee95 added system_sdwan_rotate_peer_key.
-  it "pins exactly the 44 destroy-shaped verbs" do
-    expect(DESTRUCTIVE_VERBS.values.flatten.size).to eq(44)
-    expect(DESTRUCTIVE_VERBS.values.flatten.uniq.size).to eq(44)
+  it "pins exactly the 45 destroy-shaped verbs" do
+    expect(DESTRUCTIVE_VERBS.values.flatten.size).to eq(45)
+    expect(DESTRUCTIVE_VERBS.values.flatten.uniq.size).to eq(45)
   end
 
   DESTRUCTIVE_VERBS.each do |klass, verbs|

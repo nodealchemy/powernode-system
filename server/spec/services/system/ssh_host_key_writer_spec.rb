@@ -250,6 +250,30 @@ RSpec.describe System::SshHostKeyWriter do
       expect(row.user).to eq(operator)
     end
 
+    # IMP-a41ceb3cdd64 — a clear decided earlier (an approval parked for the key the approver saw).
+    it "clears when the recorded set is exactly the expected fingerprints" do
+      fp = SshHostKeyFixtures.fingerprint(ed25519["key"])
+
+      expect(described_class.clear!(instance: instance, actor: operator, reason: "stale", expect_fingerprints: [ fp ])).to be(true)
+      expect(stored).to be_nil
+    end
+
+    it "refuses, audits nothing and keeps the key when the recorded set is not the expected one" do
+      expect { described_class.clear!(instance: instance, actor: operator, reason: "stale", expect_fingerprints: [ "SHA256:other" ]) }
+        .to raise_error(ArgumentError, /no longer the one/)
+
+      expect(stored).not_to be_nil
+      expect(::AuditLog.where(action: described_class::CLEARED_ACTION)).to be_empty
+    end
+
+    it "refuses an expectation when nothing is recorded any more (already cleared)" do
+      instance.update_columns(ssh_host_keys: nil)
+
+      expect { described_class.clear!(instance: instance, actor: operator, reason: "stale", expect_fingerprints: [ "SHA256:x" ]) }
+        .to raise_error(ArgumentError, /no longer the one/)
+      expect(::AuditLog.where(action: described_class::CLEARED_ACTION)).to be_empty
+    end
+
     it "refuses a non-User actor and leaves the recorded key in place" do
       stub_const("SpecServiceActor", Struct.new(:id))
 

@@ -194,8 +194,9 @@ module GateComposedTaskCategories
       # system_terminate_instance arm, unchanged in shape.
       # MOVED 630 -> 695 in nine steps, stale since a49b6e72 (IMP-80a353489ba4,
       # 630 -> 637); the last was 611f2b5d (IMP-9951cbf20bb0, 692 -> 695).
-      # RE-AUDITED — same literal, same arm.
-      line: 695,
+      # RE-AUDITED — same literal, same arm. 695 -> 702 at IMP-a41ceb3cdd64
+      # (the ssh-host-key-clear permission entry and reason constant above it).
+      line: 702,
       source: 'action_category: "system.task.terminate"',
       # NOT ExecuteTask. This arm replays System::Executors::TerminateInstance,
       # which calls ProvisioningService directly and inserts no System::Task —
@@ -212,7 +213,7 @@ module GateComposedTaskCategories
       file: "app/services/ai/tools/system_fleet_tool.rb",
       # ADDED unenumerated at 0b3b3884 (IMP-88e82d59b7f2, the governed
       # system_restart_unit verb); the literal backstop has reported it since.
-      line: 1116,
+      line: 1123, # was 1116 before IMP-a41ceb3cdd64 added lines above it
       source: 'action_category: "system.task.restart"',
       # NOT ExecuteTask. The generic replay executor re-invokes the verb, whose
       # arm (#restart_unit -> System::UnitRestartService#restart!) inserts ONE

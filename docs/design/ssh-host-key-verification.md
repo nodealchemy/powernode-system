@@ -181,9 +181,23 @@ on its own; see the recovery below.
 If a node's recorded key is stale and its agent cannot report the new one,
 every path fails with a host key mismatch, including out-of-band exec, which
 is the tool for diagnosing exactly that agent. The recovery is an
-operator-only, audited clear, run from a console on the control plane. The
-actor must be the `User` doing it (anything else is refused), and the audit
-row names them:
+operator-only, audited clear.
+
+**The verb (preferred).** `system_clear_ssh_host_key` (`instance_id`,
+`reason`) is human-only and approval-gated on its own category,
+`system.instance.ssh_host_key_clear` (`require_approval`, the same shape as
+`system.instance.unit_dropin`). The call parks an approval and clears nothing;
+a person approves in their own session, the approving person is the audited
+actor, and `clear!` runs on that approval. A blank or oversized reason, an
+instance outside the account and an instance with no recorded key are refused
+before anything is parked. The reply states what the next connection will do
+under the current `system.ssh.require_host_key` setting. **There is no pin
+verb**: host key material does not travel through tool arguments, so the
+node's agent records its own key on its next heartbeat. It is denied outright
+to every instance principal.
+
+**The console (when the control plane's MCP is unusable).** The actor must be
+the `User` doing it (anything else is refused), and the audit row names them:
 
 ```ruby
 System::SshHostKeyWriter.clear!(
@@ -209,8 +223,8 @@ Check the node's key out of band (console or guest agent: `ssh-keygen -lf
 **Retiring a compromised key.** Removing a key from the node is not enough on
 its own: a strict subset reported inside the same boot does not narrow the
 recorded set, so a key removed mid-boot stays trusted until the next reboot.
-Run `clear!` as well, so the platform stops trusting it immediately.
-A human-only verb for this is a follow-up.
+Clear it as well (`system_clear_ssh_host_key`, or `clear!` from a console), so
+the platform stops trusting it immediately.
 
 ## Migration order
 

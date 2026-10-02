@@ -1361,6 +1361,17 @@ module System
         "system.instance.unit_dropin" => "require_approval"
       }.freeze
 
+      # IMP-a41ceb3cdd64 — the human-only recovery for a stale recorded SSH host
+      # key (system_clear_ssh_host_key, which ends in SshHostKeyWriter.clear!).
+      # Declared exactly as UNIT_DROPIN_POLICIES is: one agent-less row at scope
+      # "global", no owning agent, require_approval; the verb is also human_only,
+      # so the gate forces require_approval whatever this row says. Clearing
+      # re-opens the window in which a node's next reported key is trusted, which
+      # is a person's decision, never a tool call's.
+      SSH_HOST_KEY_CLEAR_POLICIES = {
+        "system.instance.ssh_host_key_clear" => "require_approval"
+      }.freeze
+
       # IMP-0467eee9fc57 — the cordon-only (unschedulable) mode for a
       # NodeInstance, gated by Ai::Tools::SystemFleetTool's
       # system_cordon_instance AND system_uncordon_instance under ONE category:

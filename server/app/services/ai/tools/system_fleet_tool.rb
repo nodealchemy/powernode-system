@@ -104,6 +104,10 @@ module Ai
       # Internal callers (system services, autonomy reconcilers) bypass
       # this check by passing `internal: true` to .new — passing user: nil
       # alone is NOT a bypass (IMP-9030413bc292).
+      # IMP-a41ceb3cdd64 — the longest reason system_clear_ssh_host_key accepts.
+      CLEAR_SSH_HOST_KEY_REASON_MAX = 500
+      CLEAR_SSH_HOST_KEY_REASON_UNSAFE = /[[:cntrl:]\u202A-\u202E\u2066-\u2069\u2028\u2029\u0085]/
+
       ACTION_PERMISSIONS = {
         # Read
         "system_list_nodes"             => "system.nodes.read",
@@ -224,6 +228,9 @@ module Ai
         # IMP-9951cbf20bb0 — a runtime drop-in on ONE composed unit; the same
         # family and level as system_restart_unit.
         "system_apply_unit_dropin"      => "system.instances.control",
+        # IMP-a41ceb3cdd64 — clear ONE instance's recorded SSH host key; the same
+        # family and level as the two lifecycle verbs above.
+        "system_clear_ssh_host_key"     => "system.instances.control",
         "system_reap_instance"          => "system.instances.control",
         # F4-08 — lifecycle control (start/stop/reboot): same level as
         # terminate, wraps InstanceControlService.
@@ -1154,6 +1161,34 @@ module Ai
                      on_proceed: :deferred_tool_call_result,
                      returns: "task_id, instance_id, unit, name, path, revert and status of the queued unit.dropin task",
                      refuses: "the name or a directive is outside the allow-list (Environment= included), a capability list is not a subset of the unit's own set, a ReadWritePaths entry is agent trust material, a revert carries directives, or the unit is one system_restart_unit refuses (not composed on the instance, the agent's own, outside powernode-*, on the node hosting this control plane) or the instance is not running or its agent is silent"
+      # IMP-a41ceb3cdd64 — clear ONE instance's recorded SSH host key
+      # (System::SshHostKeyWriter.clear!), the recovery for a node whose key
+      # changed and whose agent never heartbeats again: every platform SSH path
+      # is then strict against a stale key and out-of-band exec, the break-glass
+      # diagnostic for exactly that case, is refused.
+      #
+      # human_only for the same reason as system_apply_unit_dropin: a tool call
+      # is never a person's consent (CallOrigin, R1), and clearing re-opens the
+      # window in which the node's NEXT reported key is trusted. The verb parks
+      # an approval under its own require_approval category and clear! runs only
+      # on a person's own-session approved replay, with THAT person as the
+      # audited actor. CLEAR ONLY, by operator ruling: no pin verb, because host
+      # key material does not travel through tool arguments.
+      #
+      # destructive: it lowers a trust anchor on a node an instance principal
+      # could otherwise aim at a peer; the overlay entry (core,
+      # *system_clear_ssh_host_key*) is required regardless and
+      # destructive_declaration_matches_deny_overlay_spec holds the two in step.
+      declare_action "system_clear_ssh_host_key",
+                     mutating: true,
+                     destructive: true,
+                     human_only: true,
+                     action_category: "system.instance.ssh_host_key_clear",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :clear_ssh_host_key_gate_context,
+                     on_proceed: :deferred_tool_call_result,
+                     returns: "cleared, the instance, how many fingerprints were recorded, and what the node's next SSH connection and out-of-band exec will do under the current system.ssh.require_host_key setting",
+                     refuses: "the reason is blank or too long, the instance is not in this account, or it has no recorded host key"
       declare_action "system_replenish_instance_pool", mutating: true, returns: "pool summary and the replenish result"
       declare_action "system_report_storage_migration_progress", mutating: true, returns: "storage_migration, full record", refuses: "the status change is not a legal transition"
       declare_action "system_return_pooled_instance", mutating: true
@@ -1666,6 +1701,17 @@ module Ai
               directives: { type: "array", required: false, items: { type: "object", properties: { key: { type: "string" }, value: { type: "string" } } },
                             description: "The directives to write, in order, as {key, value} (required unless revert is true, and empty on a revert). At most #{::System::UnitDropinService::MAX_DIRECTIVES}" },
               revert: { type: "boolean", required: false, default: false, description: "true removes zz-operator-<name>.conf (and only it) instead of writing it" }
+            }
+          },
+          # IMP-a41ceb3cdd64 — see the declare_action for the gate and the replay.
+          "system_clear_ssh_host_key" => {
+            description: "Clear the recorded SSH host key of ONE instance, so a stale key (a reprovisioned node whose /persist was destroyed, or a new image whose agent failed enrollment and never heartbeats) cannot lock out every platform SSH path and out-of-band exec. The recovery path, never a routine step: verify the node's key out of band first. " \
+                         "CLEAR ONLY — there is no verb that pins a key, because host key material does not travel through tool arguments; the node's agent records its own key on its next heartbeat. " \
+                         "HUMAN-ONLY and APPROVAL-GATED (system.instance.ssh_host_key_clear): this returns {pending: true, requires_human_session: true} with an approval_request_id and NOTHING is cleared until a person approves in their own session; do not report a change on that response. The approving person is the audited actor. " \
+                         "Audited (system.ssh_host_key.cleared: previous fingerprints, the actor and the reason; never a key). The reply states what the next connection will do under the current system.ssh.require_host_key setting; out-of-band exec stays refused until the node's next heartbeat records a key. Refused for an instance principal.",
+            parameters: {
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance whose recorded host key is cleared (account-scoped; must have one recorded)" },
+              reason: { type: "string", required: true, description: "Why the recorded key is stale, 1 to #{CLEAR_SSH_HOST_KEY_REASON_MAX} characters; shown to the approver and written to the audit row" }
             }
           },
           # IMP-4e49eb79c5e0 — the disaster-recovery lane, on demand.
@@ -2933,6 +2979,7 @@ module Ai
         # approved_replay?) so a caller reaching #call directly cannot run it on
         # an approval no person made.
         when "system_apply_unit_dropin"        then human_confirmed_replay? ? apply_unit_dropin(params) : gate_routed_only("system_apply_unit_dropin")
+        when "system_clear_ssh_host_key"       then human_confirmed_replay? ? clear_ssh_host_key(params) : gate_routed_only("system_clear_ssh_host_key")
         when "system_reap_instance"            then gate_routed_only("system_reap_instance")
         when "system_start_instance"           then control_instance(params, "start")
         when "system_stop_instance"            then control_instance(params, "stop")
@@ -5172,6 +5219,114 @@ module Ai
       # reverts. Anything else is an apply, which then needs directives.
       def apply_unit_dropin_revert?(params)
         ::ActiveModel::Type::Boolean.new.cast(params[:revert]) == true
+      end
+
+      # === Approval-gated SSH host key clear (IMP-a41ceb3cdd64) ===
+
+      # Built BEFORE anything is parked, so a request that could only ever be
+      # refused (blank or oversized reason, unknown instance, no key to clear)
+      # keeps its inline error instead of becoming an approval a person must
+      # dispose of. #clear_ssh_host_key re-checks the same on the replay.
+      def clear_ssh_host_key_gate_context(params)
+        clear_ssh_host_key_refuse_instance_principal!
+        instance = clear_ssh_host_key_instance(params)
+        reason = clear_ssh_host_key_reason!(params)
+        recorded = clear_ssh_host_key_require_recorded!(instance)
+        fingerprints = ::System::SshHostKeys.fingerprints(recorded)
+
+        context = deferred_tool_call_context(params)
+        # The fingerprints the approver is shown are the ones the replay will
+        # insist on: minted HERE from the row, overwriting anything a caller put
+        # in its params, and checked inside #clear!'s lock on the replay.
+        packed = context[:executor_params].deep_dup
+        packed["tool_params"] = packed["tool_params"].merge("expected_fingerprints" => fingerprints)
+        context.merge(
+          executor_params: packed,
+          description: "Clear the recorded SSH host key (#{fingerprints.join(', ')}) of '#{instance.name}'. " \
+                       "Requester-supplied reason: #{reason[0, 120]}",
+          source_type: "System::NodeInstance",
+          source_id: instance.id
+        )
+      end
+
+      # The single author of the clear, reached only on a person's own-session
+      # approved replay, where `user` IS the approving person and so the audited
+      # actor. Refusals return the error envelope and clear nothing.
+      def clear_ssh_host_key(params)
+        clear_ssh_host_key_refuse_instance_principal!
+        instance = clear_ssh_host_key_instance(params)
+        reason = clear_ssh_host_key_reason!(params)
+        clear_ssh_host_key_require_recorded!(instance)
+        expected = Array(params[:expected_fingerprints]).map(&:to_s).reject(&:empty?)
+        raise CallerFacingError, "this approval carries no recorded-key fingerprints to check against, so nothing was cleared" if expected.empty?
+
+        ::System::SshHostKeyWriter.clear!(instance: instance, actor: user, reason: reason, expect_fingerprints: expected)
+        success_result(cleared: true, instance_id: instance.id, instance_name: instance.name,
+                       previous_key_count: expected.size,
+                       next_connection: clear_ssh_host_key_consequence(instance))
+      rescue ArgumentError, CallerFacingError => e
+        error_result(e.message)
+      end
+
+      # What the node's next connection does, under the setting as it is NOW.
+      # Mirrors docs/design/ssh-host-key-verification.md's recovery section.
+      def clear_ssh_host_key_consequence(instance)
+        if ::System::SshExecutionService.require_host_key?
+          "system.ssh.require_host_key is on: SSH and SCP to '#{instance.name}' are REFUSED until its agent " \
+            "heartbeats a new host key, which is then recorded"
+        else
+          "system.ssh.require_host_key is off: SSH and SCP to '#{instance.name}' connect UNVERIFIED (the host key " \
+            "is not checked) until its agent heartbeats a new host key, which is then recorded"
+        end + ". Out-of-band exec (system_out_of_band_exec) stays REFUSED for it until that heartbeat records a key. " \
+              "Verify the node's key out of band before trusting whatever it reports next."
+      end
+
+      # Defense in depth beyond Mcp::Principal::DESTRUCTIVE_TOOL_PATTERNS'
+      # *system_clear_ssh_host_key* entry, as the sibling human-only verbs do.
+      def clear_ssh_host_key_refuse_instance_principal!
+        return unless instance_authorized?
+
+        raise CallerFacingError,
+              "system_clear_ssh_host_key is refused for an instance principal: a recorded host key is cleared " \
+              "by a person's own approval, never by a node that could aim it at a peer"
+      end
+
+      def clear_ssh_host_key_instance(params)
+        account_instances.find_by(id: params[:instance_id].to_s) ||
+          raise(CallerFacingError, "Couldn't find System::NodeInstance with 'id'=#{params[:instance_id].to_s.inspect}")
+      end
+
+      def clear_ssh_host_key_reason!(params)
+        reason = params[:reason].to_s.strip
+        if reason.empty? || reason.length > CLEAR_SSH_HOST_KEY_REASON_MAX
+          raise CallerFacingError,
+                "reason is required: 1 to #{CLEAR_SSH_HOST_KEY_REASON_MAX} characters saying why the recorded host key is stale"
+        end
+        # Free text from a requester that lands on an approval card and an audit row: no control
+        # characters (newlines, ANSI escapes) and no bidi overrides that could disguise it.
+        if reason.match?(CLEAR_SSH_HOST_KEY_REASON_UNSAFE)
+          raise CallerFacingError, "reason may not contain control or bidirectional-override characters"
+        end
+
+        reason
+      end
+
+      # Nothing to clear is a refusal, not a no-op that writes an audit row
+      # claiming a clear happened.
+      def clear_ssh_host_key_require_recorded!(instance)
+        recorded = ::System::SshHostKeys.recorded_for(instance)
+        raise CallerFacingError, "'#{instance.name}' has no recorded SSH host key, so there is nothing to clear" if recorded.blank?
+
+        # A host key is recorded only from an instance-bound heartbeat. On a legacy shared mTLS
+        # identity none would ever be recorded again, so a clear would remove the trust anchor for
+        # good and leave out-of-band exec refused for ever.
+        unless ::System::SshHostKeyWriter.recordable?(instance)
+          raise CallerFacingError,
+                "'#{instance.name}' has a shared legacy mTLS identity, so its agent's heartbeat would not record a new " \
+                "host key: clearing would remove its trust anchor for good. Re-enroll the node first"
+        end
+
+        recorded
       end
 
       # === The DR lane's gate contexts (IMP-4e49eb79c5e0) ===

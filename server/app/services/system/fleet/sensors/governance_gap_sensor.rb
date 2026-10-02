@@ -234,10 +234,12 @@ module System
           # neither takes an OPERATOR_TWINS pairing) — both have to be named
           # here too, or this sensor reads them as unowned despite
           # PolicyReconciler writing their rows just the same.
-          # UNIT_DROPIN_POLICIES (IMP-9951cbf20bb0) is the third such set.
+          # UNIT_DROPIN_POLICIES (IMP-9951cbf20bb0) is the third such set, and
+          # SSH_HOST_KEY_CLEAR_POLICIES (IMP-a41ceb3cdd64) the fourth.
           (sets + declarations::MANUAL_OPERATION_POLICIES.keys +
             declarations::OUT_OF_BAND_EXEC_POLICIES.keys +
-            declarations::UNIT_DROPIN_POLICIES.keys).to_set
+            declarations::UNIT_DROPIN_POLICIES.keys +
+            declarations::SSH_HOST_KEY_CLEAR_POLICIES.keys).to_set
         end
 
         def category_unowned

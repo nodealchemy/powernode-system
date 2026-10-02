@@ -183,11 +183,13 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
 
     describe "and then the reconciler" do
       it "creates every declared set on a fresh install — nothing skipped, nothing missing afterwards" do
-        # OUT_OF_BAND_EXEC_POLICIES and UNIT_DROPIN_POLICIES (IMP-9951cbf20bb0)
-        # are reconciled outside POLICY_SETS, like the manual set.
+        # OUT_OF_BAND_EXEC_POLICIES, UNIT_DROPIN_POLICIES (IMP-9951cbf20bb0) and
+        # SSH_HOST_KEY_CLEAR_POLICIES (IMP-a41ceb3cdd64) are reconciled outside
+        # POLICY_SETS, like the manual set.
         declared_total = declarations::MANUAL_OPERATION_POLICIES.size +
                          declarations::OUT_OF_BAND_EXEC_POLICIES.size +
                          declarations::UNIT_DROPIN_POLICIES.size +
+                         declarations::SSH_HOST_KEY_CLEAR_POLICIES.size +
                          declarations::POLICY_SETS.sum { |set| set[:policies].size }
 
         core_rows = core_written_rows.count
@@ -386,6 +388,7 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
       declared_total = declarations::MANUAL_OPERATION_POLICIES.size +
                        declarations::OUT_OF_BAND_EXEC_POLICIES.size +
                        declarations::UNIT_DROPIN_POLICIES.size +
+                       declarations::SSH_HOST_KEY_CLEAR_POLICIES.size +
                        declarations::POLICY_SETS.sum { |set| set[:policies].size }
 
       expect { load_seed!(reconcile_seed) }

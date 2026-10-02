@@ -449,7 +449,20 @@ module System
         }
       end
 
-      def declared_sets = [ manual_set, out_of_band_exec_set, unit_dropin_set ] + PolicyDeclarations::POLICY_SETS
+      # IMP-a41ceb3cdd64. A fourth member of the same "no owner, not a POLICY_SETS
+      # entry" class, for exactly #out_of_band_exec_set's reasons.
+      def ssh_host_key_clear_set
+        {
+          key: "ssh-host-key-clear-operator",
+          agent_key: nil,
+          scope: "global",
+          priority: 5,
+          conditions: {},
+          policies: PolicyDeclarations::SSH_HOST_KEY_CLEAR_POLICIES
+        }
+      end
+
+      def declared_sets = [ manual_set, out_of_band_exec_set, unit_dropin_set, ssh_host_key_clear_set ] + PolicyDeclarations::POLICY_SETS
 
       # Yields (set, agent, skip_reason). skip_reason is non-nil when the set
       # cannot be reconciled — today only "agent absent". A set is SKIPPED, never

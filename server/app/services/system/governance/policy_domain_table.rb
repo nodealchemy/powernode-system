@@ -110,7 +110,7 @@ module System
         # failed confinement write, and a module upgrade stuck on one node.
         # All three stranded in "other" until filed here.
         "node_lifecycle"    => %w[system.cert_ system.acme_cert_ system.module_ system.instance_ system.fleet_ system.region_ system.capacity_ system.capability_gap_ system.observation system.task. system.task_ system.template_closure_ system.node_boot_image_ system.node_lkg_ system.fulfill_capability_ system.relocate_ system.replica_promote system.abandoned_instance_ system.pool_guest_ system.cloud_sync_
-                                  system.instance.unit_dropin system.instance.out_of_band_exec system.node_security_
+                                  system.instance.unit_dropin system.instance.out_of_band_exec system.instance.ssh_host_key_clear system.node_security_
                                   system.node_pending_digest_]
       }.freeze
     end

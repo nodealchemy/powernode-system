@@ -90,7 +90,12 @@ module System
       # off (refused when on), and out-of-band exec is refused until the
       # node's next heartbeat records a key. `actor` must be the User doing
       # it. See docs/design/ssh-host-key-verification.md.
-      def clear!(instance:, actor:, reason:)
+      #
+      # `expect_fingerprints:` (IMP-a41ceb3cdd64) is for a clear decided EARLIER, such as an
+      # approval parked for the key the approver saw: inside the lock it refuses unless the
+      # recorded set is exactly that one, so a node that has since re-recorded a new key does not
+      # have it wiped under a reason written about the old one.
+      def clear!(instance:, actor:, reason:, expect_fingerprints: nil)
         raise ArgumentError, "a reason is required to clear a recorded SSH host key" if reason.to_s.strip.empty?
         # Recovery is a human act: only a User may clear, and the audit row
         # names them.
@@ -99,6 +104,13 @@ module System
         details = nil
         instance.with_lock do
           previous = ::System::SshHostKeys.recorded_for(instance)
+          unless expect_fingerprints.nil?
+            current = ::System::SshHostKeys.fingerprints(previous)
+            if current.empty? || current.sort != Array(expect_fingerprints).map(&:to_s).sort
+              raise ArgumentError, "the recorded SSH host key is no longer the one this clear was requested for " \
+                                   "(it changed or was already cleared) — request it again if it is still stale"
+            end
+          end
           instance.update_columns(ssh_host_keys: nil)
           details = {
             previous_fingerprints: ::System::SshHostKeys.fingerprints(previous),
@@ -116,6 +128,13 @@ module System
         end
         emit(instance, CLEARED_EVENT_KIND, :medium, details)
         true
+      end
+
+      # True when a heartbeat's host keys can be recorded for this instance at all (its mTLS
+      # identity is instance-bound). A key cleared on an instance where this is false is never
+      # re-recorded.
+      def recordable?(instance)
+        instance_bound?(instance)
       end
 
       private
