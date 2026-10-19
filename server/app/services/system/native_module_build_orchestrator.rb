@@ -643,7 +643,8 @@ module System
 
       verdict = ::System::CoreMirrorPreflight.check(
         expected_sha:  @batch.metadata["expected_core_sha"],
-        expected_repo: core_source_repo
+        expected_repo: @batch.metadata["expected_core_repo"].presence || core_source_repo,
+        account:       @batch.account
       )
       # The decision must not depend on the audit write succeeding. Recording
       # runs in its own rescue so a failed metadata update degrades to "no

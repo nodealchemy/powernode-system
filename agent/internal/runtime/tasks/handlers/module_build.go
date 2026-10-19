@@ -267,6 +267,14 @@ type ciBuildContext struct {
 	// so it must not be reintroduced by adding a server field without the
 	// matching field here.
 	CoreRef string `json:"core_ref"`
+	// ParentHost / ParentPath name the remote a Class-B build clones the
+	// parent from (module-forge-build.sh's PARENT_HOST / PARENT_PATH). The
+	// platform reads them from the same SiteSettings
+	// System::CoreMirrorPreflight checks, so the dispatch-time check and the
+	// clone cannot look at different remotes. Absent when unset, which leaves
+	// the script's own default in force.
+	ParentHost string `json:"parent_host"`
+	ParentPath string `json:"parent_path"`
 }
 
 // moduleBuildResult is module-forge-build.sh's emitted result JSON (the
@@ -349,7 +357,8 @@ func (moduleBuildJob) run(ctx context.Context, h *ModuleBuildHandler, task *task
 // buildEnv assembles the env slice module-forge-build.sh expects, matching
 // Part A's contract EXACTLY: MODULE, BUILD_SHA, OCI_REF, MODULE_SOURCE_URL,
 // ORAS_REGISTRY, ORAS_REGISTRY_USER, ORAS_REGISTRY_PASSWORD always present;
-// PARENT_PAT / APT_SNAPSHOT only when the platform supplied them (Class-B
+// PARENT_PAT / APT_SNAPSHOT / PARENT_HOST / PARENT_PATH only when the platform
+// supplied them (Class-B
 // modules / an operator override, respectively) — an empty env value for an
 // optional var the script doesn't expect is worse than simply omitting it.
 // CORE_REF is the deliberate exception and is ALWAYS emitted; see the comment
@@ -369,6 +378,18 @@ func buildEnv(opts moduleBuildOptions, sourceURL string, bctx *ciBuildContext) [
 	}
 	if bctx.AptSnapshot != "" {
 		env = append(env, "APT_SNAPSHOT="+bctx.AptSnapshot)
+	}
+	// Omitted when unset, like PARENT_PAT. This slice is appended to
+	// os.Environ() and exec keeps the LAST duplicate, so an empty value here
+	// would override an ambient PARENT_HOST and send the clone back to the
+	// script's github.com default. A platform that sends the fields (every
+	// Class-B context from ConfigController#ci_build_context) is authoritative;
+	// an ambient value only matters against an older platform.
+	if bctx.ParentHost != "" {
+		env = append(env, "PARENT_HOST="+bctx.ParentHost)
+	}
+	if bctx.ParentPath != "" {
+		env = append(env, "PARENT_PATH="+bctx.ParentPath)
 	}
 	// CORE_REF is ALWAYS emitted, empty included — unlike PARENT_PAT and
 	// APT_SNAPSHOT above, which are omitted when unset.

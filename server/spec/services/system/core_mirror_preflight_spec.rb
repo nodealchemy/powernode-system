@@ -287,3 +287,60 @@ RSpec.describe System::CoreMirrorPreflight do
     end
   end
 end
+
+# The parent remote is DERIVED from the authoritative core remote — the Gitea
+# credential's host plus ci_core_source_repo, where the batch's expectation is
+# read from — unless an operator configures an explicit mirror override.
+RSpec.describe System::CoreMirrorPreflight, ".parent_remote and the same-remote state" do
+  let(:account) { create(:account) }
+  let(:gitea_provider) { create(:git_provider, :gitea, account: account) }
+  let!(:gitea_credential) { create(:git_provider_credential, :gitea, account: account, provider: gitea_provider) }
+  let(:gitea_host) { URI.parse(gitea_provider.effective_web_base_url).host }
+  let(:sha) { "0f4b6e1db4c2a9f1e8d70c3b5a6f2e1d9c8b7a60" }
+
+  it "defaults to the core repo on the credential's own host, token allowed" do
+    remote = described_class.parent_remote(account: account)
+
+    expect([ remote.host, remote.path, remote.source ]).to eq([ gitea_host, described_class.core_source_repo, "authoritative" ])
+    expect(remote.token_allowed?).to be(true)
+  end
+
+  it "answers SAME_REMOTE without any network read when the build clones the authoritative remote" do
+    expect(described_class).not_to receive(:resolve_mirror_tip)
+
+    verdict = described_class.check(expected_sha: sha, expected_repo: "powernode/powernode-platform", account: account)
+
+    expect(verdict.state).to eq(described_class::STATE_SAME_REMOTE)
+    expect(verdict.refuse?).to be(false)
+  end
+
+  context "with an explicit mirror override" do
+    before do
+      SiteSetting.set("ci_core_mirror_host", "github.com", setting_type: "string")
+      SiteSetting.set("ci_core_mirror_path", "nodealchemy/powernode-platform", setting_type: "string")
+    end
+
+    it "clones the override and withholds the token from it" do
+      remote = described_class.parent_remote(account: account)
+
+      expect([ remote.host, remote.source ]).to eq([ "github.com", "override" ])
+      expect(remote.token_allowed?).to be(false)
+    end
+
+    it "checks the override and refuses when it diverged" do
+      allow(described_class).to receive(:resolve_mirror_tip).with(host: "github.com", path: "nodealchemy/powernode-platform")
+                                                            .and_return("1" * 40)
+
+      verdict = described_class.check(expected_sha: sha, expected_repo: "powernode/powernode-platform", account: account)
+
+      expect(verdict.state).to eq(described_class::STATE_DIVERGED)
+      expect(verdict.refuse?).to be(true)
+    end
+  end
+
+  it "keeps the token on an override that names the credential's host under another case" do
+    SiteSetting.set("ci_core_mirror_host", gitea_host.upcase, setting_type: "string")
+
+    expect(described_class.parent_remote(account: account).token_allowed?).to be(true)
+  end
+end

@@ -284,11 +284,13 @@ if [ "$needs_parent" = "1" ]; then
   # CLI knobs here, --parent-host/--parent-path, are static config; this one is
   # per-batch).
   #
-  # ACCEPTED CONSEQUENCE, decided by the operator: $clone_url still points at
-  # the public MIRROR (github.com), which is pushed separately from the Gitea
-  # core actually lands on. Pinning therefore converts "the mirror lags -> we
-  # silently ship stale core" into "the mirror lags -> this build FAILS until
-  # the mirror is pushed". That is the trade. It is not to be softened.
+  # ACCEPTED CONSEQUENCE, decided by the operator: when $clone_url points at a
+  # MIRROR (the github.com default, or an explicit ci_core_mirror_* override),
+  # pinning converts "the mirror lags -> we silently ship stale core" into "the
+  # mirror lags -> this build FAILS until the mirror is pushed". That is the
+  # trade; it is not to be softened. Since 2026-10-19 the platform sends the
+  # AUTHORITATIVE remote by default (System::CoreMirrorPreflight.parent_remote),
+  # where the pinned commit always exists.
   core_ref="${CORE_REF:-}"
   clone_remote="${parent_host}/${parent_path}"
 
@@ -403,7 +405,14 @@ if [ "$needs_parent" = "1" ]; then
          "whatever ${clone_remote} HEAD points at right now, which may not be the core this batch" \
          "expects" >&2
     echo "Cloning parent ${clone_remote} (UNPINNED)..."
-    git clone --depth 1 "$clone_url" /tmp/parent
+    # Same stderr redaction as the pinned arm: $clone_url carries
+    # x-access-token:<PARENT_PAT> for a non-GitHub host, and git echoes the
+    # URL on failure.
+    clone_err="/tmp/parent-clone.err"
+    if git clone --depth 1 "$clone_url" /tmp/parent 2>"$clone_err"; then clone_ok=1; else clone_ok=0; fi
+    sed -E 's#//[^@/]*@#//#g' "$clone_err" >&2 || true
+    rm -f "$clone_err"
+    [ "$clone_ok" = 1 ] || { echo "ERROR: could not clone parent ${clone_remote}" >&2; exit 1; }
   fi
   # --- END per-batch core-ref pin ---
 

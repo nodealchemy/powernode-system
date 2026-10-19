@@ -183,6 +183,37 @@ func TestFetchBuildContextDecodesCoreRefIntoEnv(t *testing.T) {
 	}
 }
 
+// Where a Class-B build clones the parent from. The platform sends it so the
+// clone and System::CoreMirrorPreflight read the SAME remote (both from the
+// ci_core_mirror_host / ci_core_mirror_path SiteSettings). Absent from the
+// context, the vars are OMITTED, not emptied: module-forge-build.sh then keeps
+// its own default (or an operator's unit-file Environment=), whereas an empty
+// PARENT_HOST would make stage15.sh clone from "https:///<path>.git".
+func TestFetchBuildContextDecodesParentRemoteIntoEnv(t *testing.T) {
+	client := &fakeHTTP{body: `{"success":true,"data":{"source_repo_url":"https://host/o/r.git",` +
+		`"source_token":"tok","parent_pat":"ppat","oras_registry":"reg","oras_user":"u",` +
+		`"oras_password":"p","parent_host":"git.example.test","parent_path":"acme/platform"}}`}
+
+	bctx, err := fetchBuildContext(client, "powernode-hub-backend")
+	if err != nil {
+		t.Fatalf("fetchBuildContext: %v", err)
+	}
+	env := envMap(buildEnv(moduleBuildOptions{Module: "powernode-hub-backend", SHA: "s", OCIRef: "t"},
+		"url", bctx))
+	if env["PARENT_HOST"] != "git.example.test" || env["PARENT_PATH"] != "acme/platform" {
+		t.Fatalf("PARENT_HOST/PARENT_PATH = %q/%q, want git.example.test/acme/platform — "+
+			"decoded fields never reached the build env", env["PARENT_HOST"], env["PARENT_PATH"])
+	}
+
+	bare := envMap(buildEnv(moduleBuildOptions{Module: "runtime-ruby", SHA: "s", OCIRef: "t"},
+		"url", &ciBuildContext{}))
+	for _, k := range []string{"PARENT_HOST", "PARENT_PATH"} {
+		if _, ok := bare[k]; ok {
+			t.Errorf("%s must be ABSENT when the platform sends none (got %q)", k, bare[k])
+		}
+	}
+}
+
 func TestEmbedCredential(t *testing.T) {
 	got, err := embedCredential("https://git.powernode.net/powernode/powernode-system.git", "TOK")
 	if err != nil {

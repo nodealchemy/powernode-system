@@ -412,7 +412,26 @@ module Api
               oras_password:   ::System::DiskImageRegistryConfig.registry_token(account: current_account),
               apt_snapshot:    apt_snapshot_override
             }
-            payload[:parent_pat] = credential.access_token if class_b_module?(module_slug)
+            if class_b_module?(module_slug)
+              # Where stage15.sh clones the parent from: by default the
+              # authoritative core remote, the one the batch's expected core
+              # commit is read from; the SAME answer System::CoreMirrorPreflight
+              # checks at dispatch, so the check and the clone cannot disagree.
+              parent = ::System::CoreMirrorPreflight.parent_remote(account: current_account)
+              payload[:parent_host] = parent.host
+              payload[:parent_path] = parent.path
+              # The account's Gitea token goes ONLY to the credential's own
+              # host: the override settings are admin-writable, the token is not
+              # admin-readable, so a setting must not be able to redirect it.
+              if parent.token_allowed?
+                payload[:parent_pat] = credential.access_token
+              else
+                Rails.logger.warn(
+                  "[ci_build_context] parent remote #{parent} is not the Gitea credential's host — " \
+                  "cloning it without the account token"
+                )
+              end
+            end
 
             # The per-batch core-ref pin. Only ever present for a Class-B
             # module whose batch recorded a usable expectation — see

@@ -20,8 +20,10 @@ module System
   #
   # The asymmetry that makes an earlier answer cheap: the batch's expectation is
   # resolved from the AUTHORITATIVE remote (the Gitea core is pushed to, via
-  # NativeModuleBuildOrchestrator#resolve_core_tip), while stage15.sh takes the
-  # parent from the PUBLIC MIRROR (github.com/nodealchemy/powernode-platform),
+  # NativeModuleBuildOrchestrator#resolve_core_tip), while stage15.sh took the
+  # parent from the PUBLIC MIRROR (github.com/nodealchemy/powernode-platform) —
+  # until 2026-10-19, when .parent_remote made the authoritative remote the
+  # default clone source (the mirror is now an explicit override) —
   # which lags arbitrarily (three days on 2026-08-15; two outages). One of the
   # two tips is therefore already in hand at dispatch and the other is one HTTP
   # call away.
@@ -84,18 +86,28 @@ module System
   # clears it. Turning this into an ancestry test needs a compare API call and
   # is out of scope here.
   #
-  # NOT IN SCOPE: repointing the clone. Which remote stage15.sh clones from is
-  # an operator decision; this only reports on the remote as it stands.
+  # REPOINTED 2026-10-19: which remote stage15.sh clones from is now
+  # .parent_remote — by default the authoritative core remote (the Gitea
+  # credential's host + ci_core_source_repo), delivered to Class-B builders by
+  # ConfigController#ci_build_context; ci_core_mirror_host / _path are an
+  # explicit override. With the default, the build and the expectation read
+  # the same remote and #check answers SAME_REMOTE without a network read; the
+  # mirror logic above applies to an override (or no Gitea credential). An
+  # agent too old to forward parent_host still clones the GitHub default, so
+  # roll module-forge agents before relying on SAME_REMOTE.
   class CoreMirrorPreflight
     # Default ON, same posture (and same reader) as the promote gate: a
     # protection an operator must remember to switch on is not a protection.
+    # Governs the network read and the refusal only; SAME_REMOTE does neither,
+    # so it is answered whatever this says.
     ENABLED_SETTING = "system.module_build.core_mirror_preflight"
 
     # Where stage15.sh actually clones the parent from. These defaults are that
-    # script's own defaults (POWERNODE_PARENT_HOST / POWERNODE_PARENT_PATH) —
-    # the server never overrides them today, so the compiled-in pair IS what
-    # every builder uses. Overridable so this keeps checking the RIGHT remote if
-    # an operator ever moves the mirror.
+    # script's own defaults (POWERNODE_PARENT_HOST / POWERNODE_PARENT_PATH).
+    # ConfigController#ci_build_context now hands the resolved pair to every
+    # Class-B builder as parent_host / parent_path, so setting these moves the
+    # clone AND this check together (an agent too old to forward them keeps
+    # the script default).
     MIRROR_HOST_SETTING = "ci_core_mirror_host"
     MIRROR_PATH_SETTING = "ci_core_mirror_path"
     MIRROR_HOST_DEFAULT = "github.com"
@@ -124,6 +136,10 @@ module System
     STATE_DIVERGED       = "diverged"
     STATE_UNDETERMINED   = "undetermined"
     STATE_DISABLED       = "disabled"
+    # The build clones core from the SAME remote the batch's expectation was
+    # read from (see .parent_remote): there is no mirror to diverge, so the
+    # check is satisfied by construction and makes no network call.
+    STATE_SAME_REMOTE    = "same_remote"
     STATE_NO_EXPECTATION = "no_expectation"
     # An expectation exists but is not a commit identity this can compare
     # (a branch name, or an abbreviation too short to be an identity). NOT the
@@ -162,15 +178,75 @@ module System
       end
     end
 
+    # Where a Class-B build clones the parent from, and whether the account's
+    # Gitea token may travel with it.
+    #
+    #   * DEFAULT — the authoritative core remote: the Gitea credential's own
+    #     host + ci_core_source_repo, i.e. exactly where the batch's expected
+    #     core commit is read from (NativeModuleBuildOrchestrator
+    #     #resolve_core_tip). Nothing to configure and nothing to drift.
+    #   * OVERRIDE — ci_core_mirror_host / ci_core_mirror_path (or their ENV
+    #     twins) set explicitly: clone from that mirror instead (e.g. builders
+    #     with no route to Gitea). The preflight then checks that mirror.
+    #   * No Gitea credential: the historical public-mirror defaults.
+    #
+    # The token is released only to the credential's own host. The override
+    # keys are admin-writable while the token is not admin-readable, so a
+    # setting must never be able to redirect it.
+    ParentRemote = Struct.new(:host, :path, :source, :credential_host, keyword_init: true) do
+      def to_s
+        "#{host}/#{path}"
+      end
+
+      def token_allowed?
+        credential_host.present? && host.to_s.casecmp?(credential_host)
+      end
+
+      def same_as_core?(core_repo)
+        token_allowed? && path.to_s == core_repo.to_s
+      end
+    end
+
     class << self
+      # @param account [Account] whose Gitea credential defines the
+      #   authoritative core remote
+      # @return [ParentRemote]
+      def parent_remote(account:)
+        cred_host = credential_host(account)
+        if cred_host.present? && !override_configured?
+          return ParentRemote.new(host: cred_host, path: core_source_repo, source: "authoritative",
+                                  credential_host: cred_host)
+        end
+
+        ParentRemote.new(host: mirror_host, path: mirror_path,
+                         source: override_configured? ? "override" : "public_default",
+                         credential_host: cred_host)
+      end
+
+      # Same SiteSetting -> ENV -> default chain NativeModuleBuildOrchestrator
+      # and ModuleBuildPlannerService use, so "which repo is core" is answered
+      # one way.
+      def core_source_repo
+        setting("ci_core_source_repo") || ENV["CI_CORE_SOURCE_REPO"].presence ||
+          ::System::ModuleBuildPlannerService::CORE_SOURCE_REPO_DEFAULT
+      end
+
+      def override_configured?
+        setting(MIRROR_HOST_SETTING).present? || ENV["CI_CORE_MIRROR_HOST"].present?
+      end
+
       # @param expected_sha [String, nil] the core commit this batch expects,
       #   as recorded by NativeModuleBuildOrchestrator#record_expected_core_ref!
       # @param expected_repo [String, nil] the remote that expectation came from
       #   ("<owner>/<repo>" on the authoritative Gitea) — for the refusal text
+      # @param account [Account, nil] the batch's account; with it, the remote
+      #   checked is .parent_remote (the one the build actually clones), and a
+      #   build that clones the authoritative remote itself is SAME_REMOTE
       # @return [Verdict] never raises; every failure mode is a state
-      def check(expected_sha:, expected_repo: nil)
+      def check(expected_sha:, expected_repo: nil, account: nil)
         expected = expected_sha.to_s.strip
-        remote   = mirror_remote
+        parent   = account ? parent_remote(account: account) : nil
+        remote   = parent ? parent.to_s : mirror_remote
 
         # Nothing to compare against. Same posture as the promote gate's
         # `no_expectation`: an absent expectation is never fabricated, and never
@@ -200,13 +276,21 @@ module System
                          expected: expected, expected_repo: expected_repo, mirror_sha: nil, remote: remote)
         end
 
+        if parent&.same_as_core?(expected_repo.presence || core_source_repo)
+          return verdict(STATE_SAME_REMOTE, refuse: false,
+                         reason: "the build clones core from #{remote}, the same remote this batch's " \
+                                 "expected core #{short(expected)} was read from — there is no mirror " \
+                                 "to diverge",
+                         expected: expected, expected_repo: expected_repo, mirror_sha: nil, remote: remote)
+        end
+
         unless enabled?
           return verdict(STATE_DISABLED, refuse: false,
                          reason: "#{ENABLED_SETTING} is disabled — the mirror was not checked",
                          expected: expected, expected_repo: expected_repo, mirror_sha: nil, remote: remote)
         end
 
-        tip = resolve_mirror_tip
+        tip = parent ? resolve_mirror_tip(host: parent.host, path: parent.path) : resolve_mirror_tip
 
         if tip.blank?
           return verdict(STATE_UNDETERMINED, refuse: false,
@@ -311,6 +395,16 @@ module System
       end
 
       private
+
+      def credential_host(account)
+        return nil unless account
+
+        credential = ::System::CiRunnerRegistrationResolver.new(account: account).credential
+        base = credential&.provider&.effective_web_base_url
+        base.present? ? URI.parse(base).host.presence : nil
+      rescue StandardError
+        nil
+      end
 
       def setting(name)
         ::SiteSetting.get(name).presence

@@ -88,6 +88,8 @@ RSpec.describe "Api::V1::System::NodeApi::Config#ci_build_context", type: :reque
       get_context(module_slug: "runtime-ruby")
 
       expect(json["data"]).not_to have_key("parent_pat")
+      expect(json["data"]).not_to have_key("parent_host")
+      expect(json["data"]).not_to have_key("parent_path")
     end
 
     it "never returns any credential anywhere but the response body — the emitted fleet event carries ids only" do
@@ -115,12 +117,68 @@ RSpec.describe "Api::V1::System::NodeApi::Config#ci_build_context", type: :reque
 
   describe "Class-B module" do
     let!(:hub_backend_module) { create(:system_node_module, account: account, name: "powernode-hub-backend") }
+    let(:gitea_host) { URI.parse(gitea_provider.effective_web_base_url).host }
 
-    it "includes parent_pat, resolved from the same account Gitea credential" do
+    def stub_mirror(host:, path: "powernode/powernode-platform")
+      allow(::SiteSetting).to receive(:get).and_call_original
+      allow(::SiteSetting).to receive(:get).with("ci_core_mirror_host").and_return(host)
+      allow(::SiteSetting).to receive(:get).with("ci_core_mirror_path").and_return(path)
+    end
+
+    it "includes parent_pat when the parent remote is the Gitea credential's own host" do
+      stub_mirror(host: gitea_host)
       get_context(module_slug: "powernode-hub-backend")
 
       expect(response).to have_http_status(:ok)
       expect(json.dig("data", "parent_pat")).to eq("test_token_123")
+    end
+
+    # Where stage15.sh clones the parent from. Read from the SAME source
+    # System::CoreMirrorPreflight checks at dispatch, so the check and the
+    # clone can never look at different remotes.
+    it "defaults the parent remote to the authoritative core repo on the Gitea credential's host" do
+      get_context(module_slug: "powernode-hub-backend")
+
+      expect(json.dig("data", "parent_host")).to eq(gitea_host)
+      expect(json.dig("data", "parent_path")).to eq(::System::CoreMirrorPreflight.core_source_repo)
+      expect(json.dig("data", "parent_pat")).to eq("test_token_123")
+    end
+
+    it "names the same remote the mirror preflight checks" do
+      get_context(module_slug: "powernode-hub-backend")
+
+      expected = ::System::CoreMirrorPreflight.parent_remote(account: account)
+      expect([ json.dig("data", "parent_host"), json.dig("data", "parent_path") ]).to eq([ expected.host, expected.path ])
+    end
+
+    it "follows the ci_core_mirror_host / ci_core_mirror_path settings" do
+      stub_mirror(host: "git.example.test", path: "acme/platform")
+
+      get_context(module_slug: "powernode-hub-backend")
+
+      expect(json.dig("data", "parent_host")).to eq("git.example.test")
+      expect(json.dig("data", "parent_path")).to eq("acme/platform")
+    end
+
+    # The settings are admin-writable while the token is not readable to an
+    # admin: an unguarded parent_pat would hand the account's Gitea token to
+    # whatever host ci_core_mirror_host names.
+    it "withholds parent_pat when the parent remote is any other host" do
+      stub_mirror(host: "attacker.example.test")
+
+      get_context(module_slug: "powernode-hub-backend")
+
+      expect(response).to have_http_status(:ok)
+      expect(json["data"]).not_to have_key("parent_pat")
+      expect(json.dig("data", "parent_host")).to eq("attacker.example.test")
+    end
+
+    it "withholds parent_pat for the public GitHub default (stage15 discards it there anyway)" do
+      stub_mirror(host: "github.com", path: "nodealchemy/powernode-platform")
+
+      get_context(module_slug: "powernode-hub-backend")
+
+      expect(json["data"]).not_to have_key("parent_pat")
     end
   end
 
