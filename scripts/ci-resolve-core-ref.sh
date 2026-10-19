@@ -29,7 +29,15 @@ askpass=""
 cleanup() { [ -z "$askpass" ] || rm -f "$askpass"; }
 trap cleanup EXIT
 
+# ls-remote runs OUTSIDE the checkout: actions/checkout leaves an
+# http.<server>.extraheader carrying the job's own token, scoped to THIS repo,
+# and git sends it before any askpass challenge, so the core read token was
+# never offered and Gitea answered "Repository not found".
 remote() {
+  ( cd / && remote_in_neutral_dir "$@" )
+}
+
+remote_in_neutral_dir() {
   if [ -n "${CORE_READ_TOKEN:-}" ]; then
     if [ -z "$askpass" ]; then
       askpass=$(mktemp)
