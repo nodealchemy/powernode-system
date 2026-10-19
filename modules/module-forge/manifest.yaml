@@ -111,7 +111,7 @@ description: >
   .
   push.sh (scripts/module-build/push.sh) gained one small, backward-
   compatible addition in this increment: an optional `--registry HOST` flag
-  (default: git.powernode.org, unchanged from before) so
+  (default: the runner's Gitea server host) so
   module-forge-build.sh can honor its own ORAS_REGISTRY env var without
   duplicating oras-login/push/tag logic a second time. The existing Gitea
   workflow invocation (no `--registry` passed) is untouched.

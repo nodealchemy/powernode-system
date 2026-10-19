@@ -58,8 +58,11 @@
 #                            (invoked inside the chroot) by simple process-
 #                            environment inheritance — see "no secrets in
 #                            argv" below.
-#   ORAS_REGISTRY               registry host to push to. Default:
-#                            git.powernode.org. Forwarded to push.sh's new
+#   ORAS_REGISTRY               registry host to push to. The agent always
+#                            sends it (ci_build_context.oras_registry, i.e.
+#                            System::DiskImageRegistryConfig.registry_host);
+#                            the placeholder default registry.example.com
+#                            only fails loudly. Forwarded to push.sh's new
 #                            `--registry` flag (this increment's one small
 #                            addition to that shared, already-landed
 #                            script).
@@ -189,7 +192,7 @@ done
 
 # --- optional env ---------------------------------------------------------
 PARENT_PAT="${PARENT_PAT:-}"
-ORAS_REGISTRY="${ORAS_REGISTRY:-git.powernode.org}"
+ORAS_REGISTRY="${ORAS_REGISTRY:-registry.example.com}"
 APT_SNAPSHOT="${APT_SNAPSHOT:-}"
 ARCH="${ARCH:-amd64}"
 PARENT_HOST="${PARENT_HOST:-github.com}"

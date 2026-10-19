@@ -73,8 +73,10 @@
 #                              --components)
 #
 # Optional:
-#   ORAS_REGISTRY                registry host. Default: git.powernode.org
-#                              (mirrors module-forge-build.sh)
+#   ORAS_REGISTRY                registry host (the agent always sends
+#                              ci_build_context.oras_registry). Placeholder
+#                              default registry.example.com (mirrors
+#                              module-forge-build.sh)
 #   PACKAGE_VERSION                exact EVR (epoch:version-release) to pin
 #                              PACKAGE_NAME to (campaign 019f6084 item L —
 #                              System::PackageClosureBuildBridge#package_lock,
@@ -224,7 +226,7 @@ APT_SUITE="${APT_SUITE:?APT_SUITE env var is required when REPO_KIND=apt}"
 APT_COMPONENTS="${APT_COMPONENTS:?APT_COMPONENTS env var is required when REPO_KIND=apt}"
 
 # --- optional env ----------------------------------------------------------
-ORAS_REGISTRY="${ORAS_REGISTRY:-git.powernode.org}"
+ORAS_REGISTRY="${ORAS_REGISTRY:-registry.example.com}"
 APT_SNAPSHOT="${APT_SNAPSHOT:-}"
 GPG_KEY_ARMOR="${GPG_KEY_ARMOR:-}"
 MASK="${MASK:-}"
