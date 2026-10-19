@@ -233,6 +233,7 @@ jobs:
 
           PG=$(docker run -d $LABELS -p "$GW::5432" \
                 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=powernode_test \
+                --tmpfs /var/lib/postgresql/data:rw \
                 pgvector/pgvector:pg16 \
                 -c fsync=off -c synchronous_commit=off -c full_page_writes=off)
           RD=$(docker run -d $LABELS -p "$GW::6379" redis:7 --save '' --appendonly no)
@@ -447,6 +448,7 @@ jobs:
 
           PG=$(docker run -d $LABELS -p "$GW::5432" \
                 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=powernode_test \
+                --tmpfs /var/lib/postgresql/data:rw \
                 pgvector/pgvector:pg16 \
                 -c fsync=off -c synchronous_commit=off -c full_page_writes=off)
           RD=$(docker run -d $LABELS -p "$GW::6379" redis:7 --save '' --appendonly no)
@@ -615,6 +617,7 @@ jobs:
 
           PG=$(docker run -d $LABELS -p "$GW::5432" \
                 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=powernode_test \
+                --tmpfs /var/lib/postgresql/data:rw \
                 pgvector/pgvector:pg16 \
                 -c fsync=off -c synchronous_commit=off -c full_page_writes=off)
           RD=$(docker run -d $LABELS -p "$GW::6379" redis:7 --save '' --appendonly no)
