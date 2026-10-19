@@ -19,6 +19,9 @@
 set -euo pipefail
 
 url=${1:?usage: ci-resolve-core-ref.sh <core-remote-url> <wanted-branch>}
+# A token pasted into the secret form often carries a trailing newline or
+# space, which Gitea rejects as "Failed to authenticate user".
+CORE_READ_TOKEN=$(printf '%s' "${CORE_READ_TOKEN:-}" | tr -d '[:space:]')
 wanted=${2:-}
 
 # The token reaches git through an askpass helper that reads it from the
