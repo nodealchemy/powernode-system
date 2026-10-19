@@ -26,7 +26,7 @@ require "yaml"
 #     -> module-forge-build.sh                  (result JSON, distinct field)
 #
 # Both the remote AND the sha are recorded: the v71 incident was a correct
-# branch name on a STALE MIRROR (github.com and git.powernode.net both had a
+# branch name on a STALE MIRROR (github.com and git-ssh.example.test both had a
 # `develop`, three days apart), so a sha alone would have looked plausible.
 #
 # Verification shape: the module-forge-build.sh examples drive the REAL script
@@ -323,11 +323,11 @@ RSpec.describe "module build core-source provenance" do
       Dir.mktmpdir("push-prov") do |root|
         _status, args = run_annotations(
           root,
-          provenance: "core_source_sha=unknown\ncore_source_remote=git.powernode.org/x/y\n"
+          provenance: "core_source_sha=unknown\ncore_source_remote=git.example.test/x/y\n"
         )
 
         expect(args).to include("org.powernode.core_source_sha=unknown")
-        expect(args).to include("org.powernode.core_source_remote=git.powernode.org/x/y")
+        expect(args).to include("org.powernode.core_source_remote=git.example.test/x/y")
       end
     end
 
@@ -536,7 +536,7 @@ RSpec.describe "module build core-source provenance" do
           "MODULE_FORGE_JOB_ROOT"        => jobroot,
           "MODULE"                       => "powernode-hub-backend",
           "BUILD_SHA"                    => "modulesourcesha0000000000000000000000000",
-          "MODULE_SOURCE_URL"            => "https://example.invalid/powernode/powernode-system.git",
+          "MODULE_SOURCE_URL"            => "https://example.invalid/acme/powernode-system.git",
           "ORAS_REGISTRY_USER"           => "ci",
           "ORAS_REGISTRY_PASSWORD"       => "stub-not-a-real-credential",
           "OCI_REF"                      => "abc123",

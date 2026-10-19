@@ -69,7 +69,7 @@ RSpec.describe "module-forge-build.sh head_sha build-script selection" do
         "MODULE_FORGE_JOB_ROOT"       => jobroot,
         "MODULE"                      => "reverse-proxy-traefik",
         "BUILD_SHA"                   => "abc123def456",
-        "MODULE_SOURCE_URL"           => "https://example.invalid/powernode/powernode-system.git",
+        "MODULE_SOURCE_URL"           => "https://example.invalid/acme/powernode-system.git",
         "ORAS_REGISTRY_USER"          => "ci",
         "ORAS_REGISTRY_PASSWORD"      => "secret", # test-only stub value, never a real credential
         "OCI_REF"                     => "abc123",

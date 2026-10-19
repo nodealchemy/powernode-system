@@ -162,7 +162,7 @@ RSpec.describe System::ModuleSigningService do
     end
 
     context "when the registry is configured (private Gitea OCI)" do
-      let(:reg_host)  { "git.powernode.org" }
+      let(:reg_host)  { "git.example.test" }
       let(:reg_user)  { "everett" }
       let(:reg_token) { "gitea-token-not-a-real-secret" }
 

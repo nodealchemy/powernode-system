@@ -1767,7 +1767,7 @@ func TestCappedBuffer_KeepsTheHeadOrTheTail(t *testing.T) {
 
 func TestModuleBuild_ScrubsEverySecretFromItsLogTail(t *testing.T) {
 	httpc := &fakeHTTP{body: `{"success":true,"data":{
-		"source_repo_url":"https://git.powernode.net/powernode/powernode-system.git",
+		"source_repo_url":"https://git.example.test/acme/powernode-system.git",
 		"source_token":"SRC-TOKEN",
 		"parent_pat":"PARENT-TOKEN",
 		"oras_registry":"registry.example.com",
@@ -1775,7 +1775,7 @@ func TestModuleBuild_ScrubsEverySecretFromItsLogTail(t *testing.T) {
 		"oras_password":"ORAS-PW"
 	}}`}
 	ex := &fakeExec{
-		stderr: []byte("fatal: https://x-access-token:SRC-TOKEN@git.powernode.net/x.git; parent PARENT-TOKEN; login ORAS-PW"),
+		stderr: []byte("fatal: https://x-access-token:SRC-TOKEN@git.example.test/x.git; parent PARENT-TOKEN; login ORAS-PW"),
 		err:    errors.New("exit status 1"),
 	}
 	h := &ModuleBuildHandler{HTTP: httpc, Exec: ex}

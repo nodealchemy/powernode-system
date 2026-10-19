@@ -31,7 +31,7 @@ RSpec.describe "dev-cell-bootstrap.sh transient-fetch retry" do
   BUNDLE = {
     "mcp"   => { "mcp_url" => "https://ops-hub.invalid/api/v1/mcp/message" },
     "gitea" => {
-      "clone_url"   => "ssh://git@gitea.invalid:2222/powernode/powernode-platform.git",
+      "clone_url"   => "ssh://git@gitea.invalid:2222/acme/powernode-platform.git",
       "private_key" => "-----BEGIN OPENSSH PRIVATE KEY-----\nstub\n-----END OPENSSH PRIVATE KEY-----\n",
       "known_hosts" => "[gitea.invalid]:2222 ssh-ed25519 AAAAstub\n"
     }

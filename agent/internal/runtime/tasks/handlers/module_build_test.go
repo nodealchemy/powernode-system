@@ -66,7 +66,7 @@ func envMap(env []string) map[string]string {
 }
 
 const okContextBody = `{"success":true,"data":{
-	"source_repo_url":"https://git.powernode.net/powernode/powernode-system.git",
+	"source_repo_url":"https://git.example.test/acme/powernode-system.git",
 	"source_token":"SRC-TOKEN",
 	"oras_registry":"registry.example.com",
 	"oras_user":"oras-user",
@@ -215,11 +215,11 @@ func TestFetchBuildContextDecodesParentRemoteIntoEnv(t *testing.T) {
 }
 
 func TestEmbedCredential(t *testing.T) {
-	got, err := embedCredential("https://git.powernode.net/powernode/powernode-system.git", "TOK")
+	got, err := embedCredential("https://git.example.test/acme/powernode-system.git", "TOK")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "https://x-access-token:TOK@git.powernode.net/powernode/powernode-system.git"
+	want := "https://x-access-token:TOK@git.example.test/acme/powernode-system.git"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -298,7 +298,7 @@ func TestModuleBuildHandler_Execute_Success(t *testing.T) {
 	if env["MODULE"] != "runtime-ruby" || env["BUILD_SHA"] != "deadsha" || env["OCI_REF"] != "v1.2.3" {
 		t.Fatalf("env: %+v", env)
 	}
-	if env["MODULE_SOURCE_URL"] != "https://x-access-token:SRC-TOKEN@git.powernode.net/powernode/powernode-system.git" {
+	if env["MODULE_SOURCE_URL"] != "https://x-access-token:SRC-TOKEN@git.example.test/acme/powernode-system.git" {
 		t.Fatalf("MODULE_SOURCE_URL = %q", env["MODULE_SOURCE_URL"])
 	}
 	if env["ORAS_REGISTRY"] != "registry.example.com" || env["ORAS_REGISTRY_USER"] != "oras-user" || env["ORAS_REGISTRY_PASSWORD"] != "ORAS-PW" {
@@ -314,7 +314,7 @@ func TestModuleBuildHandler_Execute_Success(t *testing.T) {
 
 func TestModuleBuildHandler_Execute_ClassBGetsParentPAT(t *testing.T) {
 	httpc := &fakeHTTP{body: `{"success":true,"data":{
-		"source_repo_url":"https://git.powernode.net/powernode/powernode-system.git",
+		"source_repo_url":"https://git.example.test/acme/powernode-system.git",
 		"source_token":"SRC-TOKEN",
 		"parent_pat":"PARENT-TOKEN",
 		"oras_registry":"registry.example.com",

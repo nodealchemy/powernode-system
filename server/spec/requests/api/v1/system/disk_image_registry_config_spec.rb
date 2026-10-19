@@ -63,7 +63,7 @@ RSpec.describe "GET /api/v1/system/disk_image_registry_config", type: :request d
 
   describe "when configured via AdminSetting + SecretStore override" do
     before do
-      AdminSetting.set(System::DiskImageRegistryConfig::HOST_SETTING_KEY, "git.powernode.org")
+      AdminSetting.set(System::DiskImageRegistryConfig::HOST_SETTING_KEY, "git.example.test")
       Security::SecretStore.write(account: nil, scope: System::DiskImageRegistryConfig::SECRET_SCOPE,
                                    key: "registry_user", value: "ci-bot")
       Security::SecretStore.write(account: nil, scope: System::DiskImageRegistryConfig::SECRET_SCOPE,
@@ -75,7 +75,7 @@ RSpec.describe "GET /api/v1/system/disk_image_registry_config", type: :request d
 
       expect(response).to have_http_status(:ok)
       data = JSON.parse(response.body).fetch("data")
-      expect(data["registry_host"]).to eq("git.powernode.org")
+      expect(data["registry_host"]).to eq("git.example.test")
       expect(data["registry_user"]).to eq("ci-bot")
       expect(data["registry_token"]).to eq("s3cr3t-registry-token-value")
     end
@@ -104,7 +104,7 @@ RSpec.describe "GET /api/v1/system/disk_image_registry_config", type: :request d
   end
 
   describe "when configured via the ci_worker's account's Gitea credential (DK4, no override set)" do
-    let!(:gitea_provider) { create(:git_provider, :gitea, web_base_url: "https://git.powernode.org") }
+    let!(:gitea_provider) { create(:git_provider, :gitea, web_base_url: "https://git.example.test") }
     let!(:credential) do
       create(:git_provider_credential, :gitea,
              provider: gitea_provider,
@@ -118,7 +118,7 @@ RSpec.describe "GET /api/v1/system/disk_image_registry_config", type: :request d
 
       expect(response).to have_http_status(:ok)
       data = JSON.parse(response.body).fetch("data")
-      expect(data["registry_host"]).to eq("git.powernode.org")
+      expect(data["registry_host"]).to eq("git.example.test")
       expect(data["registry_user"]).to eq("opuser")
       expect(data["registry_token"]).to eq("gitea-derived-token")
     end

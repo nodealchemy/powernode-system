@@ -420,8 +420,8 @@ RSpec.describe System::ModuleBuildDispatchService do
     end
 
     it "derives base_url from the platform's Gitea provider instead of the registry.example.com placeholder" do
-      create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
-      expect(adapter.send(:resolve_base_url)).to eq("https://git.powernode.org")
+      create(:git_provider, :gitea, web_base_url: "https://git.example.test")
+      expect(adapter.send(:resolve_base_url)).to eq("https://git.example.test")
     end
 
     it "does not default base_url to the registry.example.com placeholder when nothing is configured" do
@@ -439,14 +439,14 @@ RSpec.describe System::ModuleBuildDispatchService do
     # (which would always skip the credential-lookup tier below).
     it "derives the token from the CALLING account's Gitea provider credential — zero hand-entered secrets" do
       account = create(:account)
-      gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+      gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.example.test")
       create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
              encrypted_credentials: Base64.strict_encode64({ "access_token" => "gitea-derived-token" }.to_json))
       expect(adapter.send(:resolve_token, account)).to eq("gitea-derived-token")
     end
 
     it "still honors explicit constructor args over platform config" do
-      create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+      create(:git_provider, :gitea, web_base_url: "https://git.example.test")
       explicit = System::ModuleBuildDispatchService::GiteaDispatchAdapter.new(
         base_url: "https://explicit.example.com", token: "explicit-tok"
       )
@@ -457,7 +457,7 @@ RSpec.describe System::ModuleBuildDispatchService do
     it "still honors ENV overrides over platform config" do
       ENV["POWERNODE_GITEA_BASE_URL"] = "https://env.example.com"
       ENV["POWERNODE_GITEA_TOKEN"] = "env-tok"
-      create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+      create(:git_provider, :gitea, web_base_url: "https://git.example.test")
       expect(adapter.send(:resolve_base_url)).to eq("https://env.example.com")
       expect(adapter.send(:resolve_token, nil)).to eq("env-tok")
     end
@@ -469,10 +469,10 @@ RSpec.describe System::ModuleBuildDispatchService do
       mod = create(:system_node_module, account: account, node_platform: platform, category: category,
                    variety: "subscription", name: "acct-scoped-mod",
                    gitea_repo_full_name: "ipnode-acme/acct-scoped-mod")
-      gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+      gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.example.test")
       create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
              encrypted_credentials: Base64.strict_encode64({ "access_token" => "gitea-derived-token" }.to_json))
-      stub_request(:post, %r{\Ahttps://git\.powernode\.org/api/v1/repos/})
+      stub_request(:post, %r{\Ahttps://git\.example\.test/api/v1/repos/})
         .with(headers: { "Authorization" => "token gitea-derived-token" })
         .to_return(status: 204, headers: { "X-Gitea-Action-Run-Id" => "77" })
 

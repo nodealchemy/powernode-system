@@ -1716,7 +1716,7 @@ RSpec.describe System::NodeInstance, "pool methods (slice 7)", type: :model do
 
     # Native-CI pool reliability: a warming member enrolled onto an SDWAN
     # overlay must not become acquirable until its WireGuard tunnel is live,
-    # otherwise a dispatched build's `git clone git.powernode.org` (an
+    # otherwise a dispatched build's `git clone git.example.test` (an
     # overlay-only address) times out on a still-isolating builder.
     context "SDWAN overlay reachability gate" do
       let(:i) do

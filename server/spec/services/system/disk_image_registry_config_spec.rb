@@ -43,13 +43,13 @@ RSpec.describe System::DiskImageRegistryConfig, type: :service do
 
   describe "AdminSetting + SecretStore populated (override tier)" do
     before do
-      AdminSetting.set(described_class::HOST_SETTING_KEY, "git.powernode.org")
+      AdminSetting.set(described_class::HOST_SETTING_KEY, "git.example.test")
       Security::SecretStore.write(account: nil, scope: described_class::SECRET_SCOPE, key: "registry_user", value: "ci-bot")
       Security::SecretStore.write(account: nil, scope: described_class::SECRET_SCOPE, key: "registry_token", value: "s3cr3t-token")
     end
 
     it "reads host from AdminSetting" do
-      expect(described_class.registry_host(account: account)).to eq("git.powernode.org")
+      expect(described_class.registry_host(account: account)).to eq("git.example.test")
     end
 
     it "reads credentials from SecretStore" do
@@ -111,7 +111,7 @@ RSpec.describe System::DiskImageRegistryConfig, type: :service do
   end
 
   describe "Gitea provider credential fallback (DK4, no override/ENV set)" do
-    let!(:gitea_provider) { create(:git_provider, :gitea, web_base_url: "https://git.powernode.org") }
+    let!(:gitea_provider) { create(:git_provider, :gitea, web_base_url: "https://git.example.test") }
     let!(:credential) do
       create(:git_provider_credential, :gitea,
              provider: gitea_provider,
@@ -121,7 +121,7 @@ RSpec.describe System::DiskImageRegistryConfig, type: :service do
     end
 
     it "derives the host from the Gitea provider's effective_web_base_url" do
-      expect(described_class.registry_host(account: account)).to eq("git.powernode.org")
+      expect(described_class.registry_host(account: account)).to eq("git.example.test")
     end
 
     it "derives the user from the credential's external_username" do
@@ -149,7 +149,7 @@ RSpec.describe System::DiskImageRegistryConfig, type: :service do
   end
 
   describe "override precedence still wins over a Gitea credential" do
-    let!(:gitea_provider) { create(:git_provider, :gitea, web_base_url: "https://git.powernode.org") }
+    let!(:gitea_provider) { create(:git_provider, :gitea, web_base_url: "https://git.example.test") }
     let!(:credential) do
       create(:git_provider_credential, :gitea, provider: gitea_provider, account: account, external_username: "opuser")
     end
@@ -176,13 +176,13 @@ RSpec.describe System::DiskImageRegistryConfig, type: :service do
     end
 
     it "returns the full scheme+host URL of the configured Gitea provider" do
-      create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
-      expect(described_class.gitea_web_base_url).to eq("https://git.powernode.org")
+      create(:git_provider, :gitea, web_base_url: "https://git.example.test")
+      expect(described_class.gitea_web_base_url).to eq("https://git.example.test")
     end
   end
 
   describe "an inactive Gitea credential is not used" do
-    let!(:gitea_provider) { create(:git_provider, :gitea, web_base_url: "https://git.powernode.org") }
+    let!(:gitea_provider) { create(:git_provider, :gitea, web_base_url: "https://git.example.test") }
 
     it "does not resolve user/token from an inactive credential" do
       create(:git_provider_credential, :gitea, :inactive, provider: gitea_provider, account: account, external_username: "opuser")

@@ -51,7 +51,7 @@ RSpec.describe "Api::V1::System::NodeApi::Config#dev_cell_bootstrap", type: :req
   end
 
   let(:path) { "/api/v1/system/node_api/config/dev_cell_bootstrap" }
-  let(:expected_ssh_url) { "git@gitea.example.com:powernode/powernode-platform.git" }
+  let(:expected_ssh_url) { "git@gitea.example.com:#{Api::V1::System::NodeApi::ConfigController::DEV_CELL_SOURCE_REPO_DEFAULT}.git" }
 
   # Vault store confirmed (:vault); the DB-fallback test overrides to
   # :database (Vault-less deployments — also a confirmed store, since

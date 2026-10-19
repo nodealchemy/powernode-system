@@ -96,7 +96,7 @@ RSpec.describe System::DiskImageOciIngestService do
     let(:image_bytes) { "fake-disk-image-bytes-#{SecureRandom.hex(4)}" }
     let(:pub) do
       create(:system_disk_image_publication, account: account, node_platform: platform,
-             oci_ref: "git.powernode.org/powernode/disk-images/ubuntu-24.04-amd64-uefi:0279b76",
+             oci_ref: "git.example.test/powernode/disk-images/ubuntu-24.04-amd64-uefi:0279b76",
              sha256: Digest::SHA256.hexdigest(image_bytes))
     end
 
@@ -126,7 +126,7 @@ RSpec.describe System::DiskImageOciIngestService do
     context "when DiskImageRegistryConfig is configured for the account" do
       before do
         allow(System::DiskImageRegistryConfig).to receive(:configured?).with(account: account).and_return(true)
-        allow(System::DiskImageRegistryConfig).to receive(:registry_host).with(account: account).and_return("git.powernode.org")
+        allow(System::DiskImageRegistryConfig).to receive(:registry_host).with(account: account).and_return("git.example.test")
         allow(System::DiskImageRegistryConfig).to receive(:registry_user).with(account: account).and_return("ci-bot")
         allow(System::DiskImageRegistryConfig).to receive(:registry_token).with(account: account).and_return("s3cr3t-token")
       end
@@ -140,7 +140,7 @@ RSpec.describe System::DiskImageOciIngestService do
 
         expect(login_calls.size).to eq(1)
         login_cmd = login_calls.first[:cmd]
-        expect(login_cmd).to include("oras", "login", "git.powernode.org", "--username", "ci-bot", "--password-stdin")
+        expect(login_cmd).to include("oras", "login", "git.example.test", "--username", "ci-bot", "--password-stdin")
         expect(login_calls.first[:stdin_data]).to eq("s3cr3t-token")
         # The token must never appear as a literal argv element.
         expect(login_cmd).not_to include("s3cr3t-token")

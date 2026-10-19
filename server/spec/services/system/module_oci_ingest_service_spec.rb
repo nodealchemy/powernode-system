@@ -627,12 +627,12 @@ RSpec.describe System::ModuleOciIngestService do
   # BLOB (layer) digest the agent verifies on pull — never the manifest digest
   # and never the LocalOciAdapter dev stub's fabricated value.
   describe ".ingest_native!" do
-    # Real base-os:e4806f2 shape (verified live against git.powernode.org).
+    # Real base-os:e4806f2 shape (verified live against git.example.test).
     let(:erofs_digest)    { "sha256:59ddd433e3712fe2edb10c717773140b2417b7ec35369b86be9a0491bf80ffa7" }
     let(:manifest_digest) { "sha256:6c7ae5bdd2a3eca8db8d9e8408fabf9a59911f8e9b79e256a0d00d1ee5107cd8" }
     let(:meta_digest)     { "sha256:295c76ff1f99519015f0781ba576a440de800b515748a8ca5cf07d0293df0e67" }
     let(:agent_fsverity)  { "sha256:70615610329859e27ff3fd7bf26e4d9573e9d012e289fc262d2e3b549201f684" }
-    let(:native_ref)      { "git.powernode.org/powernode/base-os-ubuntu-noble:e4806f2" }
+    let(:native_ref)      { "git.example.test/powernode/base-os-ubuntu-noble:e4806f2" }
 
     # Three-layer plain image manifest: erofs FS + two powernode.module.*
     # descriptor sidecars. The erofs layer is NOT first-by-media-prefix, so
@@ -916,7 +916,7 @@ end
 # from external_username and registry_token from access_token. So any spec that
 # set up a credential and triggered an ingest performed a live authenticated
 # request against the platform's real registry. That is how
-# IMP-a69cd0443492's example failed: a 401 from git.powernode.org, ingest
+# IMP-a69cd0443492's example failed: a 401 from git.example.test, ingest
 # failed closed, no artifact recorded.
 #
 # The control is asserted on the EXECUTOR (Open3.capture3), not on the absence
@@ -933,7 +933,7 @@ RSpec.describe System::ModuleOciIngestService, "registry login is unreachable fr
   let(:account) { create(:account) }
   let(:node_module) { create(:system_node_module, account: account) }
   let(:version) { create(:system_node_module_version, node_module: node_module) }
-  let(:oci_ref) { "git.powernode.org/powernode/mod:abc1234" }
+  let(:oci_ref) { "git.example.test/powernode/mod:abc1234" }
 
   def status_double(ok, code: 0)
     instance_double(Process::Status, success?: ok, exitstatus: code)
@@ -942,14 +942,14 @@ RSpec.describe System::ModuleOciIngestService, "registry login is unreachable fr
   # The exact fixture shape that used to trigger a live login: a connected
   # Gitea provider credential and nothing else.
   before do
-    gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+    gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.example.test")
     create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
            external_username: "ci-bot")
   end
 
   it "the fixture really does reach the state that triggers a login (guard would be vacuous otherwise)" do
     expect(System::DiskImageRegistryConfig.configured?(account: account)).to be(true)
-    expect(System::DiskImageRegistryConfig.registry_host(account: account)).to eq("git.powernode.org")
+    expect(System::DiskImageRegistryConfig.registry_host(account: account)).to eq("git.example.test")
   end
 
   it "never shells out during an ingest, however configured the registry looks" do
@@ -984,13 +984,13 @@ RSpec.describe System::ModuleOciIngestService, "registry login is unreachable fr
   # moment test? is stubbed false. Hence the pins below.
   it "still logs in when the environment is not test — the guard keys on TEST, not on production" do
     allow(::System::DiskImageRegistryConfig).to receive(:configured?).and_return(true)
-    allow(::System::DiskImageRegistryConfig).to receive(:registry_host).and_return("git.powernode.org")
+    allow(::System::DiskImageRegistryConfig).to receive(:registry_host).and_return("git.example.test")
     allow(::System::DiskImageRegistryConfig).to receive(:registry_user).and_return("ci-bot")
     allow(::System::DiskImageRegistryConfig).to receive(:registry_token).and_return("tok")
     allow(Rails.env).to receive(:test?).and_return(false)
 
     expect(Open3).to receive(:capture3)
-      .with(hash_including("DOCKER_CONFIG"), "oras", "login", "git.powernode.org", any_args)
+      .with(hash_including("DOCKER_CONFIG"), "oras", "login", "git.example.test", any_args)
       .and_return([ "", "", status_double(true) ])
 
     described_class.new.ingest!(node_module_version: version, oci_ref: oci_ref)
@@ -1007,7 +1007,7 @@ RSpec.describe System::ModuleOciIngestService, "registry login is unreachable fr
   # example proved nothing until the pins made the mutant reach the executor.
   it "does not log in when the registry is unconfigured, even outside test" do
     allow(::System::DiskImageRegistryConfig).to receive(:configured?).and_return(false)
-    allow(::System::DiskImageRegistryConfig).to receive(:registry_host).and_return("git.powernode.org")
+    allow(::System::DiskImageRegistryConfig).to receive(:registry_host).and_return("git.example.test")
     allow(::System::DiskImageRegistryConfig).to receive(:registry_user).and_return("ci-bot")
     allow(::System::DiskImageRegistryConfig).to receive(:registry_token).and_return("tok")
     allow(Rails.env).to receive(:test?).and_return(false)
@@ -1019,7 +1019,7 @@ RSpec.describe System::ModuleOciIngestService, "registry login is unreachable fr
 
   it "does not log in when a resolved credential is blank, even outside test" do
     allow(::System::DiskImageRegistryConfig).to receive(:configured?).and_return(true)
-    allow(::System::DiskImageRegistryConfig).to receive(:registry_host).and_return("git.powernode.org")
+    allow(::System::DiskImageRegistryConfig).to receive(:registry_host).and_return("git.example.test")
     allow(::System::DiskImageRegistryConfig).to receive(:registry_user).and_return("ci-bot")
     allow(::System::DiskImageRegistryConfig).to receive(:registry_token).and_return("")
     allow(Rails.env).to receive(:test?).and_return(false)

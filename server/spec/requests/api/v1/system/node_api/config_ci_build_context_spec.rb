@@ -77,7 +77,7 @@ RSpec.describe "Api::V1::System::NodeApi::Config#ci_build_context", type: :reque
         "source_repo_url", "source_token", "oras_registry", "oras_user",
         "oras_password", "apt_snapshot"
       )
-      expect(data["source_repo_url"]).to eq("#{gitea_provider.effective_web_base_url}/powernode/powernode-system.git")
+      expect(data["source_repo_url"]).to eq("#{gitea_provider.effective_web_base_url}/#{Api::V1::System::NodeApi::ConfigController::CI_BUILD_SOURCE_REPO_DEFAULT}.git")
       expect(data["source_token"]).to eq("test_token_123")
       expect(data["oras_registry"]).to eq(URI.parse(gitea_provider.effective_web_base_url).host)
       expect(data["oras_user"]).to eq(gitea_credential.external_username)

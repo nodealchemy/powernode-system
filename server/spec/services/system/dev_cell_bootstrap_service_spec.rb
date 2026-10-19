@@ -15,9 +15,9 @@ RSpec.describe System::DevCellBootstrapService do
   subject(:service) { described_class.allocate }
 
   # Gitea reports the correct HOST but its internal port :220.
-  let(:gitea_ssh_url) { "ssh://git@git.powernode.net:220/powernode/powernode-platform.git" }
+  let(:gitea_ssh_url) { "ssh://git@git-ssh.example.test:220/acme/powernode-platform.git" }
   let(:client) { instance_double("Devops::Git::ApiClient") }
-  let(:provider) { double("provider", effective_web_base_url: "https://git.powernode.org") }
+  let(:provider) { double("provider", effective_web_base_url: "https://git.example.test") }
   let(:credential) { double("credential", provider: provider) }
 
   before do
@@ -28,51 +28,51 @@ RSpec.describe System::DevCellBootstrapService do
 
   def clone_url(known_hosts:)
     allow(service).to receive(:known_hosts_for).and_return(known_hosts)
-    service.send(:ssh_clone_url, client, credential, "powernode", "powernode-platform")
+    service.send(:ssh_clone_url, client, credential, "acme", "powernode-platform")
   end
 
   describe "#ssh_clone_url" do
     it "derives host+port from the known_hosts pin (standard port 22 → scp form)" do
-      pin = "git.powernode.net ssh-ed25519 AAAAC3Nz..."
+      pin = "git-ssh.example.test ssh-ed25519 AAAAC3Nz..."
       expect(clone_url(known_hosts: pin))
-        .to eq("git@git.powernode.net:powernode/powernode-platform.git")
+        .to eq("git@git-ssh.example.test:acme/powernode-platform.git")
     end
 
     it "derives a non-standard pinned port into an ssh:// URL" do
-      pin = "[git.powernode.net]:2222 ssh-ed25519 AAAAC3Nz..."
+      pin = "[git-ssh.example.test]:2222 ssh-ed25519 AAAAC3Nz..."
       expect(clone_url(known_hosts: pin))
-        .to eq("ssh://git@git.powernode.net:2222/powernode/powernode-platform.git")
+        .to eq("ssh://git@git-ssh.example.test:2222/acme/powernode-platform.git")
     end
 
     it "IGNORES Gitea's self-reported :220 and defaults to :22 when unpinned (the bug)" do
       expect(clone_url(known_hosts: ""))
-        .to eq("git@git.powernode.net:powernode/powernode-platform.git")
+        .to eq("git@git-ssh.example.test:acme/powernode-platform.git")
     end
 
     it "honors a config-driven port override when unpinned" do
       allow(::SiteSetting).to receive(:get).with("dev_cell_gitea_ssh_port").and_return("2200")
       expect(clone_url(known_hosts: nil))
-        .to eq("ssh://git@git.powernode.net:2200/powernode/powernode-platform.git")
+        .to eq("ssh://git@git-ssh.example.test:2200/acme/powernode-platform.git")
     end
 
     it "falls back to the provider web host when Gitea has no ssh_url and nothing is pinned" do
       allow(client).to receive(:get_repository).and_return({})
       expect(clone_url(known_hosts: nil))
-        .to eq("git@git.powernode.org:powernode/powernode-platform.git")
+        .to eq("git@git.example.test:acme/powernode-platform.git")
     end
 
     it "falls back to the https web URL when no host can be derived at all" do
       allow(client).to receive(:get_repository).and_return({})
       allow(provider).to receive(:effective_web_base_url).and_return("https://")
       expect(clone_url(known_hosts: nil))
-        .to eq("https:///powernode/powernode-platform.git")
+        .to eq("https:///acme/powernode-platform.git")
     end
 
     it "tolerates a Gitea ApiError and still derives from the pin" do
       allow(client).to receive(:get_repository).and_raise(::Devops::Git::ApiClient::ApiError.new("boom"))
-      pin = "git.powernode.net ssh-ed25519 AAAAC3Nz..."
+      pin = "git-ssh.example.test ssh-ed25519 AAAAC3Nz..."
       expect(clone_url(known_hosts: pin))
-        .to eq("git@git.powernode.net:powernode/powernode-platform.git")
+        .to eq("git@git-ssh.example.test:acme/powernode-platform.git")
     end
   end
 
@@ -173,23 +173,23 @@ RSpec.describe System::DevCellBootstrapService do
     end
 
     def bundle_known_hosts
-      service.send(:bundle_known_hosts, client, credential, "powernode", "powernode-platform")
+      service.send(:bundle_known_hosts, client, credential, "acme", "powernode-platform")
     end
 
     it "returns the operator-pinned known_hosts verbatim without scanning when configured" do
-      pin = "[git.powernode.net]:2200 ssh-ed25519 AAAAPINNED"
+      pin = "[git-ssh.example.test]:2200 ssh-ed25519 AAAAPINNED"
       allow(::SiteSetting).to receive(:get).with("dev_cell_gitea_known_hosts").and_return(pin)
       expect(::Open3).not_to receive(:capture3)
       expect(bundle_known_hosts).to eq(pin)
     end
 
     it "ssh-keyscans the resolved endpoint when nothing is pinned (host from Gitea, port 22)" do
-      scanned = "git.powernode.net ssh-ed25519 AAAASCANNED\n"
+      scanned = "git-ssh.example.test ssh-ed25519 AAAASCANNED\n"
       status = instance_double(Process::Status, success?: true)
       # Host = Gitea's reported host; port = 22 (Gitea's internal :220 is ignored,
       # no SiteSetting override) — the SAME endpoint ssh_clone_url derives.
       expect(::Open3).to receive(:capture3)
-        .with("ssh-keyscan", "-T", "5", "-p", "22", "git.powernode.net")
+        .with("ssh-keyscan", "-T", "5", "-p", "22", "git-ssh.example.test")
         .and_return([ scanned, "", status ])
       expect(bundle_known_hosts).to eq(scanned)
     end
@@ -198,9 +198,9 @@ RSpec.describe System::DevCellBootstrapService do
       allow(::SiteSetting).to receive(:get).with("dev_cell_gitea_ssh_port").and_return("2200")
       status = instance_double(Process::Status, success?: true)
       expect(::Open3).to receive(:capture3)
-        .with("ssh-keyscan", "-T", "5", "-p", "2200", "git.powernode.net")
-        .and_return([ "[git.powernode.net]:2200 ssh-ed25519 AAAA\n", "", status ])
-      expect(bundle_known_hosts).to include("[git.powernode.net]:2200")
+        .with("ssh-keyscan", "-T", "5", "-p", "2200", "git-ssh.example.test")
+        .and_return([ "[git-ssh.example.test]:2200 ssh-ed25519 AAAA\n", "", status ])
+      expect(bundle_known_hosts).to include("[git-ssh.example.test]:2200")
     end
 
     it "returns \"\" (fail-closed on the node) when the scan fails, and never raises" do

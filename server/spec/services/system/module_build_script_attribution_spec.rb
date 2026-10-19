@@ -526,7 +526,7 @@ RSpec.describe System::ModuleBuildScriptAttribution do
     it "delimits the real block from the needs_parent guard through the parent clone" do
       block = described_class.parse(real, needs_parent: real_needs_parent).shared_block
       expect(block).to start_with("# --- BEGIN needs-parent shared block ---\nif [ \"$needs_parent\" = \"1\" ]; then\n")
-      expect(block).to include("git clone --depth 1 \"$clone_url\" /tmp/parent\n")
+      expect(block).to include("git clone --depth 1 \"$clone_url\" /tmp/parent 2>\"$clone_err\"")
       expect(block).to include("> /tmp/parent-build-info.json\n")
       expect(block).to end_with("fi\n# --- END needs-parent shared block ---\n")
     end

@@ -599,7 +599,7 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
       # spec/services/system/module_oci_ingest_service_spec.rb.
 
       it "builds the ingested oci_ref from the platform-configured registry host, not the placeholder" do
-        AdminSetting.set(System::DiskImageRegistryConfig::HOST_SETTING_KEY, "git.powernode.org")
+        AdminSetting.set(System::DiskImageRegistryConfig::HOST_SETTING_KEY, "git.example.test")
 
         body = push_payload.to_json
         post "/api/v1/system/webhooks/gitea/module",
@@ -609,7 +609,7 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
 
         version = node_module.versions.order(:version_number).last
         oci_ref = version.artifacts.dig(System::NodeModuleVersion::PRIMARY_ARTIFACT_FORMAT, "oci_ref")
-        expect(oci_ref).to start_with("git.powernode.org/")
+        expect(oci_ref).to start_with("git.example.test/")
         expect(oci_ref).not_to start_with("registry.example.com/")
       end
 
@@ -619,7 +619,7 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
       # credential (tier 3). An unpinned middle tier is how a precedence change
       # lands silently, so both the tier itself and its position are asserted.
       it "falls back to POWERNODE_REGISTRY_HOST when no AdminSetting override is set" do
-        gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+        gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.example.test")
         create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
                external_username: "ci-bot")
         ENV["POWERNODE_REGISTRY_HOST"] = "env-registry.example.net"
@@ -640,17 +640,17 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
       # two broke — a round trip alone cannot tell "the host resolved wrong"
       # apart from "the ingest never got far enough to record anything".
       it "resolves the host from a connected Gitea provider credential when no AdminSetting override is set" do
-        gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+        gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.example.test")
         create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
                external_username: "ci-bot")
 
         expect(AdminSetting.get(System::DiskImageRegistryConfig::HOST_SETTING_KEY)).to be_blank
         expect(System::DiskImageRegistryConfig.registry_host(account: account))
-          .to eq("git.powernode.org")
+          .to eq("git.example.test")
       end
 
       it "derives the ingested oci_ref from a connected Gitea provider credential" do
-        gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.powernode.org")
+        gitea_provider = create(:git_provider, :gitea, web_base_url: "https://git.example.test")
         create(:git_provider_credential, :gitea, provider: gitea_provider, account: account,
                external_username: "ci-bot")
 
@@ -662,7 +662,7 @@ RSpec.describe "Api::V1::System::Webhooks::GiteaModule", type: :request do
 
         version = node_module.versions.order(:version_number).last
         oci_ref = version.artifacts.dig(System::NodeModuleVersion::PRIMARY_ARTIFACT_FORMAT, "oci_ref")
-        expect(oci_ref).to start_with("git.powernode.org/")
+        expect(oci_ref).to start_with("git.example.test/")
         expect(oci_ref).not_to start_with("registry.example.com/")
       end
     end
