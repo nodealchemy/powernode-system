@@ -43,6 +43,8 @@
 module Ai
   module Tools
     class SystemIngressTool < BaseTool
+      tool_family "ingress"
+
       REQUIRED_PERMISSION = "system.ingress.read"
 
       # The Ai::InterventionPolicy category the backend-set verb gates on. A

@@ -16,6 +16,8 @@ module Ai
     #
     # Plan reference: ~/.claude/plans/storage-assignment-owner-refactor.md
     class SystemStorageOwnerTool < BaseTool
+      tool_family "storage"
+
       REQUIRED_PERMISSION = "system.storage.read"
 
       ACTION_PERMISSIONS = {

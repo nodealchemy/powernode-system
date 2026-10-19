@@ -15,6 +15,8 @@ module Ai
     # Read-only — this tool never mutates fleet state. Campaign 019f9250
     # (Resilient Control Plane v2), increment P0-d.
     class SystemBlastRadiusTool < BaseTool
+      tool_family "fleet"
+
       # Same floor as the rest of the read surface in SystemFleetTool — a
       # cross-cutting dependency query is a strict superset of "can read
       # nodes", and there's no dedicated finer-grained permission for it.

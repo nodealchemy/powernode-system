@@ -27,6 +27,8 @@ module Ai
     #
     # Plan reference: Decentralized Federation §J + P2.5.
     class SystemAcmeTool < BaseTool
+      tool_family "ingress"
+
       # Floor permission: every caller needs at least system.acme.read to use
       # the tool at all. Per-action permissions in ACTION_PERMISSIONS gate
       # mutating actions to higher levels.

@@ -9,6 +9,8 @@
 module Ai
   module Tools
     class SdwanTool < BaseTool
+      tool_family "sdwan"
+
       REQUIRED_PERMISSION = "system.sdwan.networks.read"
 
       # AUTONOMY ACTION CATEGORIES — declared on the EXECUTORS, not here.

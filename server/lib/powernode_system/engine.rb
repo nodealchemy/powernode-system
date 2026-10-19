@@ -234,6 +234,22 @@ module PowernodeSystem
       end
     end
 
+    # C3-1: the tool families this extension's MCP tool classes declare
+    # (`tool_family`, `declare_action ... family:`), added to core's family
+    # vocabulary through its generic seam. Its own to_prepare block, so a reload
+    # registers them again.
+    config.to_prepare do
+      if defined?(::Ai::Tools::ToolFamilies)
+        ::Ai::Tools::ToolFamilies.register(
+          "fleet" => "System fleet: nodes, instances, templates & modules",
+          "storage" => "Storage, volumes & migrations",
+          "ingress" => "Ingress, service exposure & ACME",
+          "sdwan" => "SD-WAN overlay",
+          "supply_chain" => "Supply chain: packages, architectures & CVEs"
+        )
+      end
+    end
+
     # Register feature flags with Flipper.
     initializer "powernode_system.feature_flags", after: :load_config_initializers do
       config.after_initialize do

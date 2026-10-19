@@ -15,6 +15,8 @@ module Ai
     #
     # Reference: i-would-like-to-zesty-glade.md Tier 1 — T1.A.
     class SystemArchitectureCatalogTool < BaseTool
+      tool_family "supply_chain"
+
       REQUIRED_PERMISSION = "system.architectures.read"
 
       ACTION_PERMISSIONS = {

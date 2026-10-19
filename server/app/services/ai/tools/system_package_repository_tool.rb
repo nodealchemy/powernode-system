@@ -9,6 +9,8 @@ module Ai
     # repos (account_id IS NULL) are visible to any account but only the
     # `manage_shared` permission allows mutation.
     class SystemPackageRepositoryTool < BaseTool
+      tool_family "supply_chain"
+
       REQUIRED_PERMISSION = "system.packages.view"
 
       ACTION_PERMISSIONS = {

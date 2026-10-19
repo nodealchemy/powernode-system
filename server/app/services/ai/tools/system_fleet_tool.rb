@@ -9,6 +9,8 @@ module Ai
     # Shaped like the other Ai::Tools MCP tools so the operator approval UI + agent
     # invocation paths work uniformly.
     class SystemFleetTool < BaseTool
+      tool_family "fleet"
+
       # IMP-b8cab7f951c7 — this tool holds two of the six on-node refusal
       # producers, and they are the two that never reach a decision event at
       # all, so the generic "decision events should carry remediation_applied"
@@ -692,8 +694,8 @@ module Ai
       # below (:500-504) and the snapshot is EMPTY, so the shrink-only rule
       # has nothing left to acknowledge; the ratchet remains as the brake on
       # regrowth.
-      declare_action "system_gitops_get_repository", mutating: false
-      declare_action "system_gitops_list_repositories", mutating: false
+      declare_action "system_gitops_get_repository", mutating: false, family: "devops"
+      declare_action "system_gitops_list_repositories", mutating: false, family: "devops"
 
       declare_action "system_terminate_instance",
                      mutating: true,
@@ -752,16 +754,16 @@ module Ai
       declare_action "system_abort_task", mutating: true, returns: "aborted: true and the task", refuses: "the task has already left running", see_also: { "system_cancel_task" => "a task that has not started" }
       declare_action "system_acquire_pooled_instance", mutating: true
       declare_action "system_agent_fleet_status", mutating: false, refuses: "no agent_fleet mission has that id"
-      declare_action "system_approve_storage_migration", mutating: true, returns: "storage_migration, full record", refuses: "the migration cannot move to approved from its current status"
+      declare_action "system_approve_storage_migration", mutating: true, family: "storage", returns: "storage_migration, full record", refuses: "the migration cannot move to approved from its current status"
       declare_action "system_assign_module_to_node", mutating: true
       declare_action "system_assign_module_to_template", mutating: true
-      declare_action "system_attach_volume", mutating: true
+      declare_action "system_attach_volume", mutating: true, family: "storage"
       declare_action "system_attribute_failure", mutating: false, returns: "the skill executor's ranked candidates"
       declare_action "system_authorize_peer_call", mutating: false
       declare_action "system_cancel_module_build_batch", mutating: true
-      declare_action "system_cancel_storage_migration", mutating: true, returns: "storage_migration, full record", refuses: "the migration is terminal or its sync has started"
+      declare_action "system_cancel_storage_migration", mutating: true, family: "storage", returns: "storage_migration, full record", refuses: "the migration is terminal or its sync has started"
       declare_action "system_cancel_task", mutating: true, returns: "cancelled: true and the task", refuses: "the task is running or finished", see_also: { "system_abort_task" => "stopping a running task" }
-      declare_action "system_cleanup_storage_migration", mutating: true
+      declare_action "system_cleanup_storage_migration", mutating: true, family: "storage"
       declare_action "system_clone_template", mutating: true
       declare_action "system_compliance_snapshot", mutating: false, returns: "snapshot and generated_at"
       declare_action "system_compose_preview_template", mutating: false
@@ -783,7 +785,7 @@ module Ai
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :cordon_instance_gate_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_create_cve", mutating: true
+      declare_action "system_create_cve", mutating: true, family: "supply_chain"
       # IMP-067f39468350 — the MCP half of the instance-pool spend-ceiling gate.
       # IMP-24daa05e7a22 gated POST /instance_pools under
       # "system.instance_pool_create" while this verb called
@@ -817,16 +819,16 @@ module Ai
       declare_action "system_create_provider_instance_type", mutating: true, returns: "instance_type", refuses: "the record fails validation, with the messages"
       declare_action "system_create_provider_region", mutating: true, returns: "region", refuses: "the record fails validation, with the messages"
       declare_action "system_create_template", mutating: true
-      declare_action "system_create_volume", mutating: true
-      declare_action "system_cve_runbook_generate", mutating: true, returns: "the markdown runbook the skill executor produced"
-      declare_action "system_cve_triage", mutating: true
-      declare_action "system_delete_cve", mutating: true, destructive: true
+      declare_action "system_create_volume", mutating: true, family: "storage"
+      declare_action "system_cve_runbook_generate", mutating: true, family: "supply_chain", returns: "the markdown runbook the skill executor produced"
+      declare_action "system_cve_triage", mutating: true, family: "supply_chain"
+      declare_action "system_delete_cve", mutating: true, family: "supply_chain", destructive: true
       declare_action "system_delete_instance_pool", mutating: true, destructive: true
       declare_action "system_delete_module", mutating: true, destructive: true
       declare_action "system_delete_node", mutating: true, destructive: true
       declare_action "system_delete_provider", mutating: true, destructive: true
       declare_action "system_delete_template", mutating: true, destructive: true
-      declare_action "system_delete_volume", mutating: true, destructive: true
+      declare_action "system_delete_volume", mutating: true, family: "storage", destructive: true
       declare_action "system_deploy_inference_server", mutating: true
       # HIER-P2B-ENG — approval-gated on core's release.deploy_platform (the
       # Release Manager's require_approval row; never unlocked by trust — a
@@ -844,7 +846,7 @@ module Ai
                      on_proceed: :deferred_tool_call_result,
                      ungated_when: :deploy_platform_wizard_read?
       declare_action "system_destroy_instance", mutating: true, destructive: true
-      declare_action "system_detach_volume", mutating: true
+      declare_action "system_detach_volume", mutating: true, family: "storage"
       # APO-5 / DR-2 (IMP-4b4bed6967ed). Snapshot create / list / restore keep
       # the APO-1a declaration shape (`mutating:` only, so BaseTool
       # #gated_action? stays false and #execute routes to #call, where the
@@ -871,16 +873,16 @@ module Ai
       # context resolves the row under the account BEFORE parking, so an
       # unknown or foreign id keeps its inline error instead of becoming an
       # approval that could only ever fail.
-      declare_action "system_snapshot_volume", mutating: true, returns: "snapshot", refuses: "the volume's status does not allow a snapshot, or its provider has no snapshot primitive"
-      declare_action "system_list_volume_snapshots", mutating: false
+      declare_action "system_snapshot_volume", mutating: true, family: "storage", returns: "snapshot", refuses: "the volume's status does not allow a snapshot, or its provider has no snapshot primitive"
+      declare_action "system_list_volume_snapshots", mutating: false, family: "storage"
       declare_action "system_delete_volume_snapshot",
-                     mutating: true,
+                     mutating: true, family: "storage",
                      destructive: true,
                      action_category: VOLUME_SNAPSHOT_DELETE_CATEGORY,
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :delete_volume_snapshot_gate_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_restore_volume_snapshot", mutating: true
+      declare_action "system_restore_volume_snapshot", mutating: true, family: "storage"
       declare_action "system_discover_modules", mutating: false
       declare_action "system_discover_peers", mutating: false
       declare_action "system_discover_templates", mutating: false
@@ -902,8 +904,8 @@ module Ai
       declare_action "system_drain_instance_pool", mutating: true, destructive: true
       declare_action "system_drift_report", mutating: false, returns: "drift, the four lists with their counts, and last_heartbeat_at"
       declare_action "system_find_node_with_gpu", mutating: false, returns: "instances and count; not paginated"
-      declare_action "system_get_cve", mutating: false, returns: "cve", refuses: "no CVE has that id"
-      declare_action "system_get_cve_exposure", mutating: false
+      declare_action "system_get_cve", mutating: false, family: "supply_chain", returns: "cve", refuses: "no CVE has that id"
+      declare_action "system_get_cve_exposure", mutating: false, family: "supply_chain"
       declare_action "system_get_instance", mutating: false, returns: "instance, the full record with status and metrics"
       declare_action "system_get_instance_pool", mutating: false, returns: "pool, its summary counts and at most 50 members ordered by pool_state"
       declare_action "system_get_module", mutating: false, returns: "node_module with its current_version and assignments"
@@ -913,14 +915,14 @@ module Ai
       declare_action "system_get_provider_connection", mutating: false, returns: "provider_connection, non-secret config only"
       declare_action "system_get_silent_instances", mutating: false, limit: 200, returns: "silent_count (uncapped), threshold_seconds, cutoff and instances, oldest heartbeat first"
       declare_action "system_get_sensor_config", mutating: false
-      declare_action "system_get_storage_migration", mutating: false, returns: "storage_migration, full record", refuses: "no migration has that id"
-      declare_action "system_get_storage_recommendations", mutating: false, returns: "the recommended mount points and size_gb per stateful role"
+      declare_action "system_get_storage_migration", mutating: false, family: "storage", returns: "storage_migration, full record", refuses: "no migration has that id"
+      declare_action "system_get_storage_recommendations", mutating: false, family: "storage", returns: "the recommended mount points and size_gb per stateful role"
       declare_action "system_get_task", mutating: false
       declare_action "system_get_task_log", mutating: false,
                      returns: "one bounded page of the task's full stored log, redacted: content, offset, next_offset, has_more, total_bytes, truncated, original_bytes, expires_at",
                      refuses: "the task does not exist in this account, an instance principal names a task that is not its own instance's (answered exactly as a missing task), or the task has no live stored log"
       declare_action "system_get_template", mutating: false, returns: "template with its assigned modules"
-      declare_action "system_get_volume", mutating: false, returns: "volume, the full record"
+      declare_action "system_get_volume", mutating: false, family: "storage", returns: "volume, the full record"
       # IMP-0b4f18ae4384 — THE ONE GITOPS WRITE THAT REACHES LIVE FLEET STATE.
       # System::Gitops::ApplyService turns an approved Ai::AgentProposal into
       # template/module/assignment/pool/platform rows. The seeded
@@ -946,20 +948,20 @@ module Ai
       # notify_and_proceed, i.e. no approval). Both sit below this chokepoint;
       # closing them is not this increment.
       declare_action "system_gitops_apply_proposal",
-                     mutating: true,
+                     mutating: true, family: "devops",
                      action_category: GITOPS_APPLY_PROPOSAL_CATEGORY,
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :gitops_apply_proposal_gate_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_gitops_get_drift_report", mutating: false
-      declare_action "system_gitops_get_sync_run", mutating: false, returns: "sync_run with status, timings, diff_count, proposal_ids, synced_revision and diff_summary"
+      declare_action "system_gitops_get_drift_report", mutating: false, family: "devops"
+      declare_action "system_gitops_get_sync_run", mutating: false, family: "devops", returns: "sync_run with status, timings, diff_count, proposal_ids, synced_revision and diff_summary"
       declare_action "system_gitops_register_repository",
-                     mutating: true,
+                     mutating: true, family: "devops",
                      action_category: GITOPS_REGISTER_REPOSITORY_CATEGORY,
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :gitops_register_repository_gate_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_gitops_sync_repository", mutating: true
+      declare_action "system_gitops_sync_repository", mutating: true, family: "devops"
       declare_action "system_grant_instance_mcp_tools", mutating: true
       declare_action "system_grant_instance_peer_skills", mutating: true
       declare_action "system_inspect_correlation", mutating: false, returns: "correlation_id, events in emission order, count and duration_seconds", refuses: "correlation_id is blank"
@@ -983,11 +985,11 @@ module Ai
       declare_action "system_instance_hold_status", mutating: false, returns: "the recorded hold (held, expired, reason, held_by, held_at, expires_at), provider_enforced, provider_state, a summary and drift"
       declare_action "system_instance_release_hold", mutating: true, destructive: true, returns: "instance_id, name and a message"
       declare_action "system_launch_agent_fleet", mutating: true, refuses: "there is no calling user; fleet_spec is missing; the system_agent_fleet mission template is not seeded"
-      declare_action "system_lease_ci_runner", mutating: true, returns: "ci_runner_lease", refuses: "the purpose cannot be leased by hand"
-      declare_action "system_list_ci_runner_leases", mutating: false, paginated: true
-      declare_action "system_list_ci_workers", mutating: false, paginated: true
-      declare_action "system_list_disk_image_publications", mutating: false, paginated: true
-      declare_action "system_list_disk_image_webhooks", mutating: false, paginated: true
+      declare_action "system_lease_ci_runner", mutating: true, family: "devops", returns: "ci_runner_lease", refuses: "the purpose cannot be leased by hand"
+      declare_action "system_list_ci_runner_leases", mutating: false, family: "devops", paginated: true
+      declare_action "system_list_ci_workers", mutating: false, family: "devops", paginated: true
+      declare_action "system_list_disk_image_publications", mutating: false, family: "devops", paginated: true
+      declare_action "system_list_disk_image_webhooks", mutating: false, family: "devops", paginated: true
       declare_action "system_list_instance_pools", mutating: false, paginated: true
       declare_action "system_list_instance_types_by_gpu", mutating: false, paginated: true
       declare_action "system_list_instances", mutating: false, paginated: true
@@ -998,11 +1000,11 @@ module Ai
       declare_action "system_list_nodes", mutating: false, paginated: true
       declare_action "system_list_provider_connections", mutating: false
       declare_action "system_list_providers", mutating: false, paginated: true
-      declare_action "system_list_storage_migrations", mutating: false, paginated: true
+      declare_action "system_list_storage_migrations", mutating: false, family: "storage", paginated: true
       declare_action "system_list_tasks", mutating: false, paginated: true
       declare_action "system_list_templates", mutating: false, paginated: true
-      declare_action "system_list_volumes", mutating: false, paginated: true
-      declare_action "system_migrate_storage_component", mutating: true, returns: "storage_migration, the plan", refuses: "source and target are the same volume, or role is missing"
+      declare_action "system_list_volumes", mutating: false, family: "storage", paginated: true
+      declare_action "system_migrate_storage_component", mutating: true, family: "storage", returns: "storage_migration, the plan", refuses: "source and target are the same volume, or role is missing"
       declare_action "system_mint_peer_capability_token", mutating: true
       declare_action "system_module_diff", mutating: false, returns: "unchanged, both fingerprints, and file, package and mount changes"
       declare_action "system_module_mark_canary", mutating: true
@@ -1032,7 +1034,7 @@ module Ai
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :promote_module_version_gate_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_provision_ci_worker", mutating: true
+      declare_action "system_provision_ci_worker", mutating: true, family: "devops"
       declare_action "system_provision_instance", mutating: true
       declare_action "system_reap_agent_fleet", mutating: true, destructive: true
       # IMP-4e49eb79c5e0 — THE DR LANE'S SECOND DOOR (the destructive half).
@@ -1090,7 +1092,7 @@ module Ai
       declare_action "system_recent_signals", mutating: false, returns: "events, count and the live channel name"
       declare_action "system_recycle_pool", mutating: true, destructive: true
       declare_action "system_refresh_instance_modules", mutating: true
-      declare_action "system_release_ci_runner", mutating: true, returns: "ci_runner_lease, re-read"
+      declare_action "system_release_ci_runner", mutating: true, family: "devops", returns: "ci_runner_lease, re-read"
       # IMP-4e49eb79c5e0 — THE DR LANE'S FIRST DOOR (the additive half).
       # Acquires a warm pool member, moves the failed instance's volumes, VIPs
       # and SDWAN membership onto it, and TERMINATES NOTHING — the reap is
@@ -1190,7 +1192,7 @@ module Ai
                      returns: "cleared, the instance, how many fingerprints were recorded, and what the node's next SSH connection and out-of-band exec will do under the current system.ssh.require_host_key setting",
                      refuses: "the reason is blank or too long, the instance is not in this account, or it has no recorded host key"
       declare_action "system_replenish_instance_pool", mutating: true, returns: "pool summary and the replenish result"
-      declare_action "system_report_storage_migration_progress", mutating: true, returns: "storage_migration, full record", refuses: "the status change is not a legal transition"
+      declare_action "system_report_storage_migration_progress", mutating: true, family: "storage", returns: "storage_migration, full record", refuses: "the status change is not a legal transition"
       declare_action "system_return_pooled_instance", mutating: true
       # HIER-P2H — the three disk-image verbs, approval-gated on the categories
       # the Disk Image Manager seed already carries (see DISK_IMAGE_*_CATEGORY
@@ -1206,12 +1208,12 @@ module Ai
       # approves the publication the card names, not whichever one the
       # selection would pick later.
       declare_action "system_revert_disk_image",
-                     mutating: true,
+                     mutating: true, family: "devops",
                      action_category: DISK_IMAGE_ROLLBACK_CATEGORY,
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :revert_disk_image_gate_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_revert_storage_migration_binding", mutating: true
+      declare_action "system_revert_storage_migration_binding", mutating: true, family: "storage"
       # HIER-P2B-ENG — approval-gated on core's release.rollback (the Release
       # Manager's require_approval row, no trust unlock). The context resolves
       # the module under the account, applies the rollback_usable? floor and
@@ -1227,21 +1229,21 @@ module Ai
       declare_action "system_rotate_vault_transit_pepper", mutating: true, destructive: true
       declare_action "system_runbook_generate", mutating: true, returns: "the markdown runbook the skill executor produced"
       declare_action "system_set_default_disk_image_publication",
-                     mutating: true,
+                     mutating: true, family: "devops",
                      action_category: DISK_IMAGE_PROMOTE_CATEGORY,
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :set_default_disk_image_publication_gate_context,
                      on_proceed: :deferred_tool_call_result
       declare_action "system_set_disk_image_retention",
-                     mutating: true,
+                     mutating: true, family: "devops",
                      action_category: DISK_IMAGE_RETENTION_CATEGORY,
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :set_disk_image_retention_gate_context,
                      on_proceed: :deferred_tool_call_result
       declare_action "system_start_instance", mutating: true, returns: "action and the instance, re-read"
       declare_action "system_stop_instance", mutating: true, destructive: true
-      declare_action "system_terminate_ci_worker", mutating: true, destructive: true
-      declare_action "system_test_nfs_export", mutating: false
+      declare_action "system_terminate_ci_worker", mutating: true, family: "devops", destructive: true
+      declare_action "system_test_nfs_export", mutating: false, family: "storage"
       declare_action "system_unassign_module_from_template", mutating: true
       # IMP-0467eee9fc57 — see system_cordon_instance above.
       declare_action "system_uncordon_instance",
@@ -1279,11 +1281,11 @@ module Ai
       declare_action "system_update_node", mutating: true
       declare_action "system_update_provider", mutating: true
       declare_action "system_update_provider_connection", mutating: true
-      declare_action "system_update_storage_recommendations", mutating: true
+      declare_action "system_update_storage_recommendations", mutating: true, family: "storage"
       declare_action "system_update_sensor_config", mutating: true
       declare_action "system_update_template", mutating: true
       declare_action "system_update_template_module", mutating: true
-      declare_action "system_update_volume", mutating: true, returns: "volume, full record", refuses: "no mutable field is supplied"
+      declare_action "system_update_volume", mutating: true, family: "storage", returns: "volume, full record", refuses: "no mutable field is supplied"
       declare_action "system_upgrade_boot_image", mutating: true, destructive: true
       declare_action "system_validate_module_manifest", mutating: false
       declare_action "system_wait_for", mutating: false, returns: "converged, timed_out and the rollout snapshot: instance_count, converged_count and the pending nodes", refuses: "module_version_id or environment is missing or not in this account, or the version has no oci_digest"
