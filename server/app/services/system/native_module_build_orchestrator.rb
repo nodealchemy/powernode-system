@@ -68,7 +68,7 @@ module System
     # a nil lease/task so the next #try_dispatch_queued! re-leases a FRESH
     # builder (acquire_lease → a different ready pool member). That is the
     # resilience for a transient per-builder networking hiccup (one builder
-    # momentarily can't reach git.powernode.org over its bridge) that its peers
+    # momentarily can't reach <gitea-host> over its bridge) that its peers
     # don't share; raised from 2 → 3 so a second, still-transient failure gets
     # one more fresh builder rather than burning the module. Overridable via
     # SiteSetting("system.module_builds.max_attempts").

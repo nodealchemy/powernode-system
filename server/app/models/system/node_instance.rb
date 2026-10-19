@@ -538,7 +538,7 @@ module System
     # Sdwan::Peer whenever the pool declares metadata["sdwan_network_id"]) is
     # NOT usable the instant it first heartbeats: its WireGuard tunnel to the
     # overlay hub may not have handshaked yet, so overlay-only names — e.g. the
-    # CI git registry git.powernode.org, which resolves to an overlay address —
+    # CI git registry <gitea-host>, which resolves to an overlay address —
     # are unreachable and a dispatched `git clone` times out. Gating readiness
     # on the tunnel being live is what keeps a still-isolating builder from
     # being acquired and handed a build it can't fetch.
@@ -699,7 +699,7 @@ module System
     # ready, claimed, draining, etc.), if the instance's SDWAN overlay
     # tunnel is not yet live (#sdwan_overlay_ready?) — a builder acquired
     # before its overlay handshake completes cannot reach overlay-only build
-    # inputs (git.powernode.org) — or if a build-critical module the node is
+    # inputs (<gitea-host>) — or if a build-critical module the node is
     # assigned is not yet composed (#required_modules_composed?), so it must
     # stay "warming" until it can.
     #

@@ -45,7 +45,7 @@
 # could only ever pass vacuously.
 #
 # RESULTS — run 1776 / #1142 (ci-probe/isolation-1, fa70f6ee), 2026-09-06.
-# ALL SIX PASS. https://git.powernode.org/powernode/powernode-system/actions/runs/1776
+# ALL SIX PASS. https://<gitea-host>/<owner>/powernode-system/actions/runs/1776
 #
 #   P1 PASS  Two matrix entries started together (04:05:39) on runner2 and
 #            runner3 and were handed four distinct ports — entry 0 postgres

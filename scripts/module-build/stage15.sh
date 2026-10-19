@@ -245,7 +245,7 @@ if [ "$needs_parent" = "1" ]; then
   parent_path="${POWERNODE_PARENT_PATH:-nodealchemy/powernode-platform}"
 
   # powernode-platform is the PUBLIC MIT repo and is sourced from GitHub, not
-  # from a private Gitea. The previous default (git.powernode.org) is a
+  # from a private Gitea. The previous default (the private CI Gitea) is a
   # DIFFERENT Gitea from the one releases are pushed to, so its parent clone
   # lacked commits the extension frontend imports — extension-system builds
   # died at "Rollup failed to resolve import @/shared/components/charts" from
@@ -435,7 +435,7 @@ if [ "$needs_parent" = "1" ]; then
   # layer and diffing a file by hand.
   #
   # The REMOTE is recorded alongside the sha because that incident was a correct
-  # branch name on a STALE MIRROR — github.com and git.powernode.net both carried
+  # branch name on a STALE MIRROR — github.com and the private Gitea both carried
   # a `develop`, three days apart. A sha alone would have looked plausible.
   #
   # DEFENSIVE: a rev-parse failure records `unknown` rather than aborting the

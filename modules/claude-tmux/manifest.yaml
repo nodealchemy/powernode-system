@@ -379,7 +379,7 @@ security:
   # the agent unions every desired module's egress_allow into one node-wide
   # nftables default-deny chain, so shipping the CLI with [] guaranteed it
   # could never work. Observed on ops-cell 2026-07-29 as
-  # "ECONNREFUSED api.anthropic.com" while git.powernode.org stayed reachable,
+  # "ECONNREFUSED api.anthropic.com" while <gitea-host> stayed reachable,
   # which reads like a network fault and is actually this manifest.
   #
   # CAVEAT worth knowing before trusting this: entries are resolved to A/AAAA

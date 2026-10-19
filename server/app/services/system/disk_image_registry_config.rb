@@ -79,7 +79,7 @@ module System
       end
 
       # Full scheme+host base URL of the platform's Gitea provider (e.g.
-      # "https://git.powernode.org") — no account needed, same unscoped
+      # "https://<gitea-host>") — no account needed, same unscoped
       # provider lookup as gitea_host below. Callers that need to hit the
       # Gitea REST API directly (not just build an OCI ref host), such as
       # ModuleBuildDispatchService's workflow_dispatch call, use this
