@@ -266,6 +266,13 @@ jobs:
 
       - name: Check out the parent platform
         uses: actions/checkout@v4
+        env:
+          # .gitmodules points the extensions at the public GitHub mirror,
+          # which trails this server: fetch them from this Gitea org instead,
+          # where the checkout token already authenticates.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.${{ github.server_url }}/${{ github.repository_owner }}/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/nodealchemy/
         with:
           repository: powernode/powernode-platform
           ref: ${{ needs.core-ref.outputs.sha }}
@@ -472,6 +479,11 @@ jobs:
 
       - name: Check out the parent platform
         uses: actions/checkout@v4
+        env:
+          # Extensions from this Gitea org, not the GitHub mirror (see above).
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.${{ github.server_url }}/${{ github.repository_owner }}/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/nodealchemy/
         with:
           repository: powernode/powernode-platform
           ref: ${{ needs.core-ref.outputs.sha }}
@@ -636,6 +648,11 @@ jobs:
 
       - name: Check out the parent platform
         uses: actions/checkout@v4
+        env:
+          # Extensions from this Gitea org, not the GitHub mirror (see above).
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.${{ github.server_url }}/${{ github.repository_owner }}/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/nodealchemy/
         with:
           repository: powernode/powernode-platform
           ref: ${{ needs.core-ref.outputs.sha }}
@@ -933,6 +950,11 @@ jobs:
 
       - name: Check out the parent platform
         uses: actions/checkout@v4
+        env:
+          # Extensions from this Gitea org, not the GitHub mirror (see above).
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.${{ github.server_url }}/${{ github.repository_owner }}/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/nodealchemy/
         with:
           repository: powernode/powernode-platform
           ref: ${{ needs.core-ref.outputs.sha }}
@@ -1044,6 +1066,11 @@ jobs:
 
       - name: Check out the parent platform
         uses: actions/checkout@v4
+        env:
+          # Extensions from this Gitea org, not the GitHub mirror (see above).
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: url.${{ github.server_url }}/${{ github.repository_owner }}/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/nodealchemy/
         with:
           repository: powernode/powernode-platform
           ref: ${{ needs.core-ref.outputs.sha }}
