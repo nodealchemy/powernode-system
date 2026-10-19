@@ -66,6 +66,7 @@
 // reported every tick for as long as it stays wider; recovering it is an
 // operator action (`systemctl restart <unit>`) or the unit's own next
 // recompose, never something this pass does for you.
+
 package runtime
 
 import (
