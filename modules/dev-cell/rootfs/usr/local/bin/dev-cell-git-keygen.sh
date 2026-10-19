@@ -1,7 +1,7 @@
 #!/bin/bash
 # dev-cell-git-keygen.sh — generate the operator's PERSISTENT git SSH key ON
 # THE DEV-CELL (private half NEVER leaves this box, is never transmitted,
-# echoed, or logged) and pin git.powernode.net's host key. Runs as pnadmin at
+# echoed, or logged) and pin the Gitea host's SSH key. Runs as pnadmin at
 # first boot so the key is ready before the operator logs in.
 #
 # Design (operator-owned git creds, per campaign #40): the private key is
@@ -17,7 +17,15 @@ set -euo pipefail
 
 KEY="$HOME/.ssh/id_ed25519"
 KNOWN_HOSTS="$HOME/.ssh/known_hosts"
-GIT_HOST="${DEV_CELL_GIT_HOST:-git.powernode.net}"
+# Gitea SSH host/owner are deployment configuration, never hard-coded here:
+# $DEV_CELL_GIT_HOST / $DEV_CELL_GIT_OWNER, else the non-secret env file
+# dev-cell-bootstrap.sh derives from the platform's bootstrap clone_url.
+GIT_ENV_FILE="${DEV_CELL_GIT_ENV_FILE:-/run/dev-cell-git.env}"
+git_env_value() {
+  [ -r "$GIT_ENV_FILE" ] || return 0
+  sed -n "s/^$1=//p" "$GIT_ENV_FILE" | head -n1
+}
+GIT_HOST="${DEV_CELL_GIT_HOST:-$(git_env_value DEV_CELL_GIT_HOST)}"
 
 umask 077
 mkdir -p "$HOME/.ssh"
@@ -33,7 +41,8 @@ else
   echo "[git-keygen] git key already present — leaving it"
 fi
 
-# Pin the Gitea host key (TOFU on first setup — the cell reaches .net:22). Only
+# Pin the Gitea host key (TOFU on first setup, port 22). Skipped while the host is
+# not yet known (bootstrap not run) — dev-cell-clone pins it on first contact. Only
 # added if not already pinned, so a later host-key change isn't silently masked.
 if [ -n "$GIT_HOST" ] && ! ssh-keygen -F "$GIT_HOST" -f "$KNOWN_HOSTS" >/dev/null 2>&1; then
   if ssh-keyscan -T 8 "$GIT_HOST" >>"$KNOWN_HOSTS" 2>/dev/null; then

@@ -15,8 +15,21 @@
 # collide and the operator fully owns his tree.
 set -euo pipefail
 
-GIT_HOST="${DEV_CELL_GIT_HOST:-git.powernode.net}"
-GIT_OWNER="${DEV_CELL_GIT_OWNER:-powernode}"
+# Gitea SSH host/owner are deployment configuration, never hard-coded here:
+# $DEV_CELL_GIT_HOST / $DEV_CELL_GIT_OWNER, else the non-secret env file
+# dev-cell-bootstrap.sh derives from the platform's bootstrap clone_url.
+GIT_ENV_FILE="${DEV_CELL_GIT_ENV_FILE:-/run/dev-cell-git.env}"
+git_env_value() {
+  [ -r "$GIT_ENV_FILE" ] || return 0
+  sed -n "s/^$1=//p" "$GIT_ENV_FILE" | head -n1
+}
+GIT_HOST="${DEV_CELL_GIT_HOST:-}"
+GIT_OWNER="${DEV_CELL_GIT_OWNER:-}"
+resolve_git_coords() {
+  [ -n "$GIT_HOST" ] || GIT_HOST="$(git_env_value DEV_CELL_GIT_HOST)"
+  [ -n "$GIT_OWNER" ] || GIT_OWNER="$(git_env_value DEV_CELL_GIT_OWNER)"
+  [ -n "$GIT_HOST" ] && [ -n "$GIT_OWNER" ]
+}
 WORK="${DEV_CELL_WORK:-$HOME/work}"
 # repo -> relative checkout path (extension repos nest under the platform tree,
 # mirroring the DEV box layout). Space-separated "repo:path" pairs; overridable.
@@ -40,6 +53,7 @@ say() { echo "[dev-cell-clone] $*"; }
 # the public key so a human can register it manually if needed.
 probe_authorized() {
   local out
+  resolve_git_coords || return 1
   out="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 \
           -T "git@${GIT_HOST}" 2>&1 || true)"
   printf '%s' "$out" | grep -qiE 'successfully authenticated|does not provide shell'
@@ -50,6 +64,10 @@ if [ "${DEV_CELL_CLONE_WAIT:-0}" = "1" ]; then
   for _ in $(seq 1 40); do probe_authorized && break; sleep 30; done
 fi
 
+if ! resolve_git_coords; then
+  say "Gitea SSH host/owner unknown: set DEV_CELL_GIT_HOST + DEV_CELL_GIT_OWNER, or let dev-cell-bootstrap write $GIT_ENV_FILE."
+  exit 1
+fi
 if ! probe_authorized; then
   say "git key NOT yet authorized on ${GIT_HOST}."
   say "Register this PUBLIC key with Gitea (Settings -> SSH / GPG Keys), then run 'dev-cell-clone':"

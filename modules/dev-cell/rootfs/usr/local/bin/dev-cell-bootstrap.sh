@@ -233,6 +233,33 @@ rm -f "$RESPONSE"
 
 chmod 600 "$MCP_OUT" "$GITEA_OUT" "$DEPLOY_KEY_OUT" "$KNOWN_HOSTS_OUT"
 
+# --- Publish the NON-SECRET Gitea SSH coordinates for the operator units ---
+# dev-cell-git-keygen.sh / dev-cell-clone.sh run as pnadmin and cannot read
+# this 0700 runtime dir, but they need the Gitea SSH host + repo owner — which
+# are configuration (the platform's Gitea provider), not secrets, and must not
+# be hard-coded in the module. Derive them from gitea.clone_url (scp-style
+# git@host:owner/repo.git or ssh://git@host:port/owner/repo.git) and write
+# them world-readable OUTSIDE $RUNTIME_DIR. Nothing secret goes in this file.
+# Sibling of $RUNTIME_DIR (default /run/dev-cell-git.env). Best-effort: a
+# failure here only leaves the operator units to their own env overrides.
+GIT_ENV_OUT="${DEV_CELL_GIT_ENV_FILE:-$(dirname "$RUNTIME_DIR")/dev-cell-git.env}"
+clone_url=$(jq -r '.clone_url // empty' "$GITEA_OUT")
+rest="${clone_url#*://}"
+rest="${rest#*@}"
+case "$clone_url" in
+  *://*) git_host="${rest%%[:/]*}"; git_path="${rest#*/}" ;;
+  *)     git_host="${rest%%:*}";    git_path="${rest#*:}" ;;
+esac
+git_owner="${git_path%%/*}"
+if printf '%s' "$git_host" | grep -Eq '^[A-Za-z0-9.-]+$' && printf '%s' "$git_owner" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+  if { printf 'DEV_CELL_GIT_HOST=%s\nDEV_CELL_GIT_OWNER=%s\n' "$git_host" "$git_owner" > "$GIT_ENV_OUT.tmp" \
+       && chmod 644 "$GIT_ENV_OUT.tmp" && mv -f "$GIT_ENV_OUT.tmp" "$GIT_ENV_OUT"; } 2>/dev/null; then :; else
+    log "could not write $GIT_ENV_OUT (non-fatal)"
+  fi
+else
+  log "could not derive the Gitea SSH host/owner from gitea.clone_url — $GIT_ENV_OUT not written"
+fi
+
 # --- Stage a root-only copy of the node's own mTLS identity ---------------
 # dev-cell-mcp-proxy.js (root) presents THIS SAME cert to /mcp on pnagent's
 # behalf — copied here (rather than pointed at $PKI_DIR directly) purely
