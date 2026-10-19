@@ -43,17 +43,31 @@ remote() {
   fi
 }
 
+# On a failed read, say WHY without printing the token: the account it
+# authenticates as and the repo API's status for it. Gitea answers "Repository
+# not found" both for a missing repo and for a token that cannot see it.
+diagnose() {
+  [ -n "${CORE_READ_TOKEN:-}" ] || { echo "::error::no core read token is set (CORE_READ_TOKEN / PLATFORM_READ_TOKEN secret)" >&2; return; }
+  command -v curl >/dev/null || return
+  local base path login repo_code
+  base=$(sed -E 's#^(https?://[^/]+)/.*#\1#' <<<"$url")
+  path=$(sed -E 's#^https?://[^/]+/##; s#\.git$##' <<<"$url")
+  login=$(curl -s -H "Authorization: token $CORE_READ_TOKEN" "$base/api/v1/user" | sed -nE 's/.*"login":"([^"]*)".*/\1/p')
+  repo_code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: token $CORE_READ_TOKEN" "$base/api/v1/repos/$path")
+  echo "::error::core read token authenticates as '${login:-<rejected>}'; GET /api/v1/repos/$path -> $repo_code (needs 200: the token's user must read that repo and the token must allow private repos with read:repository)" >&2
+}
+
 ref="" sha="" source=""
 
 if [ -n "$wanted" ]; then
-  heads=$(remote --heads "$url" "$wanted")
+  heads=$(remote --heads "$url" "$wanted") || { diagnose; exit 128; }
   # ls-remote patterns match trailing path components; keep only the exact ref.
   sha=$(awk -v want="refs/heads/$wanted" '$2 == want { print $1 }' <<<"$heads")
   [ -n "$sha" ] && ref=$wanted source=same-name
 fi
 
 if [ -z "$sha" ]; then
-  head=$(remote --symref "$url" HEAD)
+  head=$(remote --symref "$url" HEAD) || { diagnose; exit 128; }
   ref=$(awk '$1 == "ref:" && $3 == "HEAD" { sub("^refs/heads/", "", $2); print $2 }' <<<"$head")
   sha=$(awk '$1 != "ref:" && $2 == "HEAD" { print $1 }' <<<"$head")
   source=default
