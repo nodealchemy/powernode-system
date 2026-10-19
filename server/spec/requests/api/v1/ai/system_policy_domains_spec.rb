@@ -21,10 +21,10 @@ require "rails_helper"
 # file exercises (IMP-fa63f411633b).
 #
 # ORACLE SUBSET: only the EXTENSION-OWNED namespaces (`system.`, `sdwan.`)
-# must resolve to a named domain. Core's own registrations
+# must resolve to a named domain. Core's own statics
 # (`Ai::InterventionPolicy::STATIC_CATEGORIES`: approval, dev.*, "*", ...)
-# land in "other" DELIBERATELY — GroupedView's header says so and the System
-# panel shows only its own registered domains — and `project.*` is core-owned but claimed by the
+# resolve to core's own registered domains (CorePolicyDomains), which the System
+# panel does not show — and `project.*` is core-owned but claimed by the
 # "project" domain on purpose (ruling recorded at PolicyDomainTable::PREFIXES). Same
 # namespace-selection assumption as
 # spec/lib/powernode_system/autonomy_categories_registration_spec.rb: the
@@ -183,15 +183,15 @@ RSpec.describe "System policy domains in core's grouped policy view", type: :req
   # above by filtering core categories out of the pivot, which would hide real
   # policy rows from an operator — the same defect class as the by_agent pivot
   # silently dropping agents' rows.
-  it "keeps core-owned rows visible: statics land in \"other\" and project.* under \"project\"" do
+  it "keeps core-owned rows visible: statics under core's domains and project.* under \"project\"" do
     seed_policy_rows!
     pivot = by_domain
 
-    # dev.multi_file_change replaced dev.pull_task as the representative static
-    # here when that dead category was removed (IMP-01a06aef); this example
-    # needs any core-owned static that lands in the catch-all, not that
-    # specific name.
-    expect(categories_in(pivot, "other")).to include("approval", "dev.multi_file_change")
+    # Core registers its own domains (Ai::InterventionPolicies::CorePolicyDomains),
+    # so its statics are visible under those rather than in the catch-all; what
+    # this example guards is that they stay VISIBLE somewhere in the pivot.
+    expect(categories_in(pivot, "agent_outreach")).to include("approval")
+    expect(categories_in(pivot, "improvement_loop")).to include("dev.multi_file_change")
     expect(categories_in(pivot, "project")).to include("project.adapt", "project.cost_control")
   end
 

@@ -11,9 +11,16 @@ RSpec.describe "PowernodeSystem Claude-export policy domain registration", type:
   let(:prefixes) { System::Governance::PolicyDomainTable::PREFIXES }
 
   it "registers every PolicyDomainTable::PREFIXES entry, once, in the table's (first-match-wins) order" do
-    registered = Ai::ClaudeExport::PolicyDomains.registered
+    # Core registers its own domains alongside these, so the system entries are
+    # checked as an ordered subset of the registry, not the whole of it.
+    registered = Ai::ClaudeExport::PolicyDomains.registered.select { |(domain, _)| prefixes.key?(domain) }
     expect(registered.map(&:first)).to eq(prefixes.keys)
     expect(registered.to_h).to eq(prefixes.transform_values { |v| v.map(&:to_s) })
+  end
+
+  it "files the deferred-assignment investigation under node_lifecycle, not Other policies" do
+    expect(Ai::ClaudeExport::PolicyDomains.domain_for("system.node_assignment_deferred_investigate"))
+      .to eq("node_lifecycle")
   end
 
   it "resolves the registered domains where the heuristic would guess wrong" do
