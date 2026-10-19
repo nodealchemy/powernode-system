@@ -136,7 +136,7 @@ jobs:
           WANTED: ${{ github.head_ref || github.ref_name }}
         run: |
           set -euo pipefail
-          out=$(bash scripts/ci-resolve-core-ref.sh "${{ github.server_url }}/powernode/powernode-platform.git" "$WANTED")
+          out=$(bash scripts/ci-resolve-core-ref.sh "${{ github.server_url }}/${{ github.repository_owner }}/powernode-platform.git" "$WANTED")
           echo "$out"
           printf '%s\n' "$out" >> "$GITHUB_OUTPUT"
 

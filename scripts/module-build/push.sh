@@ -66,10 +66,11 @@
 #                           `${{ inputs.tag }}`); empty/omitted falls back
 #                           to `git rev-parse --short HEAD` in --workspace,
 #                           exactly as the inline step did
-#   --registry HOST             registry host to push to. Default:
-#                           git.powernode.org (unchanged from before this
-#                           flag existed — the workflow's own invocation
-#                           doesn't pass it). Added in campaign 019f5885
+#   --registry HOST             registry host to push to. Default: the host
+#                           of $GITHUB_SERVER_URL (the Gitea Actions server,
+#                           whose container registry this pushes to — the
+#                           workflow's own invocation doesn't pass it), else
+#                           the placeholder registry.example.com. Added in campaign 019f5885
 #                           inc7 (Part A) so the module-forge NodeModule's
 #                           entrypoint (module-forge-build.sh) can honor
 #                           its own ORAS_REGISTRY env var without
@@ -89,7 +90,7 @@
 # Reads:  /tmp/$MODULE.erofs, /tmp/$MODULE.erofs.meta,
 #         /tmp/$MODULE.packages.txt (Stage 1/2 outputs)
 # Writes: pushes $REGISTRY_HOST/powernode/$MODULE:$TAG (+ :latest tag) —
-#         REGISTRY_HOST defaults to git.powernode.org, override via --registry
+#         REGISTRY_HOST defaults to the $GITHUB_SERVER_URL host, override via --registry
 #
 # Exit: non-zero on any oras/git/hash failure (set -euo pipefail
 # propagates the first one).
@@ -118,7 +119,10 @@ MODULE=""
 GITHUB_SHA=""
 WORKSPACE=""
 INPUT_TAG=""
-REGISTRY_HOST="git.powernode.org"
+# Default registry = the Gitea Actions server host (Gitea's container
+# registry lives on the same host); placeholder outside a runner.
+_server_host="${GITHUB_SERVER_URL:-}"; _server_host="${_server_host#*://}"; _server_host="${_server_host%%/*}"
+REGISTRY_HOST="${_server_host:-registry.example.com}"
 OUTPUT_FILE=""
 # Credentials — read only from the process environment (see file header),
 # never as CLI flags. The `:-` defaults keep this safe under `set -u`; a
@@ -176,10 +180,10 @@ cd "$WORKSPACE"
 # arg parsing above. The final two `echo ... >> "$GITHUB_OUTPUT"` lines are
 # replaced by the output-emission block at the bottom (optional
 # --output-file, else stdout) — see the file header for why. The
-# `git.powernode.org` literal below is now `$REGISTRY_HOST` (campaign
+# former registry-host literal below is now `$REGISTRY_HOST` (campaign
 # 019f5885 inc7 Part A addition — see the file header's --registry note);
-# its default is the exact same literal, so every existing caller
-# (unchanged, no --registry passed) gets byte-identical behavior.
+# its default is the runner's own Gitea server host, so every existing
+# caller (unchanged, no --registry passed) pushes to the same registry.
 # ---------------------------------------------------------------------------
 
 # Tag = workflow input, else commit SHA short.

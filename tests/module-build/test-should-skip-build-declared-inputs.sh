@@ -90,7 +90,7 @@ assert_contains() {
 
 MODULE=powernode-extension-system
 CORE_REF_FIXTURE=deadbeefcafef00ddeadbeefcafef00ddeadbeef
-REGISTRY=git.powernode.org
+REGISTRY=registry.example.test
 OWNER=powernode
 TAG=latest
 

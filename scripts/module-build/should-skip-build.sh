@@ -174,7 +174,10 @@ note() { echo "[skip-check] $*" >&2; }
 build() { note "$1 -> BUILD"; exit 1; }
 
 MODULE=""; REPO="."; REF="HEAD"; APT_SNAPSHOT=""; CORE_REF_ARG="${CORE_REF:-}"
-REGISTRY="${APT_REGISTRY:-git.powernode.org}"; OWNER="${APT_OWNER:-powernode}"; TAG="latest"
+# Registry default mirrors oras-login.sh: $APT_REGISTRY, else the Gitea Actions
+# server host, else a placeholder.
+_server_host="${GITHUB_SERVER_URL:-}"; _server_host="${_server_host#*://}"; _server_host="${_server_host%%/*}"
+REGISTRY="${APT_REGISTRY:-${_server_host:-registry.example.com}}"; OWNER="${APT_OWNER:-powernode}"; TAG="latest"
 HASH_ARGS=()
 
 while [ $# -gt 0 ]; do

@@ -137,7 +137,7 @@ jobs:
           # Construct the clone URL with token auth when GIT_TOKEN is
           # set (private repos); fall back to anonymous HTTPS for
           # public repos.
-          base="${GITHUB_SERVER_URL:-https://git.powernode.org}"
+          base="${GITHUB_SERVER_URL:-${{ github.server_url }}}"
           if [ -n "${GIT_TOKEN:-}" ]; then
             clone_url="${base/https:\/\//https://x-access-token:${GIT_TOKEN}@}/${GITHUB_REPOSITORY}.git"
           else

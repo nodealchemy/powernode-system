@@ -31,13 +31,16 @@
 # /proc), and never written to a file by this script.
 #
 # Usage: bash oras-login.sh [registry-host]
-#   registry-host defaults to $APT_REGISTRY, then git.powernode.org — the same
-#   default should-skip-build.sh resolves, so the host we authenticate against
+#   registry-host defaults to $APT_REGISTRY, then the $GITHUB_SERVER_URL host
+#   (the Gitea Actions server, whose container registry holds the modules),
+#   then the placeholder registry.example.com — the same default
+#   should-skip-build.sh resolves, so the host we authenticate against
 #   is the host it queries.
 #
 # Exit status is always 0. The caller cannot act on a failure anyway.
 
-REGISTRY_HOST="${1:-${APT_REGISTRY:-git.powernode.org}}"
+_server_host="${GITHUB_SERVER_URL:-}"; _server_host="${_server_host#*://}"; _server_host="${_server_host%%/*}"
+REGISTRY_HOST="${1:-${APT_REGISTRY:-${_server_host:-registry.example.com}}}"
 
 if ! command -v oras >/dev/null 2>&1; then
   echo "[oras-login] oras not on PATH — skipping login (skip-check will read as BUILD)" >&2

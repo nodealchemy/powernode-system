@@ -84,7 +84,7 @@ jobs:
           git config --global --add safe.directory '*'
           ws="${GITHUB_WORKSPACE:-/workspace/${GITHUB_REPOSITORY}}"
           mkdir -p "$ws"
-          base="${GITHUB_SERVER_URL:-https://git.powernode.org}"
+          base="${GITHUB_SERVER_URL:-${{ github.server_url }}}"
           if [ -n "${GIT_TOKEN:-}" ]; then
             clone_url="${base/https:\/\//https://x-access-token:${GIT_TOKEN}@}/${GITHUB_REPOSITORY}.git"
           else
