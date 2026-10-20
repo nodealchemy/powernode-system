@@ -945,6 +945,28 @@ module PowernodeSystem
       end
     end
 
+    # Capability-skill taxonomy domains this extension owns (the skills
+    # themselves are seeded by db/seeds/system_capability_skills_seed.rb).
+    # Core's Ai::Skills::Contract accepts a skill in one of these domains only
+    # when its owner_repo is this extension. to_prepare, not after_initialize:
+    # it re-runs after every code reload, so a dev reload of the core module
+    # (which resets its registry) cannot leave the domains unregistered.
+    initializer "powernode_system.register_capability_domains" do
+      config.to_prepare do
+        next unless defined?(::Ai::Skills::Contract)
+
+        ::Ai::Skills::Contract.register_domains(
+          owner: "extensions/system",
+          domains: %w[
+            capacity storage service-exposure network federation runtime
+            disk-image packages cve gitops platform-ops project-delivery
+          ]
+        )
+      rescue StandardError => e
+        Rails.logger.error "[PowernodeSystem] Could not register capability domains: #{e.message}"
+      end
+    end
+
     # HIER-P2F (the HIER-P1B open question) — register this extension's
     # policy-domain table with core's Claude-export seam.
     #
