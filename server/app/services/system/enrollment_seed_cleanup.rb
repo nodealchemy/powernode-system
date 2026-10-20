@@ -55,7 +55,7 @@ module System
       # Accounts that have a due row, oldest due row first, so a busy account cannot
       # starve the ones after it within the shared budget.
       def accounts_by_oldest_due(accounts)
-        ids = due_rows(::System::NodeInstance.where(account_id: accounts.select(:id)))
+        ids = due_rows(::System::NodeInstance.where(account_id: accounts.respond_to?(:select) && accounts.is_a?(::ActiveRecord::Relation) ? accounts.select(:id) : Array(accounts).map(&:id)))
                 .group(:account_id).order(Arel.sql("MIN(#{ORDER_EXPR})")).pluck(:account_id)
         by_id = ::Account.where(id: ids).index_by(&:id)
         ids.filter_map { |id| by_id[id] }

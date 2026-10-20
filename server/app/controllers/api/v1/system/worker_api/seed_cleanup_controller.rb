@@ -42,7 +42,7 @@ module Api
 
           def scope_accounts
             if current_worker.account?
-              [ current_worker.account ]
+              Account.where(id: current_worker.account_id)
             else
               account_ids = ::System::NodeInstance.joins(:node).distinct.pluck("system_nodes.account_id")
               Account.where(id: account_ids)

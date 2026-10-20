@@ -75,6 +75,23 @@ RSpec.describe "POST /api/v1/system/worker_api/seed_cleanup/sweep", type: :reque
     expect(order).to eq([ late.id, account.id ])
   end
 
+  context "with an account-scoped (non-system) worker" do
+    let(:scoped_worker) { create(:worker, account: account) }
+    let(:scoped_headers) { worker_mtls_headers(scoped_worker) }
+
+    it "sweeps only its own account and answers 200 (not a 500 from an Array scope)" do
+      other = create(:account)
+      due_instance(other)
+      allow(System::EnrollmentSeedCleanup).to receive(:sweep!).and_return(1)
+
+      post path, headers: scoped_headers
+
+      expect(response).to have_http_status(:ok)
+      expect(System::EnrollmentSeedCleanup).to have_received(:sweep!).with(hash_including(account: account)).once
+      expect(System::EnrollmentSeedCleanup).not_to have_received(:sweep!).with(hash_including(account: other))
+    end
+  end
+
   it "keeps answering 200 when a sweep blows up" do
     allow(System::EnrollmentSeedCleanup).to receive(:sweep!).and_raise(StandardError, "x")
     post path, headers: headers
