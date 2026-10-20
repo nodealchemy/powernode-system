@@ -264,6 +264,24 @@ fi
 : "${POWERNODE_CA_LOCAL_DIR:=$STATE_DIR/internal-ca}"
 export POWERNODE_CA_LOCAL_DIR
 
+# --- Worker (Sidekiq) Redis URL (IMP-daecbb8a050e, layout phase 1) ---
+# hub-worker's Sidekiq reads the REDIS_URL in SECRETS_FILE (redis://...:6379/0:
+# both of its start scripts source the file last), but the server derives its
+# worker Redis as database 1 unless told otherwise. That split lost every job
+# the server enqueued and made the Sidekiq health check read an empty process
+# registry ("Sidekiq down"). Name the hub's interim Sidekiq database explicitly
+# for Powernode::Redis.worker_url (and System::WorkerJobEnqueuer through it).
+#
+# Canonical layout is 0 general / 1 Sidekiq / 2 cable; moving the hub's queues
+# to /1 is phase 2 and changes this value and the worker's together. Exported
+# every boot, not written into SECRETS_FILE (that heredoc is first-boot only),
+# placed after the last sourcing, and a DEFAULT -- an explicit
+# POWERNODE_WORKER_REDIS_URL from the unit env or SECRETS_FILE still wins.
+# Mirrored by hand in powernode-rails-exec; the hub Redis layout spec pins
+# that the two lines match.
+: "${POWERNODE_WORKER_REDIS_URL:=redis://${REDIS_HOST}:6379/0}"
+export POWERNODE_WORKER_REDIS_URL
+
 cd "$RAILS_DIR"
 
 # config/database.yml: rendered by rails-setup.sh (root; the module

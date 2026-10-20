@@ -114,6 +114,16 @@ export CACHE_STORE=memory_store
 export QUEUE_ADAPTER=async
 export POWERNODE_CA_MODE=local
 
+# The hub's interim Sidekiq Redis, exported by rails-start.sh every boot
+# (IMP-daecbb8a050e; see the "Worker (Sidekiq) Redis URL" block there for
+# why). The derivation line is identical to rails-start.sh's, and the hub
+# Redis layout spec pins that. A default only: a value carried in
+# $SECRETS_FILE, sourced after this as $RAILS_USER, still wins, as it does
+# for puma. Only a string is exported here; nothing is executed.
+REDIS_HOST=${POWERNODE_REDIS_HOST:-localhost}
+: "${POWERNODE_WORKER_REDIS_URL:=redis://${REDIS_HOST}:6379/0}"
+export POWERNODE_WORKER_REDIS_URL
+
 # Same vendored-gem resolution and cache location rails-start.sh uses at
 # runtime.
 export BUNDLE_GEMFILE="$RAILS_DIR/Gemfile"
