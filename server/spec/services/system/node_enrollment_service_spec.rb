@@ -190,6 +190,38 @@ RSpec.describe System::NodeEnrollmentService do
       expect(ev.source).to eq("node_enrollment_service")
     end
 
+    describe "seed cleanup (D13, best-effort)" do
+      def enrol(plain)
+        described_class.enroll!(bootstrap_token_plaintext: plain, csr_pem: csr_pem)
+      end
+
+      it "marks a platform-seeded instance for cleanup once enrolled" do
+        _tok, plain = System::EnrollmentSeed.issue_token(instance: instance)
+        expect(enrol(plain).success?).to be true
+        expect(instance.reload.config.dig("seed_cleanup", "state")).to eq("pending")
+      end
+
+      it "does not mark an instance the platform never seeded" do
+        expect(enrol(token_plaintext).success?).to be true
+        expect(instance.reload.config).not_to have_key("seed_cleanup")
+      end
+
+      it "does not run provider calls inside the enrolment" do
+        _tok, plain = System::EnrollmentSeed.issue_token(instance: instance)
+        expect(System::Providers::Registry).not_to receive(:for_instance)
+        enrol(plain)
+      end
+
+      it "never fails or rolls back the enrolment when the cleanup bookkeeping blows up" do
+        _tok, plain = System::EnrollmentSeed.issue_token(instance: instance)
+        allow(System::EnrollmentSeedCleanup).to receive(:mark_pending!).and_raise(StandardError, "boom")
+        result = nil
+        expect { result = enrol(plain) }.not_to raise_error
+        expect(result.success?).to be true
+        expect(instance.reload.mtls_subject).to be_present
+      end
+    end
+
     it "rejects a revoked operator key and does not consume or enrol" do
       # An operator key can only be minted for an instance not yet running.
       pending = create(:system_node_instance, node: node, status: "pending")

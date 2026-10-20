@@ -167,6 +167,14 @@ module System
         node_instance_id: instance.id
       )
 
+      # D13: queue the best-effort seed cleanup (one local write, no provider
+      # call). It must never fail or slow the enrolment that already committed.
+      begin
+        ::System::EnrollmentSeedCleanup.mark_pending!(instance)
+      rescue StandardError => e
+        Rails.logger.warn("[NodeEnrollmentService] seed cleanup not queued: #{e.class}")
+      end
+
       Result.new(
         success?: true,
         node_certificate: cert_record,
