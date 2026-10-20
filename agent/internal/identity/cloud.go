@@ -1,12 +1,16 @@
 package identity
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"time"
 )
@@ -69,6 +73,18 @@ func parseUserData(raw string) (*Identity, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, ErrNotFound
+	}
+	if isMIMEMultipart(raw) {
+		// Platform-composed user-data: the v1 document is one part, the
+		// operator/template init script another. Select the JSON part.
+		part, err := extractProvisionPart(raw)
+		if err != nil {
+			return nil, err
+		}
+		if part == "" {
+			return nil, ErrNotFound
+		}
+		raw = part
 	}
 	if strings.HasPrefix(raw, "{") {
 		if isLegacyJSON(raw) {
@@ -204,3 +220,49 @@ func httpDo(ctx context.Context, method, url string, headers map[string]string) 
 // errBadStatus marks a non-200 metadata response. Strategies map this to
 // ErrNotFound so the resolver moves on to the next cloud.
 var errBadStatus = errors.New("metadata service returned non-200")
+
+// provisionPartType is the MIME type of the provisioning-document part in
+// platform-composed multipart user-data (System::EnrollmentSeed::JSON_PART_TYPE).
+const provisionPartType = "application/x-powernode-provision+json"
+
+func isMIMEMultipart(raw string) bool {
+	head := strings.ToLower(raw)
+	if len(head) > 256 {
+		head = head[:256]
+	}
+	return strings.HasPrefix(head, "mime-version:") || strings.HasPrefix(head, "content-type: multipart/")
+}
+
+// extractProvisionPart returns the body of the provisionPartType part of a
+// multipart user-data blob, or "" when there is none (a cloud-init-only blob).
+// A malformed multipart envelope is an error, never a silent fall-through.
+func extractProvisionPart(raw string) (string, error) {
+	br := bufio.NewReader(strings.NewReader(raw))
+	hdr, err := textproto.NewReader(br).ReadMIMEHeader()
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("user-data multipart header: %w", err)
+	}
+	mt, params, err := mime.ParseMediaType(hdr.Get("Content-Type"))
+	if err != nil || !strings.HasPrefix(mt, "multipart/") || params["boundary"] == "" {
+		return "", fmt.Errorf("user-data multipart: bad Content-Type")
+	}
+	mr := multipart.NewReader(br, params["boundary"])
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			return "", nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("user-data multipart: %w", err)
+		}
+		pt, _, _ := mime.ParseMediaType(p.Header.Get("Content-Type"))
+		if pt != provisionPartType {
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(p, provisionMaxDocBytes+1))
+		if err != nil {
+			return "", fmt.Errorf("user-data multipart part: %w", err)
+		}
+		return strings.TrimSpace(string(body)), nil
+	}
+}

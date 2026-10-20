@@ -31,6 +31,15 @@ export CIDATA_DEVICES="/nonexistent/cidata-probe-$$"
 if sh -n "$SCRIPT" 2>/dev/null; then ok "script is valid POSIX sh"
 else bad "script is valid POSIX sh" "$(sh -n "$SCRIPT" 2>&1 | head -2)"; fi
 
+# --- v1 provision documents are routed to identity, not federation -----
+# The v1 branch must come BEFORE the generic JSON (federation) branch, or a v1
+# document is copied to the federation payload path and the node never enrols.
+v1_line=$(grep -n "'{\"version\":'\*)" "$SCRIPT" | head -1 | cut -d: -f1)
+fed_line=$(grep -n '^        "{"\*)' "$SCRIPT" | head -1 | cut -d: -f1)
+if [ -n "$v1_line" ] && [ -n "$fed_line" ] && [ "$v1_line" -lt "$fed_line" ]; then
+  ok "v1 provision document branch precedes the federation JSON branch"
+else bad "v1 provision document branch precedes the federation JSON branch" "v1=$v1_line fed=$fed_line"; fi
+
 # --- never fails a boot -------------------------------------------------
 out=$(CIDATA_DEVICES="$CIDATA_DEVICES" CIDATA_SETTLE_TIMEOUT=1 CIDATA_WAIT_SECONDS=1 sh "$SCRIPT" 2>&1); rc=$?
 if [ "$rc" -eq 0 ]; then ok "exits 0 when no NoCloud drive is present"

@@ -142,6 +142,23 @@ if [ -s "$MNT/user-data" ]; then
     IFS= read -r first_line < "$MNT/user-data" 2>/dev/null || true
 
     case "$first_line" in
+        '{"version":'*)
+            # powernode-provision v1 document (System::EnrollmentSeed /
+            # ProvisioningDocument; docs/PROVISION_DOCUMENT.md). It is JSON, but
+            # it is enrolment identity, NOT a federation payload: stage it where
+            # LocalIdentityStrategy reads it (strict v1 parse, pin enforced). The
+            # CA chain and pin travel inside the document, so meta-data is unused.
+            # The renderer emits "version" as the first key (JSON.generate keeps
+            # insertion order); federation payloads have no "version" key.
+            mkdir -p /run/powernode
+            umask 077
+            rm -f "$IDENTITY_DEST"
+            if cp "$MNT/user-data" "$IDENTITY_DEST" && chmod 0600 "$IDENTITY_DEST"; then
+                log "staged provision document v1 -> $IDENTITY_DEST (0600)"
+            else
+                log "WARN: failed to stage user-data -> $IDENTITY_DEST"
+            fi
+            ;;
         "{"*)
             mkdir -p /etc/powernode
             # The payload carries a single-use acceptance_token in cleartext. umask
