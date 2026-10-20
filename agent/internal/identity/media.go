@@ -105,8 +105,10 @@ type MediaScanStrategy struct {
 	Mount func(ctx context.Context, src, target, fstype, opts, data string) error
 	// Unmount unmounts target; detach selects MNT_DETACH.
 	Unmount func(target string, detach bool) error
-	// SetReadOnly makes the block device itself read-only (BLKROSET) before it is mounted.
-	SetReadOnly func(devPath string) error
+	// SetReadOnly makes the block device itself read-only (BLKROSET) before it is
+	// mounted and returns a restore func that puts back the previous state
+	// (BLKROGET) -- called only after a clean, non-detached unmount.
+	SetReadOnly func(devPath string) (restore func() error, err error)
 	// Sniff returns the filesystem type ("vfat","exfat","iso9660","ext4") from the
 	// on-disk signature, or "" when it is none of them.
 	Sniff func(devPath string) string
@@ -216,10 +218,16 @@ func (s *MediaScanStrategy) Discover(ctx context.Context) (*Identity, error) {
 	defer cancel()
 
 	c.Settle(ctx, c.SettleTimeout)
-	cands := c.enumerate()
-	for waited := time.Duration(0); len(cands) == 0 && waited < c.EnumWait && ctx.Err() == nil; waited += c.EnumPoll {
+	cands, err := c.enumerate()
+	for waited := time.Duration(0); err == nil && len(cands) == 0 && waited < c.EnumWait && ctx.Err() == nil; waited += c.EnumPoll {
 		time.Sleep(c.EnumPoll)
-		cands = c.enumerate()
+		cands, err = c.enumerate()
+	}
+	if err != nil {
+		// Without the mount table the root/boot/data disks cannot be told apart
+		// from spare media: fail closed.
+		c.Logf("mount table unreadable, media scan aborted")
+		return nil, ErrNotFound
 	}
 	if len(cands) == 0 {
 		return nil, ErrNotFound
@@ -230,11 +238,21 @@ func (s *MediaScanStrategy) Discover(ctx context.Context) (*Identity, error) {
 		known[strings.ToLower(k)] = true
 	}
 
+	// Fixed media is probed first and USB last (enumerate orders them), so a
+	// stick cannot starve the budget away from the real seed disk. If any
+	// candidate went unprobed or was abandoned, a removable document is never
+	// selected (the missing candidate might have contradicted it), and neither
+	// is anything while a fixed candidate is missing.
 	var docs []mediaDoc
+	missingFixed, missingAny := false, false
 	for _, cand := range cands {
 		if ctx.Err() != nil {
 			c.Logf("scan budget exhausted before probing %s", cand.name)
-			break
+			missingAny = true
+			if cand.tier > 1 {
+				missingFixed = true
+			}
+			continue
 		}
 		doc, err := c.probe(ctx, cand)
 		if err != nil {
@@ -242,6 +260,11 @@ func (s *MediaScanStrategy) Discover(ctx context.Context) (*Identity, error) {
 		}
 		if doc != nil {
 			docs = append(docs, *doc)
+		} else if ctx.Err() != nil {
+			missingAny = true // abandoned (or finished only after the budget)
+			if cand.tier > 1 {
+				missingFixed = true
+			}
 		}
 	}
 	if len(docs) == 0 {
@@ -252,6 +275,10 @@ func (s *MediaScanStrategy) Discover(ctx context.Context) (*Identity, error) {
 	if err != nil {
 		c.Logf("%v", err)
 		return nil, err
+	}
+	if missingFixed || (missingAny && chosen.tier == 1) {
+		c.Logf("incomplete scan, not using the file from %s", chosen.dev)
+		return nil, ErrNotFound
 	}
 	c.Logf("using provisioning file from %s", chosen.dev)
 	if err := c.stage(chosen.raw); err != nil {
@@ -273,25 +300,34 @@ func conflicting(docs []mediaDoc) bool {
 
 // pickMediaDoc applies the tie-break: known id, then newest issued_at, then
 // refuse. Documents with byte-identical content are one candidate.
+//
+// Before any tie-break the set must be coherent: every document must agree on
+// server and ca_fingerprint, and removable (USB) and fixed documents must be
+// byte-identical to each other. A physically attached stick therefore can never
+// win against, or silently supersede, the seed disk (a same-server newer stick
+// would otherwise win on issued_at). The only legitimate flow this refuses is
+// an operator leaving two DIFFERENT documents attached, which is ambiguous by
+// definition.
 func pickMediaDoc(docs []mediaDoc, known map[string]bool) (*mediaDoc, error) {
-	if conflicting(docs) {
-		// Disagreement is never arbitrated by issued_at or a known id: a
-		// non-removable source wins over removable USB; what is still in
-		// conflict after that is refused.
-		var fixed []mediaDoc
+	refuseAll := func(why string) error {
+		var devs []string
 		for _, d := range docs {
-			if d.tier > 1 {
-				fixed = append(fixed, d)
+			devs = append(devs, d.dev)
+		}
+		return refuse("provisioning files on %s %s", strings.Join(devs, ", "), why)
+	}
+	if conflicting(docs) {
+		return nil, refuseAll("disagree on server or CA pin")
+	}
+	for _, u := range docs {
+		if u.tier != 1 {
+			continue
+		}
+		for _, f := range docs {
+			if f.tier > 1 && !bytes.Equal(bytes.TrimSpace(u.raw), bytes.TrimSpace(f.raw)) {
+				return nil, refuseAll("differ between removable and fixed media")
 			}
 		}
-		if len(fixed) == 0 || len(fixed) == len(docs) || conflicting(fixed) {
-			var devs []string
-			for _, d := range docs {
-				devs = append(devs, d.dev)
-			}
-			return nil, refuse("provisioning files on %s disagree on server or CA pin", strings.Join(devs, ", "))
-		}
-		docs = fixed
 	}
 	pool := docs
 	var matched []mediaDoc
@@ -358,16 +394,24 @@ func (c *MediaScanStrategy) probeDevice(ctx context.Context, cand mediaCandidate
 	if fs == "" {
 		return nil, nil // no supported filesystem signature: never mount
 	}
-	if err := c.SetReadOnly(src); err != nil {
+	restore, err := c.SetReadOnly(src)
+	if err != nil {
 		c.Logf("%s: cannot make the device read-only, not mounting", name)
 		return nil, nil
 	}
+	cleanlyDone := false // set only after a clean, non-detached unmount (or no mount)
+	defer func() {
+		if cleanlyDone && restore != nil && ctx.Err() == nil {
+			_ = restore()
+		}
+	}()
 	if err := os.MkdirAll(c.MountRoot, 0o700); err != nil {
 		c.Logf("%s: no mount root", name)
 		return nil, nil
 	}
 	target, err := os.MkdirTemp(c.MountRoot, "m-")
 	if err != nil {
+		cleanlyDone = true
 		return nil, nil
 	}
 	defer os.Remove(target)
@@ -378,9 +422,10 @@ func (c *MediaScanStrategy) probeDevice(ctx context.Context, cand mediaCandidate
 	}
 	if err := c.Mount(ctx, src, target, fs, mediaMountOpts, data); err != nil {
 		c.Logf("%s: not mountable", name)
+		cleanlyDone = true // nothing was mounted
 		return nil, nil
 	}
-	defer c.unmount(ctx, target)
+	defer func() { cleanlyDone = c.unmount(ctx, target) }()
 	if ctx.Err() != nil {
 		return nil, nil // mounted late: only the deferred detach remains
 	}
@@ -409,11 +454,12 @@ func (c *MediaScanStrategy) probeDevice(ctx context.Context, cand mediaCandidate
 
 // unmount tries a normal unmount and falls back to MNT_DETACH on error or when
 // the budget is already gone.
-func (c *MediaScanStrategy) unmount(ctx context.Context, target string) {
+func (c *MediaScanStrategy) unmount(ctx context.Context, target string) (clean bool) {
 	if ctx.Err() == nil && c.Unmount(target, false) == nil {
-		return
+		return true
 	}
 	_ = c.Unmount(target, true)
+	return false
 }
 
 // readCapped reads at most provisionMaxDocBytes and refuses anything larger,
@@ -491,22 +537,46 @@ func (c *MediaScanStrategy) stage(raw []byte) error {
 
 // ---- enumeration ----
 
-func (c *MediaScanStrategy) enumerate() []mediaCandidate {
+// onUSB reports whether the disk's real sysfs device path runs through a USB
+// host controller (a usbN path segment), whatever its removable flag, label or
+// type claim.
+func (c *MediaScanStrategy) onUSB(disk string) bool {
+	real, err := filepath.EvalSymlinks(filepath.Join(c.SysBlock, disk))
+	if err != nil {
+		return false
+	}
+	for _, seg := range strings.Split(real, "/") {
+		if len(seg) > 3 && strings.HasPrefix(seg, "usb") && strings.Trim(seg[3:], "0123456789") == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// enumerate returns the candidates in probe order: fixed media first (cidata
+// labelled, then optical, then the remaining disks), removable/USB media LAST.
+// "Removable" is decided by the bus (USB) or, for non-optical disks, the
+// removable flag -- never by a label or the device type, which a stick controls.
+// An optical drive is fixed unless it hangs off USB (internal CD-ROMs report
+// removable=1). It fails closed (error) when the mount table is unreadable.
+func (c *MediaScanStrategy) enumerate() ([]mediaCandidate, error) {
 	entries, err := os.ReadDir(c.SysBlock)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	busy := c.busyDisks(entries)
+	busy, err := c.busyDisks(entries)
+	if err != nil {
+		return nil, err
+	}
 	bootDev := c.labelTarget("BOOT")
 
-	var t1, t2cidata, t2sr, t3 []mediaCandidate
 	cidata := map[string]bool{}
 	for _, l := range []string{"cidata", "CIDATA"} {
 		if d := c.labelTarget(l); d != "" {
 			cidata[d] = true
 		}
 	}
-	var cidataOrder []string
+	var removable, fixedCidata, fixedSR, fixedOther []mediaCandidate
 	var names []string
 	for _, e := range entries {
 		names = append(names, e.Name())
@@ -521,29 +591,27 @@ func (c *MediaScanStrategy) enumerate() []mediaCandidate {
 		if len(devs) == 0 {
 			devs = []string{disk}
 		}
-		removable := c.readFlag(disk, "removable")
+		isSR := strings.HasPrefix(disk, "sr")
+		isRemovable := c.onUSB(disk) || (!isSR && c.readFlag(disk, "removable"))
 		for _, dev := range devs {
 			if dev == bootDev || !c.devExists(dev) {
 				continue
 			}
 			switch {
-			case strings.HasPrefix(disk, "sr"):
-				t2sr = append(t2sr, mediaCandidate{dev, 2})
+			case isRemovable:
+				removable = append(removable, mediaCandidate{dev, 1})
 			case cidata[dev]:
-				cidataOrder = append(cidataOrder, dev)
-			case removable:
-				t1 = append(t1, mediaCandidate{dev, 1})
+				fixedCidata = append(fixedCidata, mediaCandidate{dev, 2})
+			case isSR:
+				fixedSR = append(fixedSR, mediaCandidate{dev, 2})
 			default:
-				t3 = append(t3, mediaCandidate{dev, 3})
+				fixedOther = append(fixedOther, mediaCandidate{dev, 3})
 			}
 		}
 	}
-	sort.Strings(cidataOrder)
-	for _, d := range cidataOrder {
-		t2cidata = append(t2cidata, mediaCandidate{d, 2})
-	}
-	out := append(append(append(t1, t2cidata...), t2sr...), t3...)
-	return out
+	sort.Slice(fixedCidata, func(i, j int) bool { return fixedCidata[i].name < fixedCidata[j].name })
+	out := append(append(append(fixedCidata, fixedSR...), fixedOther...), removable...)
+	return out, nil
 }
 
 func skipDisk(name string) bool {
@@ -593,11 +661,11 @@ func (c *MediaScanStrategy) labelTarget(label string) string {
 // /persist, ...), following device-mapper slaves. These are never probed.
 // Sources are resolved under DevRoot; "/dev/root" and anything that does not
 // resolve fall back to the mount's major:minor via <sys>/dev/block.
-func (c *MediaScanStrategy) busyDisks(disks []os.DirEntry) map[string]bool {
+func (c *MediaScanStrategy) busyDisks(disks []os.DirEntry) (map[string]bool, error) {
 	busy := map[string]bool{}
 	raw, err := os.ReadFile(c.MountInfo)
 	if err != nil {
-		return busy
+		return nil, err
 	}
 	var mark func(name string, depth int)
 	mark = func(name string, depth int) {
@@ -646,7 +714,7 @@ func (c *MediaScanStrategy) busyDisks(disks []os.DirEntry) map[string]bool {
 		}
 		mark(name, 0)
 	}
-	return busy
+	return busy, nil
 }
 
 // sniffFSType identifies vfat, exfat, iso9660 and ext2/3/4 (all mounted with

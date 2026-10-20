@@ -41,9 +41,18 @@ func TestMediaScanSetsBlockDeviceReadOnlyBeforeEveryMount(t *testing.T) {
 	m.media["sdb1"] = fakeMedia{fs: "ext4"}
 	m.media["sdc"] = fakeMedia{fs: "vfat"}
 	_, _ = m.strategy().Discover(context.Background())
-	want := []string{"ro:sdb1", "mount:sdb1", "ro:sdc", "mount:sdc"}
-	if strings.Join(m.events, ",") != strings.Join(want, ",") {
-		t.Fatalf("events = %v, want %v", m.events, want)
+	idx := func(ev string) int {
+		for i, e := range m.events {
+			if e == ev {
+				return i
+			}
+		}
+		return -1
+	}
+	for _, d := range []string{"sdb1", "sdc"} {
+		if ro, mt := idx("ro:"+d), idx("mount:"+d); ro < 0 || mt < 0 || ro > mt {
+			t.Fatalf("%s: BLKROSET must precede the mount: %v", d, m.events)
+		}
 	}
 }
 
@@ -224,24 +233,6 @@ func TestMediaScanRefusesConflictingServerOrPin(t *testing.T) {
 	}
 }
 
-func TestMediaScanPrefersNonRemovableSourceOnConflict(t *testing.T) {
-	pki := newTestPKI(t)
-	m := newFakeMachine(t)
-	m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}}) // USB, attacker
-	m.addDisk("sdd", fakeDisk{parts: []string{"sdd1"}})                  // cidata seed disk
-	m.label("cidata", "sdd1")
-	m.media["sdb1"] = vfatWith(docWith(pki, idB, "2026-10-20T11:00:00Z", "https://evil.example.test", otherPin))
-	m.media["sdd1"] = vfatWith(docFor(pki, idA, "2026-10-20T09:00:00Z"))
-	// even a known-id match on the USB stick must not beat the cidata disk
-	id, err := m.strategy(idB).Discover(context.Background())
-	if err != nil || id.InstanceUUID != idA || id.PlatformURL != "https://platform.example.test" {
-		t.Fatalf("id=%+v err=%v", id, err)
-	}
-	if len(m.sniffs) != 2 {
-		t.Fatalf("all candidates must be read before deciding, sniffed %v", m.sniffs)
-	}
-}
-
 func TestMediaScanRefusesConflictBetweenNonRemovableSources(t *testing.T) {
 	pki := newTestPKI(t)
 	m := newFakeMachine(t)
@@ -259,7 +250,7 @@ func TestMediaScanReadsAllCandidatesBeforeKnownIDDecision(t *testing.T) {
 	pki := newTestPKI(t)
 	m := newFakeMachine(t)
 	m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
-	m.addDisk("sdc", fakeDisk{})
+	m.addDisk("sdc", fakeDisk{removable: true})
 	m.media["sdb1"] = vfatWith(docFor(pki, idA, "2026-10-20T09:00:00Z"))
 	m.media["sdc"] = vfatWith(docFor(pki, idB, "2026-10-20T10:00:00Z"))
 	id, err := m.strategy(idA).Discover(context.Background())

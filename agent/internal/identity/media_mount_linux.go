@@ -32,21 +32,43 @@ func sysUnmount(target string, detach bool) error {
 	return syscall.Unmount(target, flags)
 }
 
-const blkROSET = 0x125D // BLKROSET
+const (
+	blkROSET = 0x125D // BLKROSET
+	blkROGET = 0x125E // BLKROGET
+)
 
 // sysSetReadOnly flips the block device itself to read-only so not even a
-// filesystem driver's journal replay can write to it.
-func sysSetReadOnly(dev string) error {
+// filesystem driver's journal replay can write to it. restore puts back the
+// state found (BLKROGET) and is a no-op when the device was already read-only.
+func sysSetReadOnly(dev string) (func() error, error) {
 	f, err := os.OpenFile(dev, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
+	var prev int32
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), blkROGET, uintptr(unsafe.Pointer(&prev))); errno != 0 {
+		return nil, errno
+	}
 	one := int32(1)
 	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), blkROSET, uintptr(unsafe.Pointer(&one))); errno != 0 {
-		return errno
+		return nil, errno
 	}
-	return nil
+	if prev != 0 {
+		return func() error { return nil }, nil
+	}
+	return func() error {
+		g, err := os.OpenFile(dev, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			return err
+		}
+		defer g.Close()
+		zero := int32(0)
+		if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, g.Fd(), blkROSET, uintptr(unsafe.Pointer(&zero))); errno != 0 {
+			return errno
+		}
+		return nil
+	}, nil
 }
 
 // openBeneath opens rel below root without following any symlink: each

@@ -20,6 +20,7 @@ import (
 
 type fakeDisk struct {
 	removable bool
+	usb       bool     // the sysfs device path runs through a usbN hub, whatever the flags say
 	parts     []string // partition names; empty means the whole device is the candidate
 }
 
@@ -42,7 +43,8 @@ type fakeMachine struct {
 	sniffs          []string
 	events          []string // "ro:<dev>" / "mount:<dev>" in call order
 	logs            []string
-	unmountErrFirst bool          // first non-detach unmount fails
+	unmountErrFirst bool // first non-detach unmount fails
+	gateDevs        map[string]chan struct{}
 	gate            chan struct{} // when set, Mount blocks until closed and IGNORES ctx (a wedged syscall)
 	roErr           error
 }
@@ -66,7 +68,15 @@ func (m *fakeMachine) path(rel ...string) string {
 func (m *fakeMachine) addDisk(name string, d fakeDisk) {
 	m.t.Helper()
 	dir := m.path("sys/block", name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if d.usb {
+		real := m.path("sys/devices/pci0000:00/usb1/1-1/block", name)
+		if err := os.MkdirAll(real, 0o755); err != nil {
+			m.t.Fatal(err)
+		}
+		if err := os.Symlink(real, dir); err != nil {
+			m.t.Fatal(err)
+		}
+	} else if err := os.MkdirAll(dir, 0o755); err != nil {
 		m.t.Fatal(err)
 	}
 	rem := "0\n"
@@ -112,6 +122,9 @@ func (m *fakeMachine) mount(ctx context.Context, src, target, fstype, opts, data
 		<-m.gate
 	}
 	dev := filepath.Base(src)
+	if ch, ok := m.gateDevs[dev]; ok {
+		<-ch
+	}
 	m.mu.Lock()
 	m.calls = append(m.calls, mountCall{dev, fstype, opts, data})
 	m.events = append(m.events, "mount:"+dev)
@@ -145,6 +158,7 @@ func (m *fakeMachine) unmount(target string, detach bool) error {
 	m.mu.Lock()
 	m.unmounts = append(m.unmounts, target)
 	m.detaches = append(m.detaches, detach)
+	m.events = append(m.events, fmt.Sprintf("unmount:detach=%v", detach))
 	fail := m.unmountErrFirst && !detach
 	m.mu.Unlock()
 	if fail {
@@ -161,11 +175,20 @@ func (m *fakeMachine) sniff(dev string) string {
 	return m.media[name].fs
 }
 
-func (m *fakeMachine) setRO(dev string) error {
+func (m *fakeMachine) setRO(dev string) (func() error, error) {
+	name := filepath.Base(dev)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.events = append(m.events, "ro:"+filepath.Base(dev))
-	return m.roErr
+	m.events = append(m.events, "ro:"+name)
+	if m.roErr != nil {
+		return nil, m.roErr
+	}
+	return func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.events = append(m.events, "restore:"+name)
+		return nil
+	}, nil
 }
 
 func (m *fakeMachine) strategy(known ...string) *MediaScanStrategy {
@@ -228,7 +251,7 @@ func TestMediaScanProbeOrderAndRootExclusion(t *testing.T) {
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
-	want := []string{"sdb1", "sdd1", "sr0", "sdc"}
+	want := []string{"sdd1", "sr0", "sdc", "sdb1"} // fixed media first, USB last
 	if got := m.devOrder(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("probe order = %v, want %v", got, want)
 	}

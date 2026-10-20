@@ -207,8 +207,12 @@ A booting, UNENROLLED node scans attached drives for a v1 document (agent
   Resolver never runs it after an earlier source already supplied an identity
   (so media cannot veto it or attach a pin). This holds for every call site
   that resolves identity (runtime bootstrap, CLI, soft_recompose, prepare-root).
-- Probe order: removable non-optical block devices; `LABEL=cidata`/`CIDATA`
-  then `/dev/sr*`; remaining disks. Disks backing any current mount (root,
+- Probe order: FIXED media first -- `LABEL=cidata`/`CIDATA`, then `/dev/sr*`,
+  then the remaining disks -- and removable/USB media LAST, so a stick cannot
+  use up the budget ahead of the seed disk. "Removable" is decided by the bus: a
+  disk whose real sysfs path runs through a `usbN` controller, or a non-optical
+  disk with `removable=1`, never by a label or by being a CD-ROM (an internal
+  optical drive is fixed; a USB CD-ROM gadget or a USB stick labelled CIDATA is not). Disks backing any current mount (root,
   `/boot`, dm slaves, `/dev/root`) and the image's `LABEL=BOOT` partition are skipped.
 - Per device: filesystem signature sniffed first (vfat, exfat, iso9660,
   ext2/3/4) and mounted ONCE with that type, never with a guess loop. The block
@@ -218,12 +222,21 @@ A booting, UNENROLLED node scans attached drives for a v1 document (agent
 - The file is opened component by component with `O_NOFOLLOW` (symlinks on the
   media are never followed), must be a regular file, and is refused if larger
   than the parser cap even if the excess is whitespace. Nothing is executed.
-- **Selection.** All candidates are read within the budget, then: documents
-  that disagree on `server` or `ca_fingerprint` are never arbitrated by
-  `issued_at` or a known id. Non-removable sources (cidata, optical, extra
-  disks) win over removable USB; any conflict left after that REFUSES. Among
-  agreeing documents the one whose `instance_id` is already known (cmdline,
-  fw-cfg, BOOT identity.cfg) wins, else the newest `issued_at`, else REFUSE.
+- **Selection.** All candidates are read within the budget, then the set must
+  be coherent or the scan REFUSES: every document must agree on `server` and
+  `ca_fingerprint`, and any removable (USB) document must be byte-identical to
+  every fixed-media document (a newer same-server stick never supersedes the
+  seed disk; the only flow this refuses is two different documents attached
+  at once). Among coherent documents the one whose `instance_id` is already
+  known (cmdline, fw-cfg, BOOT identity.cfg) wins, else the newest
+  `issued_at`, else REFUSE.
+- **Incomplete scans.** If the budget runs out with any candidate unprobed or
+  abandoned, a removable document is not used (the scan returns not-found and
+  falls through), and nothing is used while a fixed candidate is missing.
+- **Fail closed.** If the mount table cannot be read, the scan aborts before
+  touching any device.
+- BLKROSET is undone (previous state, via BLKROGET) only after a clean,
+  non-detached unmount; an abandoned or detached device stays read-only.
 - A file that fails the strict parse is a terminal refusal. Only device names
   are logged, never contents or the key.
 - The accepted document is staged to `/run/powernode/identity.cfg` (0600).
@@ -232,6 +245,13 @@ A booting, UNENROLLED node scans attached drives for a v1 document (agent
   is abandoned at the budget; work the kernel cannot interrupt (a mount or read
   stuck in D-state) finishes in the background and is then unmounted with
   `MNT_DETACH`. It is not a bound on that kernel work itself.
+
+### Enrolled gate lifetime
+
+The "already enrolled" gate is a usable `node.crt` + `node.key` in the PKI dir.
+On diskless nodes or nodes whose `/persist` is tmpfs the PKI does not survive a
+reboot, so the gate holds for ONE boot only: after a reboot the scan runs again
+(and re-offers the media) unless an earlier source in the Resolver hits first.
 
 ### Threat model
 
