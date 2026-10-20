@@ -4,7 +4,12 @@ display_name: Powernode Hub Backend (Rails 8 API)
 description: The Powernode platform's Rails 8 API server with ActionCable; backed by postgres-primary and redis
 license: MIT
 category: platform-apps
-package_spec: []
+package_spec:
+  # RepoSyncService (GitOps) execs `git` inside the Rails process, and git
+  # execs `ssh` for SSH remotes; neither runtime-ruby nor base-os-ubuntu-noble
+  # ships them.
+  - git
+  - openssh-client
 # Aligns with the production install layout (/opt/powernode/ with
 # server/ + extensions/ + worker/ as siblings) — the Gemfile uses
 # `require_relative "../extensions_loader_helper"` from server/Gemfile
@@ -15,6 +20,135 @@ file_spec:
   - /opt/powernode/server/**
   - /opt/powernode/extensions_loader_helper.rb
   - /opt/powernode/scripts/**
+  # GitOps repo sync (RepoSyncService) execs git, and git execs ssh, inside
+  # the Rails process. File set from the real apt-ownership closure
+  # (derive-file-spec.sh --mode deb-payload against [git, openssh-client]:
+  # openssh-client resolves 0 owned files — base-os-ubuntu-noble already
+  # carries it via openssh-server — so the owned set is git's closure, the
+  # same one dev-cell carves; entries mirror dev-cell's, minus jq/uuid).
+  - "/usr/bin/git"
+  - "/usr/bin/git-shell"
+  - "/usr/bin/git-receive-pack"
+  - "/usr/bin/git-upload-archive"
+  - "/usr/bin/git-upload-pack"
+  - "/usr/bin/scalar"
+  - "/usr/lib/git-core/**"
+  - "/usr/share/git-core/**"
+  - "/usr/share/gitweb/**"
+  - "/usr/share/bash-completion/completions/git"
+  - "/usr/share/bash-completion/completions/gitk"
+  - "/etc/bash_completion.d/git-prompt"
+  # verbatim — apt file ownership is per-package, so the owned set is
+  # independent of which siblings a module carries, and the base subtracted
+  # out (base-os-ubuntu-noble) is identical for both. Note the absence of
+  # BASE-SHARED candidate and carving it here would be the same
+  # over-inclusion this manifest's file_spec comment documents above.
+  - /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.3
+  - /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4
+  - /usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4.8.0
+  - /usr/lib/x86_64-linux-gnu/libgdbm.so.6
+  - /usr/lib/x86_64-linux-gnu/libgdbm.so.6.0.0
+  - /usr/lib/x86_64-linux-gnu/libgdbm_compat.so.4
+  - /usr/lib/x86_64-linux-gnu/libgdbm_compat.so.4.0.0
+  - /usr/lib/x86_64-linux-gnu/libperl.so.5.38
+  - /usr/lib/x86_64-linux-gnu/libperl.so.5.38.2
+  # perl's own CORE runtime module tree — /usr/share/perl/5.38.2/ is the
+  # "perl" package's own exclusive sitedir, safe to glob broadly.
+  # /usr/share/perl5/ is NOT equally safe — it's the SHARED third-party-
+  # module sitelib every perl package installs into, and debconf (already
+  # in base-os's own closure via openssh-server, so correctly subtracted)
+  # ships its own Debconf/** tree there too; a directory-wide glob matched
+  # debconf's (candidate, not owned) files — empirically confirmed FAIL,
+  # same lesson postgres-replica's manifest documents for the identical
+  # gap — so this module's own entries (liberror-perl, git's Perl helper
+  # modules) are named explicitly instead.
+  - "/usr/share/perl/**"
+  - "/usr/share/perl5/Error.pm"
+  - "/usr/share/perl5/Error/**"
+  - "/usr/share/perl5/Git.pm"
+  - "/usr/share/perl5/Git/**"
+  - "/usr/lib/x86_64-linux-gnu/perl/**"
+  - "/usr/lib/x86_64-linux-gnu/perl-base/**"
+  # dpkg's own aux dirs (git-mergetool/git's own scripts shell out to
+  # dpkg --compare-versions) + its systemd DB-backup unit + mime handler.
+  - "/usr/libexec/dpkg/**"
+  - "/usr/share/dpkg/**"
+  - "/usr/lib/mime/packages/tar"
+  - "/usr/lib/systemd/system/dpkg-db-backup.service"
+  - "/usr/lib/systemd/system/dpkg-db-backup.timer"
+  # Per-package lintian overrides — not a directory-wide glob, same
+  # base-shared-candidate reason as runtime-ruby's/postgres-*'s manifests.
+  - "/usr/share/lintian/overrides/dpkg"
+  - "/usr/share/lintian/overrides/git"
+  - "/usr/share/lintian/overrides/libcurl3t64-gnutls"
+  - "/usr/share/lintian/overrides/libgdbm-compat4t64"
+  - "/usr/share/lintian/overrides/libgdbm6t64"
+  - "/usr/share/lintian/overrides/libperl5.38t64"
+  - "/usr/share/lintian/overrides/perl"
+  - "/usr/share/lintian/overrides/perl-base"
+  # /usr/bin (dpkg's own tools, perl's toolchain) + /usr/sbin — enumerated
+  # individually, same base-shared-candidate reason as the multiarch lib
+  # dir above.
+  - "/usr/bin/corelist"
+  - "/usr/bin/cpan"
+  - "/usr/bin/cpan5.38-x86_64-linux-gnu"
+  - "/usr/bin/dpkg"
+  - "/usr/bin/dpkg-deb"
+  - "/usr/bin/dpkg-divert"
+  - "/usr/bin/dpkg-maintscript-helper"
+  - "/usr/bin/dpkg-query"
+  - "/usr/bin/dpkg-realpath"
+  - "/usr/bin/dpkg-split"
+  - "/usr/bin/dpkg-statoverride"
+  - "/usr/bin/dpkg-trigger"
+  - "/usr/bin/enc2xs"
+  - "/usr/bin/encguess"
+  - "/usr/bin/h2ph"
+  - "/usr/bin/h2xs"
+  - "/usr/bin/instmodsh"
+  - "/usr/bin/json_pp"
+  - "/usr/bin/libnetcfg"
+  - "/usr/bin/perl"
+  - "/usr/bin/perl5.38.2"
+  - "/usr/bin/perl5.38-x86_64-linux-gnu"
+  - "/usr/bin/perlbug"
+  - "/usr/bin/perldoc"
+  - "/usr/bin/perlivp"
+  - "/usr/bin/perlthanks"
+  - "/usr/bin/piconv"
+  - "/usr/bin/pl2pm"
+  - "/usr/bin/pod2html"
+  - "/usr/bin/pod2man"
+  - "/usr/bin/pod2text"
+  - "/usr/bin/pod2usage"
+  - "/usr/bin/podchecker"
+  - "/usr/bin/prove"
+  - "/usr/bin/ptar"
+  - "/usr/bin/ptardiff"
+  - "/usr/bin/ptargrep"
+  - "/usr/bin/shasum"
+  - "/usr/bin/splain"
+  - "/usr/bin/streamzip"
+  - "/usr/bin/tar"
+  - "/usr/bin/update-alternatives"
+  - "/usr/bin/xsubpp"
+  - "/usr/bin/zipdetails"
+  - "/usr/sbin/rmt-tar"
+  - "/usr/sbin/start-stop-daemon"
+  - "/usr/sbin/tarcat"
+  - "/etc/alternatives/README"
+  - "/etc/cron.daily/dpkg"
+  - "/etc/dpkg/dpkg.cfg"
+  - "/etc/logrotate.d/alternatives"
+  - "/etc/logrotate.d/dpkg"
+  - "/etc/perl/Net/libnet.cfg"
+  - "/etc/rmt"
+  # Small remainder — genuinely owned, missed by the directory globs
+  # above (dpkg's bug-report template, polkit's dpkg-pkexec action —
+  # same two files postgres-primary's/postgres-replica's manifests hit).
+  - "/usr/share/bug/dpkg"
+  - "/usr/share/lintian/profiles/dpkg/main.profile"
+  - "/usr/share/polkit-1/actions/org.dpkg.pkexec.update-alternatives.policy"
 mask:
   - /opt/powernode/server/tmp/***
   - /opt/powernode/server/log/***
@@ -27,6 +161,12 @@ mask:
   # source files ship via vendor/cache; the node installs them into a fresh
   # vendor/bundle/ruby/<runtime-ver> on first boot.
   - /opt/powernode/server/vendor/bundle/***
+# git's apt closure ships doc/man/locale trees this module intentionally does
+# not carve (same waiver dev-cell's manifest declares for the same packages).
+carve_waivers:
+  - "/usr/share/doc/**"
+  - "/usr/share/man/**"
+  - "/usr/share/locale/**"
 dependency_spec: []
 protected_spec:
   - /opt/powernode/server/config/master.key

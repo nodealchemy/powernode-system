@@ -21,6 +21,12 @@ This document describes the GitOps reconciler — the system that lets
 operators declare desired fleet state in a git repository and continuously
 reconciles it against live state via `Ai::AgentProposal` rows.
 
+**Prerequisite: `git` and `openssh-client` on the Rails host.** `RepoSyncService`
+runs `git` inside the Rails process (and git runs `ssh` for SSH remotes), so the
+`powernode-hub-backend` module ships both via its `package_spec`. A host without
+the `git` binary reports a sync as `reason: git_unavailable` (error names the
+binary) rather than a generic failure; install git there or deploy the module.
+
 ---
 
 ## TL;DR
