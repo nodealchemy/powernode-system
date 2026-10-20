@@ -96,11 +96,19 @@ module System
       cert_record = issued = instance = common_name = nil
 
       early_failure = ::ActiveRecord::Base.transaction do
+        # LOCK ORDER: instance, then token (the order BootstrapToken.issue! and
+        # consume! use), so a concurrent operator-key mint cannot deadlock with
+        # this enrolment. The token is peeked unlocked to find the instance, then
+        # re-read under lock and revalidated.
+        peek = ::System::BootstrapToken.find_active_by_plaintext(bootstrap_token_plaintext)
+        next failure("invalid or expired bootstrap token") unless peek
+
+        instance = resolve_instance(token: peek, dmi_uuid: dmi_uuid)
+        next failure("intended instance not found") unless instance
+
+        instance.lock!
         token = ::System::BootstrapToken.find_active_by_plaintext(bootstrap_token_plaintext, lock: true)
         next failure("invalid or expired bootstrap token") unless token
-
-        instance = resolve_instance(token: token, dmi_uuid: dmi_uuid)
-        next failure("intended instance not found") unless instance
 
         common_name = token.intended_subject.presence || instance.id
 
@@ -154,6 +162,9 @@ module System
       failure(e.message)
     rescue ::System::BootstrapToken::AuditFailure
       failure("enrolment audit unavailable")
+    rescue ::ActiveRecord::Deadlocked
+      # The transaction rolled back, nothing is spent: the agent may retry.
+      failure("enrolment conflicted with a concurrent change, retry")
     rescue ::System::InternalCaService::CaError, ::System::InternalCaService::CsrError => e
       failure("CSR/CA failure: #{e.message}")
     rescue ::ActiveRecord::RecordInvalid => e

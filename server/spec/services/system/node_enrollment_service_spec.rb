@@ -29,6 +29,36 @@ RSpec.describe System::NodeEnrollmentService do
   let(:token_record)    { token_record_and_plain[0] }
   let(:token_plaintext) { token_record_and_plain[1] }
 
+  describe ".enroll! concurrency (D4 review F3)" do
+    def enroll
+      described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem, source_ip: "10.1.2.3")
+    end
+
+    it "returns a clean retryable failure, not a raise, when the database reports a deadlock" do
+      token_plaintext
+      allow_any_instance_of(System::BootstrapToken).to receive(:consume!).and_raise(ActiveRecord::Deadlocked, "deadlock detected")
+      result = enroll
+      expect(result.success?).to be false
+      expect(result.error).to match(/retry/i)
+      expect(System::BootstrapToken.last).not_to be_consumed
+    end
+
+    it "locks the instance BEFORE the token (the order mint uses), so mint and enrol cannot deadlock" do
+      token_plaintext
+      order = []
+      allow_any_instance_of(System::NodeInstance).to receive(:lock!).and_wrap_original do |m, *a|
+        order << :instance
+        m.call(*a)
+      end
+      allow(System::BootstrapToken).to receive(:find_active_by_plaintext).and_wrap_original do |m, pt, **kw|
+        order << (kw[:lock] ? :token_locked : :token_peek)
+        m.call(pt, **kw)
+      end
+      expect(enroll.success?).to be true
+      expect(order.index(:instance)).to be < order.index(:token_locked)
+    end
+  end
+
   describe ".enroll!" do
     it "succeeds with a fresh token + valid CSR" do
       result = described_class.enroll!(
@@ -147,8 +177,10 @@ RSpec.describe System::NodeEnrollmentService do
     end
 
     it "rejects a revoked operator key and does not consume or enrol" do
+      # An operator key can only be minted for an instance not yet running.
+      pending = create(:system_node_instance, node: node, status: "pending")
       record, plaintext = System::BootstrapToken.issue!(
-        node: node, node_instance: instance, intended_subject: instance.id, purpose: "operator_key"
+        node: node, node_instance: pending, intended_subject: pending.id, purpose: "operator_key"
       )
       record.revoke!
 
@@ -157,7 +189,7 @@ RSpec.describe System::NodeEnrollmentService do
       expect(result.success?).to be false
       expect(result.error).to match(/invalid or expired/)
       expect(record.reload.consumed_at).to be_nil
-      expect(System::NodeCertificate.where(node_instance: instance)).to be_empty
+      expect(System::NodeCertificate.where(node_instance: pending)).to be_empty
     end
 
     it "consumes the bootstrap token" do

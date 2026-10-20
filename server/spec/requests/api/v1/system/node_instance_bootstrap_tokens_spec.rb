@@ -100,6 +100,29 @@ RSpec.describe "Api::V1::System::NodeInstanceBootstrapTokens", type: :request do
       expect(System::BootstrapToken.find(data["bootstrap_token"]["id"])).to be_usable
     end
 
+    it "409s when the instance enrols between the guard and the insert (F2)" do
+      calls = 0
+      allow(System::BootstrapToken).to receive(:instance_refusal).and_wrap_original do |m, inst|
+        calls += 1
+        calls == 1 ? nil : m.call(inst) # the controller guard passes; the in-transaction re-check sees the truth
+      end
+      instance.update_columns(mtls_subject: "CN=just-enrolled")
+      expect { post_create }.not_to change { System::BootstrapToken.count }
+      expect(response).to have_http_status(:conflict)
+    end
+
+    it "409s for the loser of a concurrent mint (partial unique index backstop) and leaves exactly one active key (F1)" do
+      post_create
+      winner_id = data["bootstrap_token"]["id"]
+      allow(System::BootstrapToken).to receive(:open_for_instance).and_return([]) # the loser's stale read
+      expect { post_create }.not_to change { System::BootstrapToken.count }
+      expect(response).to have_http_status(:conflict)
+      expect(response.body).not_to include("token\":\"")
+      active = System::BootstrapToken.where(node_instance_id: instance.id, purpose: "operator_key",
+                                            consumed_at: nil, revoked_at: nil)
+      expect(active.pluck(:id)).to eq([ winner_id ])
+    end
+
     it "refuses with 409 when the instance has been claimed" do
       instance.update_columns(claimed_at: Time.current, claim_code: "ABCD-1234")
       expect { post_create }.not_to change { System::BootstrapToken.count }

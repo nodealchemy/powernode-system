@@ -59,6 +59,8 @@ module Api
             data: { bootstrap_token: serialize(token), token: plaintext },
             status: :created
           )
+        rescue ::System::BootstrapToken::InstanceNotAvailable => e
+          render_error("A bootstrap key cannot be issued: #{e.message}.", status: :conflict)
         rescue ::System::BootstrapToken::AuditFailure
           render_error("Bootstrap key was not issued: the audit record could not be written.",
                        status: :service_unavailable)
