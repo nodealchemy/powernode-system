@@ -11,9 +11,14 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
   let(:instance) { create(:system_node_instance) }
   let(:cloud_id) { "cloud-id-1" }
 
+  # The platform seeded this instance at create (a seed-purpose token exists);
+  # `unseeded` examples opt out.
+  let(:seeded) { true }
+
   before do
     stub_enroll_settings(ca: ca)
     instance.merge_config!("cloud_instance_id" => cloud_id)
+    System::EnrollmentSeed.issue_token(instance: instance) if seeded
   end
 
   def issued_rows
@@ -138,11 +143,56 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
       it "revokes the prior active seed key (audited, same purpose) when it re-mints" do
         allow(ec2).to receive(:modify_instance_attribute)
         provider.start_instance(cloud_id)
-        first = System::BootstrapToken.where(node_instance_id: instance.id, purpose: "cloud_seed").sole
+        first = System::BootstrapToken.where(node_instance_id: instance.id, purpose: "cloud_seed").order(:created_at).last
         expect { provider.start_instance(cloud_id) }
           .to change { AuditLog.where(action: "system.bootstrap_token.revoked").count }.by(1)
         expect(first.reload).to be_revoked
         expect(System::BootstrapToken.active.where(node_instance_id: instance.id, purpose: "cloud_seed").count).to eq(1)
+      end
+
+      context "an instance the platform never seeded (imported / enrolled another way)" do
+        let(:seeded) { false }
+
+        it "neither re-mints nor clears: user-data is left untouched, enrolled or not" do
+          expect(ec2).not_to receive(:modify_instance_attribute)
+          expect { provider.start_instance(cloud_id) }.not_to change { issued_rows.count }
+          enroll!
+          provider.start_instance(cloud_id)
+        end
+      end
+
+      it "uses the instance the caller already holds: an in-account name collision no longer refuses the start" do
+        twin = create(:system_node_instance, node: instance.node, provider_region: instance.provider_region)
+        twin.merge_config!("cloud_instance_id" => cloud_id)
+        allow(ec2).to receive(:modify_instance_attribute) { |**kw| expect(doc_of(kw[:user_data][:value])["instance_id"]).to eq(instance.id) }
+        result = provider.with_known_instance(instance.reload) { provider.start_instance(cloud_id) }
+        expect(result[:error_code]).to be_nil
+        expect(provider.known_instance).to be_nil
+      end
+
+      it "names the ambiguity (not the CA) when the fallback lookup finds two rows" do
+        twin = create(:system_node_instance, node: instance.node, provider_region: instance.provider_region)
+        twin.merge_config!("cloud_instance_id" => cloud_id)
+        expect(provider.start_instance(cloud_id)[:error]).to match(/more than one live instance/)
+      end
+
+      it "re-checks enrolled? under the instance lock: enrolled in the window => placeholder, no key" do
+        calls = 0
+        allow(System::EnrollmentSeed).to receive(:enrolled?).and_wrap_original do |m, inst|
+          (calls += 1) == 1 ? false : true
+        end
+        sent = nil
+        allow(ec2).to receive(:modify_instance_attribute) { |**kw| sent = kw[:user_data][:value] }
+        expect { provider.start_instance(cloud_id) }.not_to change { issued_rows.count }
+        expect(sent).to eq(System::EnrollmentSeed::NEUTRAL_USER_DATA)
+      end
+
+      it "turns a lock deadlock into a retryable error response and does not start" do
+        allow(System::BootstrapToken).to receive(:issue!).and_raise(ActiveRecord::Deadlocked)
+        expect(ec2).not_to receive(:start_instances)
+        result = provider.start_instance(cloud_id)
+        expect(result).to include(success: false, error_code: "SeedUnavailable")
+        expect(result[:error]).to match(/retry the start/)
       end
 
       it "starts a VM the platform did not seed without touching user-data" do

@@ -144,9 +144,14 @@ Multipart user-data: the agent selects the part typed
 cloud-init ignores that unknown type and runs the script part. A multipart blob
 with no such part is "not found", a malformed one or a bad v1 part is terminal.
 An operator `user_data` override is not carried across a restart re-mint (the
-template `init_script` is).
+template `init_script` is, on the unenrolled re-mint path only).
 
 ### Start policy: only an UNENROLLED instance gets a key
+
+Everything below applies ONLY to an instance the platform ever seeded (a
+`cloud_seed`, `proxmox_uefi_provision` or `local_qemu_provision` token exists for
+it). An imported instance, or one enrolled through another path, keeps its
+user-data/metadata untouched: no re-mint and no clearing.
 
 On every start the provider resolves the NodeInstance by cloud id, **scoped to
 the connection's account and provider, excluding terminated rows**; more than one
@@ -160,17 +165,29 @@ match is refused (`SeedError`, surfaced as a provider error). Then:
   with a key-less placeholder, GCP's `user-data` item is removed, the Proxmox
   seed is overwritten in place (the VM's cicustom/ISO still points at it).
 
-A mint failure on start (no CA, bad URL, size) returns a provider error and the
-VM is not started.
+A mint failure on start (no CA, bad URL, size, an ambiguous cloud id, a lock
+deadlock) returns a provider error (`SeedUnavailable`, with a cause-specific,
+retryable-where-true message) and the VM is not started. `InstanceControlService`
+hands the NodeInstance it already holds to the adapter (`with_known_instance`),
+so the scoped cloud-id lookup is only a fallback for callers without one. The
+enrolled check is repeated under the instance row lock; the lock order
+(instance, then tokens) matches `NodeEnrollmentService#enroll!`.
+
+Not atomic with the provider: the mint commits before the provider write. If the
+write then fails (for example AWS `modify_instance_attribute` rejected because the
+instance is running), the previous key stays revoked and the new one is lost; the
+next start mints again.
 
 Size limits (raw bytes, enforced in `EnrollmentSeed`, `SeedError` names the limit):
-AWS 16384, OpenStack and Azure 49151 (64 KB base64), GCP 262144. The agent
+AWS 16384, OpenStack 49149 and Azure 49151 (64 KB base64), GCP 262144. The agent
 fetches up to 512 KiB of user-data and a provision part up to 128 KiB.
 
 Init scripts: `#cloud-config`, `#!`, `#include`, `#include-once`,
 `#cloud-boothook`, `#part-handler`, `#upstart-job`, or an operator's own complete
 multipart (nested as a part). Anything else is refused. On a restart re-mint only
-the template `init_script` is re-attached (an operator `user_data` override is
+the template `init_script` is re-attached on the unenrolled path (the enrolled
+path writes the key-less placeholder, so the init script is not re-attached;
+cloud-init already ran it for this instance) (an operator `user_data` override is
 not stored, since it may embed secrets; cloud-init runs scripts once per instance
 so this does not re-run them).
 
