@@ -83,6 +83,50 @@ Account.class_eval do
            class_name: "System::NodeInstancePeer",
            dependent: :destroy
 
+  # Account teardown (Account#run_account_teardown): system-owned rows that carry
+  # an account_id FK with no ON DELETE. The restrict_with_error associations
+  # above are the "drain first" guard for rows that map to cloud resources (the
+  # teardown refuses BEFORE any side effect while those exist); everything below
+  # is control-plane metadata that goes with the account. delete_all is used
+  # only for leaf log/sample tables with no callbacks and no inbound FKs.
+  has_many :system_federation_audit_shipments, class_name: "System::FederationAuditShipment", dependent: :destroy
+  has_many :system_federation_schema_compatibility, class_name: "System::FederationSchemaCompatibility", dependent: :destroy
+  has_many :system_fleet_events, class_name: "System::FleetEvent", dependent: :delete_all
+  has_many :system_fleet_remediation_outcomes, class_name: "System::Fleet::RemediationOutcome", dependent: :destroy
+  has_many :system_migration_chains, class_name: "System::MigrationChain", dependent: :destroy
+  has_many :system_node_assignment_clearances, class_name: "System::NodeAssignmentClearance", dependent: :destroy
+  has_many :system_node_module_copy_paths, class_name: "System::NodeModuleCopyPath", dependent: :destroy
+  has_many :system_package_repositories, class_name: "System::PackageRepository", dependent: :destroy
+  has_many :system_peer_capability_revocations, class_name: "System::PeerCapabilityRevocation", dependent: :destroy
+  has_many :system_peer_capability_signing_keys, class_name: "System::PeerCapabilitySigningKey", dependent: :destroy
+  has_many :system_platform_health_snapshots, class_name: "System::PlatformHealthSnapshot", dependent: :delete_all
+  has_many :system_provider_volume_types, class_name: "System::ProviderVolumeType", dependent: :destroy
+  has_many :system_sdwan_access_grants, class_name: "Sdwan::AccessGrant", dependent: :destroy
+  has_many :system_sdwan_account_bgps, class_name: "Sdwan::AccountBgp", dependent: :destroy
+  has_many :system_sdwan_configurations, class_name: "Sdwan::Configuration", dependent: :destroy
+  has_many :system_sdwan_constellation_signing_keys, class_name: "Sdwan::ConstellationSigningKey", dependent: :destroy
+  has_many :system_sdwan_firewall_rules, class_name: "Sdwan::FirewallRule", dependent: :destroy
+  has_many :system_sdwan_flow_samples, class_name: "Sdwan::FlowSample", dependent: :delete_all
+  has_many :system_sdwan_host_bridges, class_name: "Sdwan::HostBridge", dependent: :destroy
+  has_many :system_sdwan_host_vrf_assignments, class_name: "Sdwan::HostVrfAssignment", dependent: :destroy
+  has_many :system_sdwan_ipfix_collectors, class_name: "Sdwan::IpfixCollector", dependent: :destroy
+  has_many :system_sdwan_membership_credentials, class_name: "Sdwan::MembershipCredential", dependent: :destroy
+  has_many :system_sdwan_networks, class_name: "Sdwan::Network", dependent: :destroy
+  has_many :system_sdwan_ovn_acls, class_name: "Sdwan::OvnAcl", dependent: :destroy
+  has_many :system_sdwan_ovn_deployments, class_name: "Sdwan::OvnDeployment", dependent: :destroy
+  has_many :system_sdwan_ovn_logical_switch_ports, class_name: "Sdwan::OvnLogicalSwitchPort", dependent: :destroy
+  has_many :system_sdwan_ovn_logical_switches, class_name: "Sdwan::OvnLogicalSwitch", dependent: :destroy
+  has_many :system_sdwan_peers, class_name: "Sdwan::Peer", dependent: :destroy
+  has_many :system_sdwan_port_mappings, class_name: "Sdwan::PortMapping", dependent: :destroy
+  has_many :system_sdwan_route_leaks, class_name: "Sdwan::RouteLeak", dependent: :destroy
+  has_many :system_sdwan_route_policies, class_name: "Sdwan::RoutePolicy", dependent: :destroy
+  has_many :system_sdwan_service_backends, class_name: "Sdwan::ServiceBackend", dependent: :destroy
+  has_many :system_sdwan_services, class_name: "Sdwan::Service", dependent: :destroy
+  has_many :system_sdwan_subnet_advertisements, class_name: "Sdwan::SubnetAdvertisement", dependent: :destroy
+  has_many :system_sdwan_virtual_ips, class_name: "Sdwan::VirtualIp", dependent: :destroy
+  has_many :system_storage_migrations, class_name: "System::StorageMigration", dependent: :destroy
+  has_many :system_task_logs, class_name: "System::TaskLog", dependent: :delete_all
+
   # System uses platform's FileManagement::Object for kernels/ramdisks/images
   # and module data tarballs. The platform-level Account model already
   # declares `has_many :file_objects, class_name: "FileManagement::Object"`,

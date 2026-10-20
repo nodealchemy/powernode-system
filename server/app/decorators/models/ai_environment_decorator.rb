@@ -23,3 +23,15 @@ Ai::Environment.class_eval do
   has_many :system_federation_peers, class_name: "System::FederationPeer", foreign_key: :environment_id,
                                      dependent: :restrict_with_error, inverse_of: :environment
 end
+
+# Pre-flight for Account teardown (Account.register_teardown_guard): refuse
+# BEFORE the teardown has any side effect while fleet rows still live in one of
+# the account's environments, instead of discovering it mid-cascade when the
+# environment's own restrict_with_error fires. Only this extension's own
+# associations: core's (projects) are destroyed first by the teardown itself.
+Account.register_teardown_guard(:system_environment_fleet) do |account|
+  Ai::Environment.reflect_on_all_associations
+                 .select { |r| r.options[:dependent] == :restrict_with_error && r.options[:class_name].to_s.start_with?("System::") }
+                 .select { |r| r.klass.where(r.foreign_key => Ai::Environment.where(account_id: account.id).select(:id)).exists? }
+                 .map { |r| "Cannot delete account with existing #{r.name.to_s.humanize.downcase} in its environments" }
+end
