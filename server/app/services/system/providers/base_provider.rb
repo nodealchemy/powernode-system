@@ -642,23 +642,33 @@ module System
         init_script startup_script custom_data
       ].to_set.freeze
 
-      # Re-mint on start (design D12): the previous start's key was consumed by
-      # that boot's enrolment or has expired, so every (re)start of a
-      # platform-seeded VM mints a FRESH 1h key and re-renders the provisioning
-      # document. Returns the rendered user-data String, or nil when the cloud id
-      # does not resolve to a NodeInstance (a VM the platform did not seed).
-      # Raises System::EnrollmentSeed::SeedError (fail closed, no pin-less
-      # document) rather than starting a VM on a stale seed. Never logs the result.
-      def remint_user_data_for(cloud_id, compose: true)
-        return nil if cloud_id.blank?
+      # What to do with the seed when a VM starts (design D12):
+      #   action :none    - not a platform-seeded VM (no unique live NodeInstance)
+      #   action :remint  - NOT yet enrolled: user_data is a freshly minted 1h
+      #                     document (prior active seed keys are revoked, audited)
+      #   action :clear   - ALREADY enrolled (mTLS identity): user_data is the
+      #                     key-less neutral placeholder; a key is NEVER written
+      # The instance is resolved within this connection's account and provider,
+      # excluding terminated rows; an ambiguous match raises SeedError. Raises
+      # SeedError (fail closed) rather than starting on a stale seed. The result is
+      # never logged.
+      StartSeed = Struct.new(:action, :user_data, keyword_init: true)
+      NO_SEED = StartSeed.new(action: :none, user_data: nil).freeze
 
-        record = ::System::NodeInstance.where("config->>'cloud_instance_id' = ?", cloud_id.to_s).first
-        return nil unless record
+      def seed_for_start(cloud_id, compose: true)
+        record = ::System::EnrollmentSeed.resolve_instance(connection: connection, cloud_id: cloud_id)
+        return NO_SEED unless record
 
-        ::System::EnrollmentSeed.render_user_data(
+        if ::System::EnrollmentSeed.enrolled?(record)
+          return StartSeed.new(action: :clear, user_data: ::System::EnrollmentSeed::NEUTRAL_USER_DATA)
+        end
+
+        seed = ::System::EnrollmentSeed.render_user_data(
           instance: record,
-          extra: compose ? ::System::EnrollmentSeed.template_init_script(record.node) : nil
-        ).user_data
+          extra: compose ? ::System::EnrollmentSeed.template_init_script(record.node) : nil,
+          provider_type: provider_type
+        )
+        StartSeed.new(action: :remint, user_data: seed.user_data)
       end
 
       def log_operation(operation, **details)

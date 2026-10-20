@@ -171,7 +171,12 @@ module System
 
       def start_instance(instance_id)
         rg = resource_group
-        reseed_user_data!(rg, instance_id)
+        begin
+          reseed_user_data!(rg, instance_id)
+        rescue ::System::EnrollmentSeed::SeedError => e
+          logger.error("[AzureProvider] start_instance refused: #{e.message}")
+          raise AzureError, "Enrollment seed could not be minted (check the platform CA and URL)"
+        end
         response = arm_post(
           "/subscriptions/#{subscription_id}/resourceGroups/#{rg}/providers/Microsoft.Compute/virtualMachines/#{instance_id}/start",
           api_version: ARM_API_VERSION
@@ -959,12 +964,12 @@ module System
       # provisioning document before the VM starts. customData cannot change
       # after create, so the init script is untouched. Never logged.
       def reseed_user_data!(rg, instance_id)
-        user_data = remint_user_data_for(instance_id, compose: false)
-        return if user_data.nil?
+        seed = seed_for_start(instance_id, compose: false)
+        return if seed.action == :none
 
         response = arm_patch(
           "/subscriptions/#{subscription_id}/resourceGroups/#{rg}/providers/Microsoft.Compute/virtualMachines/#{instance_id}",
-          body: { properties: { userData: Base64.strict_encode64(user_data) } },
+          body: { properties: { userData: Base64.strict_encode64(seed.user_data) } },
           api_version: ARM_API_VERSION
         )
         azure_failure!(response) unless response.success?

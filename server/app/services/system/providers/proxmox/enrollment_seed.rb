@@ -107,17 +107,19 @@ module System
             return nil
           end
 
-          # Wire format: provisioning document v1 (strict JSON, CA pin always
-          # present, chain embedded) minted by the single issuer and staged by
-          # powernode-cidata-payload.sh to /run/powernode/identity.cfg, which
-          # LocalIdentityStrategy parses as v1. Fail closed: an unusable CA or a
-          # non-https URL raises EnrollmentSeed::SeedError (no pin-less document).
-          #
-          # POWERNODE_PVE_LEGACY_CIDATA=1 keeps the legacy ID=/KEY= text for
-          # fleets still booting images whose stager predates the v1 branch (an
-          # old stager would copy a v1 document to the FEDERATION payload path).
-          # TODO(remove with the legacy readers, one image release).
-          if ENV["POWERNODE_PVE_LEGACY_CIDATA"] == "1"
+          # Wire format. DEFAULT (operator decision, D12/M2): the LEGACY
+          # ID=/KEY=/SERVER=/CA_PEM_FILE= text, because images built before the
+          # v1 stager branch would copy a v1 document to the FEDERATION payload
+          # path and never enrol. Minting is the same single issuer (1h, audited)
+          # either way. POWERNODE_PVE_V1_CIDATA=1 opts into provisioning document
+          # v1 (strict JSON, CA pin always present, chain embedded; staged by
+          # powernode-cidata-payload.sh to /run/powernode/identity.cfg) once the
+          # fleet boots images with the new stager. Fail closed on that path: an
+          # unusable CA or non-https URL raises EnrollmentSeed::SeedError.
+          # TODO(follow-up): flip the default to v1 once UKI images built from
+          # develop are promoted, then drop the legacy branch with the legacy
+          # readers (one image release).
+          if ENV["POWERNODE_PVE_V1_CIDATA"] != "1"
             _bootstrap_token, plaintext = issue_bootstrap_token(instance)
             user_data = "ID=#{instance.id}\n" \
                         "KEY=#{plaintext}\n" \

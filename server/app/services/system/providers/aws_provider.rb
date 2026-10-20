@@ -84,6 +84,9 @@ module System
             private_ip: instance_data[:private_ip_address],
             public_ip: instance_data[:public_ip_address]
           )
+        rescue ::System::EnrollmentSeed::SeedError => e
+          logger.error("[AwsProvider] start_instance refused: #{e.message}")
+          build_error_response("Enrollment seed could not be minted (check the platform CA and URL)", code: "SeedUnavailable")
         rescue Aws::EC2::Errors::ServiceError => e
           handle_aws_error(e)
         end
@@ -550,14 +553,16 @@ module System
       end
 
       # Re-mint on start (D12): a stopped EC2 instance's user-data attribute is
-      # writable, so replace it with a freshly minted provisioning document
-      # BEFORE the instance starts. The value is a blob (the SDK encodes it);
+      # writable, so replace it BEFORE the instance starts: a fresh document while
+      # unenrolled, the key-less placeholder once enrolled. Only the template
+      # init_script is re-attached; an operator user_data override is not stored
+      # (it may embed secrets) and cloud-init runs scripts once per instance anyway. The value is a blob (the SDK encodes it);
       # it is never logged. No-op when the instance was not platform-seeded.
       def reseed_user_data!(instance_id)
-        user_data = remint_user_data_for(instance_id)
-        return if user_data.nil?
+        seed = seed_for_start(instance_id)
+        return if seed.action == :none
 
-        ec2_client.modify_instance_attribute(instance_id: instance_id, user_data: { value: user_data })
+        ec2_client.modify_instance_attribute(instance_id: instance_id, user_data: { value: seed.user_data })
       end
 
       def build_run_instance_params(params)

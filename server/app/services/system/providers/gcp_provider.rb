@@ -92,6 +92,9 @@ module System
             private_ip: extract_private_ip(instance),
             public_ip: extract_public_ip(instance)
           )
+        rescue ::System::EnrollmentSeed::SeedError => e
+          logger.error("[GcpProvider] start_instance refused: #{e.message}")
+          build_error_response("Enrollment seed could not be minted (check the platform CA and URL)", code: "SeedUnavailable")
         rescue Google::Cloud::NotFoundError
           build_error_response("Instance not found", code: "NotFound")
         rescue Google::Cloud::Error => e
@@ -845,13 +848,14 @@ module System
       # (other items, incl. an operator startup-script, are preserved) using the
       # current fingerprint. The document is never logged.
       def reseed_user_data!(instance_id)
-        user_data = remint_user_data_for(instance_id, compose: false)
-        return if user_data.nil?
+        seed = seed_for_start(instance_id, compose: false)
+        return if seed.action == :none
 
         current = instances_client.get(project: project_id, zone: zone, instance: instance_id)
         kept = Array(current.metadata&.items).reject { |i| i.key == "user-data" }
                                                 .map { |i| { key: i.key, value: i.value } }
-        items = kept + [ { key: "user-data", value: user_data } ]
+        # Enrolled: REMOVE the item (nothing to read); unenrolled: replace it.
+        items = seed.action == :clear ? kept : kept + [ { key: "user-data", value: seed.user_data } ]
         resource = Google::Cloud::Compute::V1::Metadata.new(
           fingerprint: current.metadata&.fingerprint,
           items: items.map { |i| Google::Cloud::Compute::V1::Items.new(**i) }

@@ -703,7 +703,7 @@ module System
         # part is the v1 document and second part the script.
         separate = SEPARATE_SCRIPT_PROVIDERS.include?(provider_type.to_s)
         seed = ::System::EnrollmentSeed.render_user_data(
-          instance: instance, extra: separate ? nil : operator_script
+          instance: instance, extra: separate ? nil : operator_script, provider_type: provider_type.to_s
         )
         params[:user_data] = seed.user_data
         params[:init_script] = operator_script if separate && operator_script

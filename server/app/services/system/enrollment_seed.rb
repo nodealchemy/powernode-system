@@ -24,20 +24,80 @@ module System
     JSON_PART_TYPE = "application/x-powernode-provision+json"
     BOUNDARY_PREFIX = "powernode-seed"
 
+    # Raw (pre-base64) user-data byte limits per provider. AWS: 16 KB raw. OpenStack
+    # (Nova): 65535 base64 chars => ~49151 raw. Azure userData: 64 KB base64 =>
+    # ~49151 raw. GCP: 256 KB per metadata value. Others are unlimited here.
+    SIZE_LIMITS = { "aws" => 16_384, "openstack" => 49_151, "azure" => 49_151, "gcp" => 262_144 }.freeze
+
+    # Written instead of a seed when an ALREADY-ENROLLED instance starts: no key,
+    # nothing secret. cloud-init treats it as a no-op config; the agent finds no
+    # identity in it.
+    NEUTRAL_USER_DATA = "#cloud-config\n# powernode: platform seed cleared (instance is enrolled)\n"
+
+    # An init-script prefix => the MIME type of its part. Anything else is refused.
+    SCRIPT_TYPES = [
+      [ "#cloud-config",    "text/cloud-config" ],
+      [ "#!",               "text/x-shellscript" ],
+      [ "#include-once",    "text/x-include-once-url" ],
+      [ "#include",         "text/x-include-url" ],
+      [ "#cloud-boothook",  "text/cloud-boothook" ],
+      [ "#part-handler",    "text/part-handler" ],
+      [ "#upstart-job",     "text/upstart-job" ]
+    ].freeze
+    OPERATOR_MULTIPART_RE = %r{\A(?:MIME-Version:|Content-Type:\s*multipart/)}i
+
     Result = Struct.new(:user_data, :bootstrap_token_id, :expires_at, keyword_init: true)
 
     class SeedError < StandardError; end
 
     class << self
-      # Single mint path for every channel (v1 JSON, fw-cfg, cicustom).
+      # Single mint path for every channel (v1 JSON, fw-cfg, cicustom). Under the
+      # instance row lock (serialises concurrent starts) it first revokes every
+      # prior ACTIVE token of the same purpose for the instance (each revoke is an
+      # audited row in this transaction), so at most one seed key is live.
       def issue_token(instance:, purpose: CLOUD_PURPOSE)
-        ::System::BootstrapToken.issue!(
-          node: instance.node,
-          node_instance: instance,
-          intended_subject: instance.id,
-          ttl: TTL,
-          purpose: purpose
-        )
+        ::System::BootstrapToken.transaction do
+          instance.with_lock do
+            ::System::BootstrapToken.active
+                                    .where(node_instance_id: instance.id, purpose: purpose)
+                                    .find_each do |prior|
+              prior.revoke!
+            rescue ::System::BootstrapToken::InvalidConsumption
+              next # consumed between the read and the lock: nothing left to revoke
+            end
+            ::System::BootstrapToken.issue!(
+              node: instance.node,
+              node_instance: instance,
+              intended_subject: instance.id,
+              ttl: TTL,
+              purpose: purpose
+            )
+          end
+        end
+      end
+
+      # An enrolled instance (agent holds an mTLS identity) never gets a new key.
+      def enrolled?(instance)
+        instance.mtls_subject.present? || instance.node_certificates.active.exists?
+      end
+
+      # The NodeInstance behind a provider cloud id, scoped to the provider
+      # connection's account AND provider, excluding terminated rows. nil when none
+      # matches; SeedError when more than one does (never guess between tenants).
+      def resolve_instance(connection:, cloud_id:)
+        return nil if cloud_id.blank? || connection.nil?
+        return nil if connection.account_id.blank? || connection.provider_id.blank?
+
+        rows = ::System::NodeInstance
+               .where(account_id: connection.account_id)
+               .joins(:provider_region)
+               .where(system_provider_regions: { provider_id: connection.provider_id })
+               .where.not(status: "terminated")
+               .where("system_node_instances.config->>'cloud_instance_id' = ?", cloud_id.to_s)
+               .limit(2).to_a
+        raise SeedError, "ambiguous cloud id #{cloud_id.inspect}: #{rows.size}+ live instances match; refusing to seed" if rows.size > 1
+
+        rows.first
       end
 
       # @param instance [System::NodeInstance]
@@ -47,7 +107,7 @@ module System
       #   is the bare v1 JSON (what the agent reads from cloud user-data).
       # @param server [String, nil] https platform URL override (default: configured)
       # @return [Result]
-      def render_user_data(instance:, purpose: CLOUD_PURPOSE, extra: nil, server: nil, ca_pem: nil)
+      def render_user_data(instance:, purpose: CLOUD_PURPOSE, extra: nil, server: nil, ca_pem: nil, provider_type: nil)
         result = nil
         ::System::BootstrapToken.transaction do
           token, plaintext = issue_token(instance: instance, purpose: purpose)
@@ -55,8 +115,10 @@ module System
             instance: instance, key: plaintext, purpose: purpose,
             expires_at: token.expires_at, server: server, ca_pem: ca_pem
           )
+          user_data = compose(document, extra)
+          check_size!(user_data, provider_type)
           result = Result.new(
-            user_data: compose(document, extra),
+            user_data: user_data,
             bootstrap_token_id: token.id,
             expires_at: token.expires_at
           )
@@ -84,6 +146,19 @@ module System
         return document if extra.to_s.strip.empty?
 
         boundary = "#{BOUNDARY_PREFIX}-#{SecureRandom.hex(12)}"
+        script = extra.to_s.chomp
+        raise SeedError, "init script must not contain the MIME boundary" if script.include?(boundary)
+
+        # An operator's own multipart carries its headers; it nests as a part.
+        script_head =
+          if script.lstrip.match?(OPERATOR_MULTIPART_RE)
+            [ script.lstrip ]
+          else
+            [ "Content-Type: #{part_type_for(script)}; charset=\"utf-8\"",
+              "Content-Disposition: attachment; filename=\"user-script\"",
+              "",
+              script ]
+          end
         [
           "MIME-Version: 1.0",
           "Content-Type: multipart/mixed; boundary=\"#{boundary}\"",
@@ -94,10 +169,7 @@ module System
           "",
           document,
           "--#{boundary}",
-          "Content-Type: #{part_type_for(extra)}; charset=\"utf-8\"",
-          "Content-Disposition: attachment; filename=\"user-script\"",
-          "",
-          extra.to_s.chomp,
+          *script_head,
           "--#{boundary}--",
           ""
         ].join("\n")
@@ -105,10 +177,22 @@ module System
 
       def part_type_for(script)
         head = script.to_s.lstrip
-        return "text/cloud-config" if head.start_with?("#cloud-config")
-        return "text/x-shellscript" if head.start_with?("#!")
+        match = SCRIPT_TYPES.find { |prefix, _| head.start_with?(prefix) }
+        return match.last if match
 
-        "text/cloud-config"
+        raise SeedError,
+              "unsupported init script type (first line #{head.lines.first.to_s.strip[0, 40].inspect}); " \
+              "start it with #cloud-config, #!, #include, #cloud-boothook, #part-handler or #upstart-job, " \
+              "or supply a complete MIME multipart"
+      end
+
+      def check_size!(user_data, provider_type)
+        limit = SIZE_LIMITS[provider_type.to_s]
+        return if limit.nil? || user_data.bytesize <= limit
+
+        raise SeedError,
+              "user-data is #{user_data.bytesize} bytes, over the #{provider_type} limit of #{limit}; " \
+              "shorten the init script or the CA chain"
       end
     end
   end
