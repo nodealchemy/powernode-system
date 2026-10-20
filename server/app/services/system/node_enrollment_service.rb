@@ -152,6 +152,8 @@ module System
       )
     rescue ::System::BootstrapToken::InvalidConsumption => e
       failure(e.message)
+    rescue ::System::BootstrapToken::AuditFailure
+      failure("enrolment audit unavailable")
     rescue ::System::InternalCaService::CaError, ::System::InternalCaService::CsrError => e
       failure("CSR/CA failure: #{e.message}")
     rescue ::ActiveRecord::RecordInvalid => e

@@ -240,4 +240,21 @@ RSpec.describe System::NodeEnrollmentService do
       expect(token_record.reload.consumed_at).to be_nil
     end
   end
+
+  describe "#enroll! with a failing audit write (fail closed)" do
+    it "returns a static failure, leaves the token unconsumed, issues no certificate and never calls the CA" do
+      token_record
+      allow(AuditLog).to receive(:log_action).and_raise(StandardError, "audit down")
+      expect(::System::InternalCaService).not_to receive(:issue_certificate)
+
+      result = nil
+      expect {
+        result = described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem)
+      }.not_to change(::System::NodeCertificate, :count)
+
+      expect(result.success?).to be(false)
+      expect(result.error).to eq("enrolment audit unavailable")
+      expect(token_record.reload).not_to be_consumed
+    end
+  end
 end

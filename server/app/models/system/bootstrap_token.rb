@@ -70,8 +70,6 @@ module System
     validate :single_use_only, on: :create
     validate :expiry_within_cap, if: -> { new_record? || will_save_change_to_expires_at? }
 
-    after_commit :flush_audit_events
-
     # === Scopes ===
     scope :active,    -> { where(consumed_at: nil, revoked_at: nil).where("expires_at > ?", Time.current) }
     scope :consumed,  -> { where.not(consumed_at: nil) }
@@ -103,8 +101,7 @@ module System
           purpose: purpose,
           created_by: created_by
         )
-        # Queued inside the transaction: delivered by after_commit, never on rollback.
-        token.send(:queue_audit_event, :issued)
+        token.send(:write_audit!, :issued)
       end
       [ token, plaintext ]
     end
@@ -139,7 +136,7 @@ module System
         raise InvalidConsumption, "token expired"          if expired?
 
         update!(consumed_at: Time.current, consumed_from_ip: from_ip)
-        queue_audit_event(:consumed)
+        write_audit!(:consumed)
       end
       self
     end
@@ -153,7 +150,7 @@ module System
         raise InvalidConsumption, "token already consumed" if consumed?
 
         update!(revoked_at: Time.current, revoked_by: by)
-        queue_audit_event(:revoked)
+        write_audit!(:revoked)
       end
       self
     end
@@ -175,22 +172,21 @@ module System
     end
 
     class InvalidConsumption < StandardError; end
+    # The audit row for a key operation could not be written. Key operations
+    # FAIL CLOSED: the surrounding transaction rolls back. The message is static
+    # (no token material, no underlying error text).
+    class AuditFailure < StandardError; end
 
     private
 
-    # Events (:issued, :consumed, :revoked) are queued when the transition is
-    # made and delivered to #audit_hook only AFTER COMMIT, so a rolled-back
-    # enrolment never writes an audit row. One AuditLog row per event, through
-    # the core AuditLog.log_action seam (same as System::LifecycleAuditable).
-    #
-    # FAIL-OPEN, matching that house pattern for lifecycle audits: a failed audit
-    # write is logged and swallowed so it can never block enrolment. The log line
-    # carries the token id and the error class/message only. The row and the log
-    # NEVER include the plaintext or token_hash.
-    def audit_hook(event)
-      return unless account.present?
-
-      actor = event == :revoked ? revoked_by : (event == :issued ? created_by : nil)
+    # Writes the AuditLog row for a key operation INSIDE the operation's own
+    # transaction (core AuditLog.log_action seam, as System::LifecycleAuditable).
+    # FAIL CLOSED by operator decision: there is no rescue-and-continue; a failed
+    # write raises AuditFailure, rolling the issue/consume/revoke (and any
+    # enclosing enrolment) back. A rollback therefore also leaves no audit row.
+    # The row NEVER includes the plaintext or token_hash.
+    def write_audit!(event)
+      actor = { revoked: revoked_by, issued: created_by }[event]
       ::AuditLog.transaction(requires_new: true) do
         ::AuditLog.log_action(
           action: "system.bootstrap_token.#{event}",
@@ -202,15 +198,12 @@ module System
           metadata: audit_metadata(event, actor)
         )
       end
-    rescue StandardError => e
-      Rails.logger.error(
-        "[System::BootstrapToken] audit write failed for token #{id} #{event}: #{e.class}: #{e.message}"
-      )
+    rescue StandardError
+      raise AuditFailure, "bootstrap token audit write failed"
     end
 
     def audit_metadata(event, actor)
       {
-        token_id: id,
         purpose: purpose,
         node_id: node_id,
         node_instance_id: node_instance_id,
@@ -219,17 +212,6 @@ module System
         actor_id: actor&.id,
         consumed_from_ip: (consumed_from_ip.to_s if event == :consumed)
       }.compact
-    end
-
-    def queue_audit_event(event)
-      # Always called inside the transaction making the transition; the
-      # after_commit callback delivers it.
-      (@pending_audit_events ||= []) << event
-    end
-
-    def flush_audit_events
-      events, @pending_audit_events = @pending_audit_events, nil
-      events&.each { |event| audit_hook(event) }
     end
 
     def single_use_only

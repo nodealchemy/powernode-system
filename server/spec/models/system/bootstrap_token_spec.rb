@@ -248,30 +248,17 @@ RSpec.describe System::BootstrapToken, type: :model do
     end
   end
 
-  describe "audit hook timing" do
-    it "fires issued/consumed/revoked after commit, not before" do
+  describe "audit write atomicity" do
+    it "writes the audit rows inside the operation's transaction (visible before commit)" do
       node
-      events = []
-      allow_any_instance_of(described_class).to receive(:audit_hook) { |_, e| events << e }
-
       ActiveRecord::Base.transaction do
         token, _ = described_class.issue!(node: node, intended_subject: "x", purpose: "operator_key")
         token.revoke!
-        expect(events).to be_empty
-      end
-      expect(events).to eq(%i[issued revoked])
-    end
-
-    it "fires nothing when the surrounding transaction rolls back" do
-      node
-      events = []
-      allow_any_instance_of(described_class).to receive(:audit_hook) { |_, e| events << e }
-
-      ActiveRecord::Base.transaction do
-        described_class.issue!(node: node, intended_subject: "x", purpose: "operator_key")
+        expect(AuditLog.where(resource_type: "System::BootstrapToken").pluck(:action))
+          .to match_array(%w[system.bootstrap_token.issued system.bootstrap_token.revoked])
         raise ActiveRecord::Rollback
       end
-      expect(events).to be_empty
+      expect(AuditLog.where(resource_type: "System::BootstrapToken").count).to eq(0)
     end
   end
 
@@ -361,18 +348,51 @@ RSpec.describe System::BootstrapToken, type: :model do
       expect(rows.count).to eq(0)
     end
 
-    it "does not break the operation when the audit write fails, and logs without secrets" do
-      allow(AuditLog).to receive(:log_action).and_raise(StandardError, "audit down")
-      logged = []
-      allow(Rails.logger).to receive(:error) { |m| logged << m.to_s }
+    it "stores no [FILTERED] metadata key" do
+      token, _ = described_class.issue!(node: node, intended_subject: "x", purpose: "operator_key", created_by: user)
+      token.consume!(from_ip: "203.0.113.9")
+      token.reload
+      dump = rows.map { |r| r.metadata.to_json }.join
+      expect(dump).not_to include("FILTERED")
+    end
 
-      token = plaintext = nil
-      expect { token, plaintext = described_class.issue!(node: node, intended_subject: "x") }.not_to raise_error
-      expect { token.consume! }.not_to raise_error
-      expect(token.reload).to be_consumed
-      expect(logged.join).to include("audit down")
-      expect(logged.join).not_to include(plaintext)
-      expect(logged.join).not_to include(token.token_hash)
+    context "when the audit write fails (fail closed)" do
+      before { allow(AuditLog).to receive(:log_action).and_raise(StandardError, "audit down") }
+
+      it "issue! raises and persists nothing" do
+        node
+        expect { described_class.issue!(node: node, intended_subject: "x", purpose: "operator_key") }
+          .to raise_error(described_class::AuditFailure)
+        expect(described_class.count).to eq(0)
+      end
+
+      it "consume! raises and leaves the token unconsumed" do
+        token = create_token_without_audit
+        expect { token.consume!(from_ip: "203.0.113.9") }.to raise_error(described_class::AuditFailure)
+        expect(token.reload).not_to be_consumed
+        expect(token.consumed_from_ip).to be_nil
+      end
+
+      it "revoke! raises and leaves the token unrevoked" do
+        token = create_token_without_audit
+        expect { token.revoke!(by: user) }.to raise_error(described_class::AuditFailure)
+        expect(token.reload).not_to be_revoked
+      end
+
+      it "does not echo the underlying error text or secrets" do
+        token = create_token_without_audit
+        expect { token.consume! }.to raise_error(described_class::AuditFailure) { |e|
+          expect(e.message).not_to include("audit down")
+          expect(e.message).not_to include(token.token_hash)
+        }
+      end
+    end
+
+    def create_token_without_audit
+      allow(AuditLog).to receive(:log_action).and_call_original
+      token, _ = described_class.issue!(node: node, intended_subject: "x", purpose: "operator_key")
+      allow(AuditLog).to receive(:log_action).and_raise(StandardError, "audit down")
+      token
     end
   end
 
