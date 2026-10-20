@@ -786,3 +786,40 @@ func BenchmarkLogTail_8MiBHeaderEvery33KiBOneFarFooter(b *testing.B) {
 		_ = logTail([]byte(`{"ok":false}`), stderr)
 	}
 }
+
+func TestLogTail_ClippedSSH2KeyWithCommentIsRemoved(t *testing.T) {
+	// An RFC 4716 Comment:/Subject: header inside a clipped SSH2 block must
+	// not end the body at the header. Header assembled at runtime.
+	body := syntheticPEMBody(t, 71, 6)
+	hdr := "---- BEGIN SSH2 " + "ENCRYPTED PRIVATE KEY ----"
+	for _, h := range []string{"Comment: \"x\"", "Subject: me\nComment: \"a long comment \\\ncontinued\""} {
+		in := "stage 0\n" + hdr + "\n" + h + "\n" + strings.Join(body, "\n") + "\n"
+		got := logTail([]byte(in), []byte("ok"))
+		if strings.Contains(got, body[2]) || got != "stdout: stage 0\n"+wantKeyBlockMarker+"\nstderr: ok" {
+			t.Fatalf("got:\n%.300s", got)
+		}
+	}
+}
+
+func TestLogTail_ClippedSpaceJoinedKeyIsRemoved(t *testing.T) {
+	body := syntheticPEMBody(t, 72, 6)
+	hdr := "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
+	for _, sep := range []string{" ", "\t"} {
+		in := "stage 0\n" + hdr + sep + strings.Join(body, sep) + "\n"
+		got := logTail([]byte(in), []byte("ok"))
+		for _, tok := range body {
+			if strings.Contains(got, tok) {
+				t.Fatalf("body token survived for %q:\n%.300s", sep, got)
+			}
+		}
+	}
+}
+
+func TestLogTail_HeaderAfterBase64IsNotPartOfAClippedBody(t *testing.T) {
+	body := syntheticPEMBody(t, 73, 3)
+	hdr := "---- BEGIN SSH2 " + "ENCRYPTED PRIVATE KEY ----"
+	in := "stage 0\n" + hdr + "\n" + strings.Join(body, "\n") + "\nComment: \"after\"\n"
+	if got, want := logTail([]byte(in), []byte("ok")), "stdout: stage 0\n"+wantKeyBlockMarker+"\nComment: \"after\"\nstderr: ok"; got != want {
+		t.Fatalf("got:\n%.300s", got)
+	}
+}

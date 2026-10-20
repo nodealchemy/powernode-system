@@ -521,6 +521,8 @@ const (
 	pemBlockMaxSpan = 128 << 10
 )
 
+const ssh2HeaderPattern = `(?:Comment|Subject|[Xx]-[A-Za-z0-9-]{1,62}):.*`
+
 var (
 	// A private-key header / footer, in the RFC 7468 five-dash form (the
 	// server sanitizer's class, so neither can span a line) and the RFC 4716
@@ -533,7 +535,10 @@ var (
 	// or a blank line. The lower bound is the server sanitizer's own: shorter
 	// runs are ordinary words. Lines are matched after TrimSpace, so
 	// indentation and trailing whitespace do not break a run.
-	pemBodyLineRe = regexp.MustCompile(`^(?:[A-Za-z0-9+/=]{16,76}|(?:Proc-Type|DEK-Info):.*)?$`)
+	pemBodyLineRe = regexp.MustCompile(`^(?:[A-Za-z0-9+/=]{16,76}|(?:Proc-Type|DEK-Info):.*|` + ssh2HeaderPattern + `)?$`)
+	// An RFC 4716 header line (Comment:, Subject:, private x- tags). It is
+	// part of a body only BEFORE the first base64 line: callers gate on that.
+	ssh2HeaderRe = regexp.MustCompile(`^` + ssh2HeaderPattern + `$`)
 	// A body's LAST line is the base64 remainder, 4..64 chars: a short one
 	// counts only when the END footer is the very next line.
 	pemShortLineRe = regexp.MustCompile(`^[A-Za-z0-9+/=]{1,15}$`)
@@ -613,6 +618,12 @@ func removeKeyBlocks(b []byte) []byte {
 // never re-reads it: every byte is examined once.
 func clippedBodyEnd(b []byte, from int, rejected *int) int {
 	end, prevWidth := from, 0
+	seenBase64 := false
+	// A space-joined `echo $KEY` keeps the body on the header's own line.
+	if from < len(b) && (b[from] == ' ' || b[from] == '\t') {
+		end, prevWidth = spaceJoinedTokensEnd(b, from)
+		seenBase64 = prevWidth > 0
+	}
 	for end < len(b) {
 		sep := lineSeparator(b, end)
 		if sep == 0 {
@@ -626,15 +637,86 @@ func clippedBodyEnd(b []byte, from int, rejected *int) int {
 		for lineEnd < len(b) && b[lineEnd] != '\n' && b[lineEnd] != '\\' {
 			lineEnd++
 		}
+		if !seenBase64 {
+			// RFC 4716 headers, with their backslash-continued lines, may
+			// precede the first base64 line and nothing else may follow one.
+			if hdrEnd := ssh2HeaderEnd(b, lineStart); hdrEnd > 0 {
+				end = hdrEnd
+				continue
+			}
+		}
 		line := bytes.TrimSpace(b[lineStart:lineEnd])
 		if !clippedBodyLine(line, prevWidth, onlyTerminatorFollows(b[lineEnd:])) {
 			*rejected = lineStart
 			break
 		}
+		if len(line) > 0 && !bytes.HasPrefix(line, []byte("Proc-Type:")) && !bytes.HasPrefix(line, []byte("DEK-Info:")) {
+			seenBase64 = true
+		}
 		prevWidth = len(line)
 		end = lineEnd
 	}
 	return end
+}
+
+// spaceJoinedTokensEnd consumes, from b[from] (a space or tab), the
+// space-separated base64 tokens that follow on the same line: a token of 16
+// or more characters, or the short remainder when it is the last thing on
+// the line after a standard wrap width. It returns where the run ends (the
+// end of the last consumed token, or from if none) and that token's width.
+func spaceJoinedTokensEnd(b []byte, from int) (end, width int) {
+	end = from
+	pos := from
+	for {
+		for pos < len(b) && (b[pos] == ' ' || b[pos] == '\t') {
+			pos++
+		}
+		tokEnd := pos
+		for tokEnd < len(b) && isBase64Byte(b[tokEnd]) {
+			tokEnd++
+		}
+		n := tokEnd - pos
+		if n == 0 {
+			return end, width
+		}
+		rest := tokEnd
+		for rest < len(b) && (b[rest] == ' ' || b[rest] == '\t') {
+			rest++
+		}
+		atLineEnd := rest >= len(b) || b[rest] == '\n' || b[rest] == '\r' || b[rest] == '\\'
+		if n < 16 && !(atLineEnd && n%4 == 0 && (width == 64 || width == 70 || width == 76)) {
+			return end, width
+		}
+		if tokEnd < len(b) && b[tokEnd] != ' ' && b[tokEnd] != '\t' && b[tokEnd] != '\n' && b[tokEnd] != '\r' && b[tokEnd] != '\\' {
+			return end, width // the token runs into a non-base64 byte
+		}
+		end, width, pos = tokEnd, n, tokEnd
+	}
+}
+
+func isBase64Byte(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '+' || c == '/' || c == '='
+}
+
+// ssh2HeaderEnd: if the line at lineStart is an RFC 4716 header, the offset
+// where it ends, including any lines continued by a trailing backslash; else
+// 0. The header ends before its terminating separator, like a body line.
+func ssh2HeaderEnd(b []byte, lineStart int) int {
+	pos := lineStart
+	for {
+		eol := pos
+		for eol < len(b) && b[eol] != '\n' {
+			eol++
+		}
+		raw := bytes.TrimRight(b[pos:eol], "\r")
+		if pos == lineStart && !ssh2HeaderRe.Match(bytes.TrimSpace(raw)) {
+			return 0
+		}
+		if !bytes.HasSuffix(raw, []byte("\\")) || eol >= len(b) {
+			return pos + len(raw)
+		}
+		pos = eol + 1
+	}
 }
 
 // lineSeparator is the width of the line separator at b[at]: a real LF or
@@ -700,9 +782,21 @@ func clippedBodyLine(line []byte, prevWidth int, last bool) bool {
 func dropCutKeyBody(window string) string {
 	lines := strings.SplitAfter(window, "\n")
 	start, end, anchored := 0, 0, false
+	sawBase64, cont := false, false
 	for i, raw := range lines {
 		line := strings.TrimSpace(raw)
+		wasCont := cont
+		cont = false
 		switch {
+		case i > 0 && !sawBase64 && wasCont:
+			// continuation of a backslash-continued RFC 4716 header
+			cont = strings.HasSuffix(line, "\\")
+			end = i + 1
+			continue
+		case i > 0 && !sawBase64 && ssh2HeaderRe.MatchString(line):
+			cont = strings.HasSuffix(line, "\\")
+			end = i + 1
+			continue
 		case pemEndLineRe.MatchString(line):
 			end, anchored = i+1, true
 		case i == 0:
@@ -711,8 +805,9 @@ func dropCutKeyBody(window string) string {
 			}
 			end = 1
 			continue
-		case pemBodyLineRe.MatchString(line):
+		case pemBodyLineRe.MatchString(line) && !(sawBase64 && ssh2HeaderRe.MatchString(line)):
 			anchored = anchored || line != ""
+			sawBase64 = sawBase64 || line != ""
 			end = i + 1
 			continue
 		case pemShortLineRe.MatchString(line) && i+1 < len(lines) && pemEndLineRe.MatchString(strings.TrimSpace(lines[i+1])):
