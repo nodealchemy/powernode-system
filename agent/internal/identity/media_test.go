@@ -22,6 +22,9 @@ type fakeDisk struct {
 	removable bool
 	usb       bool     // the sysfs device path runs through a usbN hub, whatever the flags say
 	parts     []string // partition names; empty means the whole device is the candidate
+	hostPath  string   // sysfs device path below sys/devices (thunderbolt, firewire, ...)
+	attrAt    string   // directory below sys/devices whose "removable" attribute says "removable"
+	cardType  string   // device/type attribute (mmcblk: "SD" or "MMC")
 }
 
 type fakeMedia struct {
@@ -47,6 +50,8 @@ type fakeMachine struct {
 	gateDevs        map[string]chan struct{}
 	gate            chan struct{} // when set, Mount blocks until closed and IGNORES ctx (a wedged syscall)
 	roErr           error
+	roErrDevs       map[string]error
+	mountFail       map[string]bool
 }
 
 func newFakeMachine(t *testing.T) *fakeMachine {
@@ -68,8 +73,11 @@ func (m *fakeMachine) path(rel ...string) string {
 func (m *fakeMachine) addDisk(name string, d fakeDisk) {
 	m.t.Helper()
 	dir := m.path("sys/block", name)
-	if d.usb {
-		real := m.path("sys/devices/pci0000:00/usb1/1-1/block", name)
+	if d.usb && d.hostPath == "" {
+		d.hostPath = "pci0000:00/usb1/1-1/block"
+	}
+	if d.hostPath != "" {
+		real := m.path("sys/devices", d.hostPath, name)
 		if err := os.MkdirAll(real, 0o755); err != nil {
 			m.t.Fatal(err)
 		}
@@ -78,6 +86,18 @@ func (m *fakeMachine) addDisk(name string, d fakeDisk) {
 		}
 	} else if err := os.MkdirAll(dir, 0o755); err != nil {
 		m.t.Fatal(err)
+	}
+	if d.attrAt != "" {
+		if err := os.MkdirAll(m.path("sys/devices", d.attrAt), 0o755); err != nil {
+			m.t.Fatal(err)
+		}
+		m.write(m.path("sys/devices", d.attrAt, "removable"), "removable\n")
+	}
+	if d.cardType != "" {
+		if err := os.MkdirAll(filepath.Join(dir, "device"), 0o755); err != nil {
+			m.t.Fatal(err)
+		}
+		m.write(filepath.Join(dir, "device", "type"), d.cardType+"\n")
 	}
 	rem := "0\n"
 	if d.removable {
@@ -128,6 +148,10 @@ func (m *fakeMachine) mount(ctx context.Context, src, target, fstype, opts, data
 	m.mu.Lock()
 	m.calls = append(m.calls, mountCall{dev, fstype, opts, data})
 	m.events = append(m.events, "mount:"+dev)
+	if m.mountFail[dev] {
+		m.mu.Unlock()
+		return errors.New("mount failed")
+	}
 	med, ok := m.media[dev]
 	m.mu.Unlock()
 	if !ok || med.fs != fstype {
@@ -183,6 +207,9 @@ func (m *fakeMachine) setRO(dev string) (func() error, error) {
 	if m.roErr != nil {
 		return nil, m.roErr
 	}
+	if e := m.roErrDevs[name]; e != nil {
+		return nil, e
+	}
 	return func() error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -191,7 +218,7 @@ func (m *fakeMachine) setRO(dev string) (func() error, error) {
 	}, nil
 }
 
-func (m *fakeMachine) strategy(known ...string) *MediaScanStrategy {
+func (m *fakeMachine) strategy() *MediaScanStrategy {
 	return &MediaScanStrategy{
 		SysBlock:    m.path("sys/block"),
 		DevRoot:     m.path("dev"),
@@ -200,7 +227,6 @@ func (m *fakeMachine) strategy(known ...string) *MediaScanStrategy {
 		StagePath:   m.path("run/powernode/identity.cfg"),
 		Budget:      5 * time.Second,
 		EnumWait:    -1,
-		KnownIDs:    func(context.Context) []string { return known },
 		Settle:      func(context.Context, time.Duration) {},
 		Mount:       m.mount,
 		Unmount:     m.unmount,
@@ -294,32 +320,31 @@ func TestMediaScanReadsRootFileThenFallbackPath(t *testing.T) {
 	}
 }
 
-func TestMediaScanPrefersKnownInstanceID(t *testing.T) {
+func TestMediaScanRefusesAnyDifferenceBetweenDocuments(t *testing.T) {
 	pki := newTestPKI(t)
-	m := newFakeMachine(t)
-	m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
-	m.addDisk("sdc", fakeDisk{removable: true, parts: []string{"sdc1"}})
-	m.media["sdb1"] = vfatWith(docFor(pki, idA, "2026-10-20T09:00:00Z"))
-	m.media["sdc1"] = vfatWith(docFor(pki, idB, "2026-10-20T10:00:00Z")) // newer, but not the known one
-	id, err := m.strategy(strings.ToUpper(idA)).Discover(context.Background())
-	if err != nil || id.InstanceUUID != idA {
-		t.Fatalf("id=%+v err=%v", id, err)
+	a := docFor(pki, idA, "2026-10-20T09:00:00Z")
+	for name, b := range map[string]string{
+		"issued_at":   docFor(pki, idA, "2026-10-20T10:00:00Z"),
+		"instance_id": docFor(pki, idB, "2026-10-20T09:00:00Z"),
+		"key": v1Doc(pki, func(d map[string]any) {
+			d["instance_id"] = idA
+			d["issued_at"] = "2026-10-20T09:00:00Z"
+			d["expires_at"] = "2030-01-01T00:00:00Z"
+			d["key"] = "not-another-enrol-key"
+		}),
+	} {
+		for tier, fixed := range map[string]bool{"removable": false, "fixed": true} {
+			m := newFakeMachine(t)
+			m.addDisk("sdb", fakeDisk{removable: !fixed, parts: []string{"sdb1"}})
+			m.addDisk("sdc", fakeDisk{removable: !fixed, parts: []string{"sdc1"}})
+			m.media["sdb1"] = vfatWith(a)
+			m.media["sdc1"] = vfatWith(b)
+			if _, err := m.strategy().Discover(context.Background()); !errors.Is(err, ErrProvisionRefused) {
+				t.Fatalf("%s/%s: any difference must be refused, got %v", name, tier, err)
+			}
+		}
 	}
 }
-
-func TestMediaScanPrefersNewestIssuedAtWithoutKnownMatch(t *testing.T) {
-	pki := newTestPKI(t)
-	m := newFakeMachine(t)
-	m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
-	m.addDisk("sdc", fakeDisk{removable: true, parts: []string{"sdc1"}})
-	m.media["sdb1"] = vfatWith(docFor(pki, idA, "2026-10-20T09:00:00Z"))
-	m.media["sdc1"] = vfatWith(docFor(pki, idB, "2026-10-20T10:00:00+00:00"))
-	id, err := m.strategy("11111111-1111-1111-1111-111111111111").Discover(context.Background())
-	if err != nil || id.InstanceUUID != idB {
-		t.Fatalf("id=%+v err=%v", id, err)
-	}
-}
-
 func TestMediaScanRefusesAmbiguityLoggingOnlyDeviceNames(t *testing.T) {
 	pki := newTestPKI(t)
 	m := newFakeMachine(t)
@@ -369,8 +394,8 @@ func TestMediaScanStrictRefusalIsTerminal(t *testing.T) {
 	}
 	for name, content := range bad {
 		m := newFakeMachine(t)
-		m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
-		m.addDisk("sdc", fakeDisk{removable: true, parts: []string{"sdc1"}})
+		m.addDisk("sdb", fakeDisk{parts: []string{"sdb1"}})
+		m.addDisk("sdc", fakeDisk{parts: []string{"sdc1"}})
 		m.media["sdb1"] = vfatWith(content)
 		m.media["sdc1"] = vfatWith(docFor(pki, idA, "2026-10-20T10:00:00Z")) // a good one must not rescue it
 		s := m.strategy()

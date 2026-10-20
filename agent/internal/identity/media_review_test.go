@@ -18,7 +18,7 @@ func TestReviewCidataLabelOnUSBWins(t *testing.T) {
 	m.label("cidata", "sdb1")
 	m.media["sdb1"] = vfatWith(docWith(pki, idB, "2026-10-20T11:00:00Z", "https://evil.example.test", otherPin))
 	m.media["sdc"] = vfatWith(docFor(pki, idA, "2026-10-20T09:00:00Z"))
-	_, err := m.strategy(idB).Discover(context.Background())
+	_, err := m.strategy().Discover(context.Background())
 	if !errors.Is(err, ErrProvisionRefused) {
 		t.Fatalf("a USB doc disagreeing with fixed media must be refused, got %v", err)
 	}
@@ -40,7 +40,7 @@ func TestMediaScanClassifiesByBusNotByFlagOrType(t *testing.T) {
 }
 
 // F2: budget starvation must not let removable media win by default.
-func TestReviewBudgetStarvationSkipsCidata(t *testing.T) {
+func TestMediaScanRemovableDocumentIsDroppedAfterAnAbandonedRemovableProbe(t *testing.T) {
 	pki := newTestPKI(t)
 	m := newFakeMachine(t)
 	m.addDisk("sdb", fakeDisk{usb: true, parts: []string{"sdb1"}})
@@ -85,10 +85,10 @@ func TestReviewSameServerNewerUSBWins(t *testing.T) {
 	m.addDisk("sdc", fakeDisk{})
 	m.media["sdb1"] = vfatWith(docFor(pki, idB, "2026-10-20T11:00:00Z")) // same server+pin, newer
 	m.media["sdc"] = vfatWith(docFor(pki, idA, "2026-10-20T09:00:00Z"))
-	for _, known := range [][]string{nil, {idB}} {
+	for range 2 {
 		m.calls, m.events, m.sniffs = nil, nil, nil
-		if _, err := m.strategy(known...).Discover(context.Background()); !errors.Is(err, ErrProvisionRefused) {
-			t.Fatalf("known=%v: want refusal, got %v", known, err)
+		if _, err := m.strategy().Discover(context.Background()); !errors.Is(err, ErrProvisionRefused) {
+			t.Fatalf("want refusal, got %v", err)
 		}
 	}
 }

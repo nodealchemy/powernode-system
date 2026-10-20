@@ -207,38 +207,45 @@ A booting, UNENROLLED node scans attached drives for a v1 document (agent
   Resolver never runs it after an earlier source already supplied an identity
   (so media cannot veto it or attach a pin). This holds for every call site
   that resolves identity (runtime bootstrap, CLI, soft_recompose, prepare-root).
-- Probe order: FIXED media first -- `LABEL=cidata`/`CIDATA`, then `/dev/sr*`,
-  then the remaining disks -- and removable/USB media LAST, so a stick cannot
-  use up the budget ahead of the seed disk. "Removable" is decided by the bus: a
-  disk whose real sysfs path runs through a `usbN` controller, or a non-optical
-  disk with `removable=1`, never by a label or by being a CD-ROM (an internal
-  optical drive is fixed; a USB CD-ROM gadget or a USB stick labelled CIDATA is not). Disks backing any current mount (root,
-  `/boot`, dm slaves, `/dev/root`) and the image's `LABEL=BOOT` partition are skipped.
+- **Probe order and "removable".** FIXED media first -- `LABEL=cidata`/`CIDATA`,
+  then `/dev/sr*`, then the remaining disks -- and removable media LAST, so a
+  stick cannot use up the budget ahead of the seed disk. "Removable" is decided
+  by the hardware, never by a label or by being a CD-ROM: a disk whose real sysfs
+  path runs through a `usbN` or firewire segment, any disk with a sysfs ancestor
+  whose `removable` attribute reads `removable` (Thunderbolt and external PCI
+  ports), a native SD card (`mmcblk*` with `device/type` = `SD`), or a non-optical
+  disk with `removable=1`. An internal optical drive is fixed.
+  Disks backing any current mount (root, `/boot`, dm slaves, `/dev/root`) and the
+  image's `LABEL=BOOT` partition are skipped. If the mount table cannot be read
+  the scan aborts before touching any device.
+- **Enumeration wait.** The scan waits the full enumeration window (default 2 s,
+  inside the budget) before deciding, even when a USB device is already there,
+  because a fixed disk may still be enumerating.
 - Per device: filesystem signature sniffed first (vfat, exfat, iso9660,
-  ext2/3/4) and mounted ONCE with that type, never with a guess loop. The block
-  device is made read-only (BLKROSET) before the mount, ext4 gets `noload`, and
-  every mount is `-o ro,nosuid,nodev,noexec`. A device that cannot be set
-  read-only is not mounted.
+  ext2/3/4) and mounted ONCE with that type. The block device is made read-only
+  (BLKROSET) before the mount, ext4 gets `noload`, and every mount is
+  `-o ro,nosuid,nodev,noexec`. A device that cannot be set read-only is not
+  mounted. BLKROSET is undone (previous state, via BLKROGET) only after a clean,
+  non-detached unmount, by reopening the device by its path; an abandoned or
+  detached device stays read-only.
 - The file is opened component by component with `O_NOFOLLOW` (symlinks on the
   media are never followed), must be a regular file, and is refused if larger
   than the parser cap even if the excess is whitespace. Nothing is executed.
-- **Selection.** All candidates are read within the budget, then the set must
-  be coherent or the scan REFUSES: every document must agree on `server` and
-  `ca_fingerprint`, and any removable (USB) document must be byte-identical to
-  every fixed-media document (a newer same-server stick never supersedes the
-  seed disk; the only flow this refuses is two different documents attached
-  at once). Among coherent documents the one whose `instance_id` is already
-  known (cmdline, fw-cfg, BOOT identity.cfg) wins, else the newest
-  `issued_at`, else REFUSE.
-- **Incomplete scans.** If the budget runs out with any candidate unprobed or
-  abandoned, a removable document is not used (the scan returns not-found and
-  falls through), and nothing is used while a fixed candidate is missing.
-- **Fail closed.** If the mount table cannot be read, the scan aborts before
-  touching any device.
-- BLKROSET is undone (previous state, via BLKROGET) only after a clean,
-  non-detached unmount; an abandoned or detached device stays read-only.
-- A file that fails the strict parse is a terminal refusal. Only device names
-  are logged, never contents or the key.
+- **Selection.** All candidates are read within the budget, then EVERY document
+  must be byte-identical (after trimming), whatever its tier: any difference at
+  all (instance, key, issued_at, server, pin, ...) REFUSES (terminal). There is
+  no known-id or newest-wins tie-break; the only flow this refuses is two
+  different documents attached at once, which is ambiguous by definition.
+- **Incomplete scans.** A candidate that passed the signature sniff but did not
+  finish cleanly (BLKROSET or mount failure, abandoned, or unprobed because the
+  budget ran out) makes the scan incomplete: nothing is used while a fixed
+  candidate is incomplete, and a removable document is not used while any
+  candidate is. The scan returns not-found and falls through.
+- **Refusals.** A document that fails the strict parse (or is oversized) on FIXED
+  media is a terminal refusal. On REMOVABLE media the scan logs the device name
+  and returns not-found, so later strategies still run: a malformed stick cannot
+  block enrolment of an unenrolled node. Only device names are logged, never
+  contents or the key.
 - The accepted document is staged to `/run/powernode/identity.cfg` (0600).
 - **Budget (~10 s)** covers udev settle, the enumeration wait and the probe of
   every candidate as seen by the caller. Per-device I/O runs in a goroutine that
@@ -257,7 +264,9 @@ reboot, so the gate holds for ONE boot only: after a reboot the scan runs again
 
 The scan is trust-on-first-use of physical media: whoever can attach a drive
 to an unenrolled node can offer it an enrolment document. The rules above bound
-this (pin required, conflicts refused, internal/seed media preferred, no effect
-once enrolled) but do not remove it. **Physical-access DoS:** a malformed or
-conflicting stick makes the scan refuse, which blocks enrolment of an
-UNENROLLED node until the stick is removed. An enrolled node is unaffected.
+this (pin required, all documents must agree, fixed media probed first, no
+effect once enrolled) but do not remove it. **Physical-access DoS:** a
+malformed document on removable media is skipped (the node falls through to
+other sources); a WELL-FORMED but DIFFERENT document next to the seed disk, or
+a malformed document on fixed media, still refuses and blocks media enrolment
+of an UNENROLLED node until it is removed. An enrolled node is unaffected.

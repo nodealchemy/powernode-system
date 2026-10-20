@@ -221,7 +221,7 @@ func TestMediaScanRefusesConflictingServerOrPin(t *testing.T) {
 		m.addDisk("sdc", fakeDisk{removable: true, parts: []string{"sdc1"}})
 		m.media["sdb1"] = vfatWith(docFor(pki, idA, "2026-10-20T09:00:00Z"))
 		m.media["sdc1"] = vfatWith(other) // newer, even
-		_, err := m.strategy(idA).Discover(context.Background())
+		_, err := m.strategy().Discover(context.Background())
 		if !errors.Is(err, ErrProvisionRefused) {
 			t.Fatalf("%s: want refusal, got %v", name, err)
 		}
@@ -246,24 +246,22 @@ func TestMediaScanRefusesConflictBetweenNonRemovableSources(t *testing.T) {
 	}
 }
 
-func TestMediaScanReadsAllCandidatesBeforeKnownIDDecision(t *testing.T) {
+func TestMediaScanReadsAllCandidatesBeforeDeciding(t *testing.T) {
 	pki := newTestPKI(t)
+	doc := docFor(pki, idA, "2026-10-20T09:00:00Z")
 	m := newFakeMachine(t)
 	m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
 	m.addDisk("sdc", fakeDisk{removable: true})
-	m.media["sdb1"] = vfatWith(docFor(pki, idA, "2026-10-20T09:00:00Z"))
-	m.media["sdc"] = vfatWith(docFor(pki, idB, "2026-10-20T10:00:00Z"))
-	id, err := m.strategy(idA).Discover(context.Background())
+	m.media["sdb1"] = vfatWith(doc)
+	m.media["sdc"] = vfatWith(doc)
+	id, err := m.strategy().Discover(context.Background())
 	if err != nil || id.InstanceUUID != idA {
 		t.Fatalf("id=%+v err=%v", id, err)
 	}
 	if len(m.calls) != 2 {
-		t.Fatalf("no early stop on a known-id match: mounts=%v", m.calls)
+		t.Fatalf("no early stop: mounts=%v", m.calls)
 	}
 }
-
-// M2 --------------------------------------------------------------------
-
 func TestSniffFSMagics(t *testing.T) {
 	mk := func(size int, set func(b []byte)) []byte { b := make([]byte, size); set(b); return b }
 	cases := map[string][]byte{
@@ -327,7 +325,7 @@ func TestReadMediaFileOnlyOpensRegularFiles(t *testing.T) {
 func TestMediaScanRefusesOversizedFileEvenWhenPaddingIsWhitespace(t *testing.T) {
 	pki := newTestPKI(t)
 	m := newFakeMachine(t)
-	m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
+	m.addDisk("sdb", fakeDisk{parts: []string{"sdb1"}})
 	pad := strings.Repeat(" ", provisionMaxDocBytes)
 	m.media["sdb1"] = vfatWith(docFor(pki, idA, "2026-10-20T10:00:00Z") + pad)
 	_, err := m.strategy().Discover(context.Background())
