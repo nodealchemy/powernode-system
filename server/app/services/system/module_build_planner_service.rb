@@ -184,7 +184,7 @@ module System
         \.(?:git|github|gitea|ci|claude|gitflow)/   |
         \.[^/]+\z                                  |
         [^/]*\.md\z                                |
-        (?:LICENSE|VERSION)\z
+        LICENSE\z
       )
     }x.freeze
 

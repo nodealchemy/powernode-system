@@ -476,17 +476,24 @@ if [ "$needs_parent" = "1" ]; then
   # into the __BUILD_INFO__ define).
   #
   # `release` is deliberately strict: an exact X.Y.Z tag (no "v" prefix —
-  # CLAUDE.md's convention) that equals the VERSION file AND refs/heads/master
-  # pointing at this very commit. A hotfix on master past the tag, a develop
-  # build, or a build of a tag whose VERSION file disagrees all display the
-  # 7-char sha instead. The parent clone is depth-1 and detached, so branch
-  # and tag are read from the remote's refs (ls-remote), never from the
-  # checkout; output is never echoed because the origin URL can carry a token.
-  build_version="$(tr -d '[:space:]' < /tmp/parent/VERSION 2>/dev/null || true)"
-  [ -n "$build_version" ] || build_version="0.0.0"
+  # CLAUDE.md's convention) at this very commit AND refs/heads/master pointing
+  # at it too. A hotfix on master past the tag or a develop build displays the
+  # 7-char sha instead. The parent clone is depth-1 and detached, so branch and
+  # tag are read from the remote's refs (ls-remote), never from the checkout;
+  # output is never echoed because the origin URL can carry a token.
+  #
+  # VERSION comes from release tags only (there is no VERSION file):
+  #   exact tag                       -> X.Y.Z
+  #   branch release/X.Y.Z|hotfix/X.Y.Z -> X.Y.Z-rc.N+sha
+  #   otherwise                       -> <max tag, minor+1, patch 0>-dev.N+sha
+  #   no tags                         -> 0.0.0-dev.0+sha
+  # N (commits since the max tag) cannot be read from a depth-1 clone, so the
+  # clone is deepened to the tag with --shallow-exclude (a partial, tree-less
+  # fetch first, a plain one if the remote refuses filters). If both fail N=0.
   build_short_sha="$(printf '%s' "$core_source_sha" | cut -c1-7)"
   remote_refs="$(git -C /tmp/parent ls-remote --heads --tags origin 2>/dev/null || true)"
-  build_tag="$(printf '%s\n' "$remote_refs" | awk -v s="$core_source_sha" '$1==s && $2 ~ /^refs\/tags\// { t=$2; sub("^refs/tags/","",t); sub("\\^\\{\\}$","",t); print t }' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+  all_tags="$(printf '%s\n' "$remote_refs" | awk '$2 ~ /^refs\/tags\// { t=$2; sub("^refs/tags/","",t); sub("\\^\\{\\}$","",t); print t }' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n -u || true)"
+  build_tag="$(printf '%s\n' "$remote_refs" | awk -v s="$core_source_sha" '$1==s && $2 ~ /^refs\/tags\// { t=$2; sub("^refs/tags/","",t); sub("\\^\\{\\}$","",t); print t }' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 || true)"
   master_sha="$(printf '%s\n' "$remote_refs" | awk '$2=="refs/heads/master" {print $1}' | head -1)"
   branch_candidates="$(printf '%s\n' "$remote_refs" | awk -v s="$core_source_sha" '$1==s && $2 ~ /^refs\/heads\// { b=$2; sub("^refs/heads/","",b); print b }')"
   if printf '%s\n' "$branch_candidates" | grep -qx master; then
@@ -494,11 +501,34 @@ if [ "$needs_parent" = "1" ]; then
   elif printf '%s\n' "$branch_candidates" | grep -qx develop; then
     build_branch=develop
   else
-    build_branch="$(printf '%s\n' "$branch_candidates" | head -1)"
+    build_branch="$(printf '%s\n' "$branch_candidates" | grep -E '^(release|hotfix)/[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+    [ -n "$build_branch" ] || build_branch="$(printf '%s\n' "$branch_candidates" | head -1)"
   fi
   [ -n "$build_branch" ] || build_branch="unknown"
+  latest_tag="$(printf '%s\n' "$all_tags" | tail -1)"
+  if [ -n "$build_tag" ]; then
+    build_version="$build_tag"
+  elif [ -z "$latest_tag" ]; then
+    build_version="0.0.0-dev.0+${build_short_sha}"
+  else
+    tags_ahead=0
+    if git -C /tmp/parent fetch -q --filter=tree:0 --shallow-exclude="$latest_tag" origin "$core_source_sha" >/dev/null 2>&1 \
+       || git -C /tmp/parent fetch -q --shallow-exclude="$latest_tag" origin "$core_source_sha" >/dev/null 2>&1; then
+      tags_ahead="$(git -C /tmp/parent rev-list --count "$core_source_sha" 2>/dev/null || echo 0)"
+    fi
+    case "$tags_ahead" in ''|*[!0-9]*) tags_ahead=0 ;; esac
+    tag_major="${latest_tag%%.*}"
+    tag_rest="${latest_tag#*.}"
+    tag_minor="${tag_rest%%.*}"
+    case "$build_branch" in
+      release/[0-9]*.[0-9]*.[0-9]*|hotfix/[0-9]*.[0-9]*.[0-9]*)
+        build_version="${build_branch#*/}-rc.${tags_ahead}+${build_short_sha}" ;;
+      *)
+        build_version="${tag_major}.$((tag_minor + 1)).0-dev.${tags_ahead}+${build_short_sha}" ;;
+    esac
+  fi
   build_release=false
-  if [ -n "$build_tag" ] && [ "$build_tag" = "$build_version" ] && [ -n "$master_sha" ] && [ "$master_sha" = "$core_source_sha" ]; then
+  if [ -n "$build_tag" ] && [ -n "$master_sha" ] && [ "$master_sha" = "$core_source_sha" ]; then
     build_release=true
   fi
   build_built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -507,7 +537,7 @@ if [ "$needs_parent" = "1" ]; then
     "$( [ -n "$build_tag" ] && printf '"%s"' "$build_tag" || printf null )" "$build_release" "$build_built_at" \
     > /tmp/parent-build-info.json
   echo "[stage-1.5] build identity: version=${build_version} sha=${build_short_sha} branch=${build_branch} tag=${build_tag:-none} release=${build_release}"
-  # --- END build identity ---
+  # --- END build identity (BUILD_INFO.json) ---
   # --- END core-source provenance capture ---
 fi
 # --- END needs-parent shared block ---
@@ -1408,6 +1438,10 @@ case "$MODULE" in
     # Version stays human-readable and sorts by build; GitCommit carries the
     # exact ref. Both, because a sha alone cannot be compared for "at or past".
     agent_version_str="${agent_build_date%T*}-${agent_source_sha:0:12}"
+    # A release build stamps the plain X.Y.Z from the tag instead.
+    if [ "${build_release:-false}" = "true" ] && [ -n "${build_version:-}" ]; then
+      agent_version_str="$build_version"
+    fi
     echo "[stage-1.5] stamping agent version=${agent_version_str} commit=${agent_source_sha}"
 
     echo "[stage-1.5] cross-compiling powernode-agent for amd64…"
