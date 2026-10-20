@@ -125,6 +125,38 @@ RSpec.describe System::Gitops::RepoSyncService do
     end
   end
 
+  # Concurrent syncs of one repository must not share secret-file paths: a
+  # fixed "<work_tree>.askpass" / ".ssh_key" let one call's cleanup unlink a
+  # file another call's git was about to read.
+  describe "per-call secret files" do
+    def paths_for(repo)
+      described_class.sync!(repo)
+      inv = clone_invocation
+      invocations.clear
+      [ inv[:env]["GIT_ASKPASS"], inv[:env]["GIT_SSH_COMMAND"].to_s[/-i (\S+)/, 1] ].compact
+    end
+
+    {
+      "HTTPS" => "https://git.example.test/powernode/fleet-config.git",
+      "SSH" => "git@git.example.test:powernode/fleet-config.git"
+    }.each do |label, url|
+      it "uses unique, non-derived paths and leaves no file behind (#{label})" do
+        repo = create(:system_gitops_repository, account: account, repo_url: url,
+                                                 vault_credential_path: vault_path)
+        derived = described_class.new(repo).send(:work_tree_path).to_s
+        first = paths_for(repo)
+        second = paths_for(repo)
+
+        expect(first.size).to eq(1)
+        expect(first).not_to eq(second)
+        (first + second).each do |path|
+          expect(path).not_to start_with(derived)
+          expect(File.exist?(path)).to be(false)
+        end
+      end
+    end
+  end
+
   # The shape guard. Before it, a payload missing the key a branch needs
   # produced a blank-password auth attempt (HTTPS) or a NoMethodError (SSH) —
   # neither of which reads as "the credential payload is wrong".

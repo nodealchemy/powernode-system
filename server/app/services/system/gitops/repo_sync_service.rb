@@ -164,15 +164,19 @@ module System
       # Delete the one-shot askpass / ssh-key files written by build_git_env so the
       # git password and SSH key never linger on disk after the command, and
       # unlink THIS call's known_hosts tempfile. Runs on every run_git! exit
-      # (success or raise). The askpass / ssh-key paths are deterministic; the
-      # known_hosts is per-call (see #write_known_hosts!) and only the one
-      # this call wrote is removed.
+      # (success or raise). All three files are per-call Tempfiles (unique
+      # paths), so concurrent syncs of one repository cannot unlink each
+      # other's files; only the ones this call wrote are removed.
       def cleanup_secret_files!
-        [ "#{work_tree_path}.askpass", "#{work_tree_path}.ssh_key" ].each do |path|
-          File.delete(path) if File.exist?(path)
+        %i[@askpass_file @ssh_key_file @known_hosts_file].each do |ivar|
+          file = instance_variable_get(ivar)
+          instance_variable_set(ivar, nil)
+          begin
+            file&.close!
+          rescue StandardError => e
+            Rails.logger.warn("[Gitops::RepoSync] secret-file cleanup failed: #{e.class}")
+          end
         end
-        @known_hosts_file&.close!
-        @known_hosts_file = nil
       rescue StandardError => e
         Rails.logger.warn("[Gitops::RepoSync] secret-file cleanup failed: #{e.message}")
       end
@@ -405,18 +409,21 @@ module System
         # `username` was read and discarded. The comment here asserted the
         # username "is embedded in the URL via the standard Git mechanism" —
         # nothing put it there; clone_fresh uses repo_url verbatim.
-        path = "#{work_tree_path}.askpass"
-        File.open(path, "w", 0o700) do |f|
-          f.write(<<~SH)
+        file = Tempfile.new([ "gitops-askpass", "" ])
+        @askpass_file = file
+        File.chmod(0o700, file.path)
+        begin
+          file.write(<<~SH)
             #!/bin/bash
             case "$1" in
               Username*) echo '#{shell_quote(username)}' ;;
               *)         echo '#{shell_quote(password)}' ;;
             esac
           SH
+        ensure
+          file.close
         end
-        FileUtils.chmod(0o700, path)
-        path
+        file.path
       end
 
       # Close a single-quoted shell literal, emit a quoted quote, reopen. The
@@ -426,13 +433,16 @@ module System
       end
 
       def build_ssh_key_file(key_content)
-        path = "#{work_tree_path}.ssh_key"
-        File.open(path, "w", 0o600) do |f|
-          f.write(key_content)
-          f.write("\n") unless key_content.end_with?("\n")
+        file = Tempfile.new([ "gitops-ssh_key", "" ])
+        @ssh_key_file = file
+        File.chmod(0o600, file.path)
+        begin
+          file.write(key_content)
+          file.write("\n") unless key_content.end_with?("\n")
+        ensure
+          file.close
         end
-        FileUtils.chmod(0o600, path)
-        path
+        file.path
       end
     end
   end
