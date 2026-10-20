@@ -143,9 +143,40 @@ RSpec.describe System::BootstrapToken, type: :model do
       end
     end
 
-    it "refuses a TTL beyond the 7 day cap for any purpose" do
-      expect { described_class.issue!(node: node, intended_subject: "x", purpose: "netboot", ttl: 8.days) }
-        .to raise_error(ArgumentError, /ttl/i)
+    it "caps every non-operator purpose at 1 hour" do
+      (described_class::PURPOSES - %w[operator_key]).each do |purpose|
+        expect(described_class.max_ttl_for(purpose)).to eq(1.hour)
+        expect { described_class.issue!(node: node, intended_subject: "x", purpose: purpose, ttl: 61.minutes) }
+          .to raise_error(ArgumentError, /ttl/i), "expected #{purpose} capped at 1h"
+        expect { described_class.issue!(node: node, intended_subject: "x", purpose: purpose, ttl: 1.hour) }
+          .not_to raise_error
+      end
+      expect(described_class.max_ttl_for(nil)).to eq(1.hour)
+    end
+
+    it "enforces the cap on save, not only in issue!" do
+      token, _ = described_class.issue!(node: node, intended_subject: "x", purpose: "netboot")
+      token.expires_at = 3.hours.from_now
+      expect(token).not_to be_valid
+      expect(token.errors[:expires_at]).to be_present
+      expect { described_class.create!(node: node, intended_subject: "x", purpose: "cloud_seed",
+                                       token_hash: "h1", expires_at: 2.hours.from_now) }
+        .to raise_error(ActiveRecord::RecordInvalid, /expires at/i)
+    end
+
+    it "does not re-check the cap when an unrelated column changes (legacy rows)" do
+      token, _ = described_class.issue!(node: node, intended_subject: "x", purpose: "netboot")
+      token.update_columns(expires_at: 5.hours.from_now)
+      expect { token.reload.consume! }.not_to raise_error
+    end
+
+    it "does not re-check the purpose on update, so a legacy row can be consumed or revoked" do
+      legacy, _ = described_class.issue!(node: node, intended_subject: "x", purpose: "netboot")
+      legacy.update_columns(purpose: "retired_purpose")
+      expect { legacy.reload.revoke! }.not_to raise_error
+      other, _ = described_class.issue!(node: node, intended_subject: "y", purpose: "netboot")
+      other.update_columns(purpose: "retired_purpose")
+      expect { other.reload.consume! }.not_to raise_error
     end
   end
 
@@ -214,6 +245,33 @@ RSpec.describe System::BootstrapToken, type: :model do
       token.revoke!
       expect(described_class.active).not_to include(token)
       expect(described_class.revoked).to include(token)
+    end
+  end
+
+  describe "audit hook timing" do
+    it "fires issued/consumed/revoked after commit, not before" do
+      node
+      events = []
+      allow_any_instance_of(described_class).to receive(:audit_hook) { |_, e| events << e }
+
+      ActiveRecord::Base.transaction do
+        token, _ = described_class.issue!(node: node, intended_subject: "x", purpose: "operator_key")
+        token.revoke!
+        expect(events).to be_empty
+      end
+      expect(events).to eq(%i[issued revoked])
+    end
+
+    it "fires nothing when the surrounding transaction rolls back" do
+      node
+      events = []
+      allow_any_instance_of(described_class).to receive(:audit_hook) { |_, e| events << e }
+
+      ActiveRecord::Base.transaction do
+        described_class.issue!(node: node, intended_subject: "x", purpose: "operator_key")
+        raise ActiveRecord::Rollback
+      end
+      expect(events).to be_empty
     end
   end
 

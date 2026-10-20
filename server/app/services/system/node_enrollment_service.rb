@@ -87,39 +87,48 @@ module System
       failure("certificate persistence failed: #{e.record.errors.full_messages.join('; ')}")
     end
 
+    # One transaction around the whole enrolment: the token is row-locked and
+    # consumed FIRST, so a revoked/replayed/raced token is refused before the CA
+    # signs anything, and any later failure rolls the consume back (no orphan
+    # certificates, no half-spent keys).
     def enroll!(bootstrap_token_plaintext:, csr_pem:, agent_version: nil,
                 dmi_uuid: nil, source_ip: nil, ttl_seconds: DEFAULT_TTL_SECONDS)
-      token = ::System::BootstrapToken.find_active_by_plaintext(bootstrap_token_plaintext)
-      return failure("invalid or expired bootstrap token") unless token
+      cert_record = issued = instance = common_name = nil
 
-      instance = resolve_instance(token: token, dmi_uuid: dmi_uuid)
-      return failure("intended instance not found") unless instance
+      early_failure = ::ActiveRecord::Base.transaction do
+        token = ::System::BootstrapToken.find_active_by_plaintext(bootstrap_token_plaintext, lock: true)
+        next failure("invalid or expired bootstrap token") unless token
 
-      common_name = token.intended_subject.presence || instance.id
+        instance = resolve_instance(token: token, dmi_uuid: dmi_uuid)
+        next failure("intended instance not found") unless instance
 
-      issued = ::System::InternalCaService.issue_certificate(
-        csr_pem: csr_pem,
-        ttl_seconds: ttl_seconds,
-        common_name: common_name
-      )
+        common_name = token.intended_subject.presence || instance.id
 
-      cert_record = ::System::NodeCertificate.create!(
-        node_instance: instance,
-        serial: issued[:serial],
-        subject: issued[:subject] || "CN=#{common_name}",
-        not_before: issued[:not_before] || Time.current,
-        not_after:  issued[:not_after]  || (Time.current + ttl_seconds),
-        issuer_subject: issuer_subject_of(issued[:cert_pem])
-      )
-
-      ::ActiveRecord::Base.transaction do
         token.consume!(from_ip: source_ip)
+
+        issued = ::System::InternalCaService.issue_certificate(
+          csr_pem: csr_pem,
+          ttl_seconds: ttl_seconds,
+          common_name: common_name
+        )
+
+        cert_record = ::System::NodeCertificate.create!(
+          node_instance: instance,
+          serial: issued[:serial],
+          subject: issued[:subject] || "CN=#{common_name}",
+          not_before: issued[:not_before] || Time.current,
+          not_after:  issued[:not_after]  || (Time.current + ttl_seconds),
+          issuer_subject: issuer_subject_of(issued[:cert_pem])
+        )
+
         instance.update!(
           agent_version: agent_version.presence || instance.agent_version,
           mtls_subject: common_name,
           enrollment_token: token
         )
+        nil
       end
+      return early_failure if early_failure
 
       # Observability: enrollment is the "node came up and got its mTLS cert"
       # milestone the provisioning pipeline previously emitted nothing for.

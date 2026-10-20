@@ -14,7 +14,11 @@ module System
 
     # === Constants ===
     DEFAULT_TTL = 1.hour
-    MAX_TTL = 7.days
+    # Maximum lifetime per purpose. Operator-issued keys may live up to 7 days;
+    # every platform-injected key (cloud seed, netboot, provider/federation/claim
+    # seeds, legacy nil purpose) is capped at 1 hour.
+    MAX_TTLS = { "operator_key" => 7.days }.freeze
+    TTL_CAP_SLACK = 1.minute
     PLAINTEXT_BYTES = 32
 
     # Operator direction (IMP-cde9ee63c977 / memory:image-distribution-model):
@@ -55,9 +59,12 @@ module System
     validates :token_hash,        presence: true, uniqueness: true
     validates :intended_subject,  presence: true
     validates :expires_at,        presence: true
-    validates :purpose, inclusion: { in: PURPOSES }, allow_nil: true
+    # Create-only: a legacy row with a retired purpose must stay consumable/revocable.
+    validates :purpose, inclusion: { in: PURPOSES }, allow_nil: true, on: :create
     validate :single_use_only, on: :create
-    validate :expiry_within_cap, on: :create
+    validate :expiry_within_cap, if: -> { new_record? || will_save_change_to_expires_at? }
+
+    after_commit :flush_audit_events
 
     # === Scopes ===
     scope :active,    -> { where(consumed_at: nil, revoked_at: nil).where("expires_at > ?", Time.current) }
@@ -73,8 +80,8 @@ module System
     def self.issue!(node:, intended_subject:, node_instance: nil, ttl: nil,
                     single_use: true, purpose: nil, created_by: nil)
       ttl ||= default_ttl_for(purpose)
-      if ttl > MAX_TTL
-        raise ArgumentError, "ttl #{ttl.inspect} exceeds the maximum of #{MAX_TTL.inspect}"
+      if ttl > max_ttl_for(purpose)
+        raise ArgumentError, "ttl #{ttl.inspect} exceeds the maximum of #{max_ttl_for(purpose).inspect} for purpose #{purpose.inspect}"
       end
 
       plaintext = SecureRandom.urlsafe_base64(PLAINTEXT_BYTES)
@@ -88,7 +95,7 @@ module System
         purpose: purpose,
         created_by: created_by
       )
-      token.send(:audit_hook, :issued)
+      token.send(:queue_audit_event, :issued)
       [ token, plaintext ]
     end
 
@@ -96,10 +103,15 @@ module System
       DEFAULT_TTLS.fetch(purpose.to_s, DEFAULT_TTL)
     end
 
+    def self.max_ttl_for(purpose)
+      MAX_TTLS.fetch(purpose.to_s, DEFAULT_TTL)
+    end
+
     # Look up an active (non-consumed, non-revoked, non-expired) token by plaintext value.
     # Returns nil if not found / expired / consumed.
-    def self.find_active_by_plaintext(plaintext)
-      active.find_by(token_hash: hash_for(plaintext))
+    def self.find_active_by_plaintext(plaintext, lock: false)
+      scope = lock ? active.lock : active
+      scope.find_by(token_hash: hash_for(plaintext))
     end
 
     def self.hash_for(plaintext)
@@ -118,7 +130,7 @@ module System
 
         update!(consumed_at: Time.current, consumed_from_ip: from_ip)
       end
-      audit_hook(:consumed)
+      queue_audit_event(:consumed)
       self
     end
 
@@ -134,7 +146,7 @@ module System
         update!(revoked_at: Time.current, revoked_by: by)
         newly_revoked = true
       end
-      audit_hook(:revoked) if newly_revoked
+      queue_audit_event(:revoked) if newly_revoked
       self
     end
 
@@ -158,11 +170,23 @@ module System
 
     private
 
-    # Hook point for the D3 AuditLog work: called after a successful :issued,
-    # :consumed or :revoked transition. Deliberately a no-op here. Implementations
-    # must NEVER log the plaintext or token_hash (record id, purpose, node and
-    # actor only).
+    # Hook point for the D3 AuditLog work. Events (:issued, :consumed, :revoked)
+    # are queued when the transition is made and delivered to #audit_hook only
+    # AFTER COMMIT, so a rolled-back enrolment never emits an audit event.
+    # #audit_hook is deliberately a no-op here. Implementations must NEVER log
+    # the plaintext or token_hash (record id, purpose, node and actor only).
     def audit_hook(_event); end
+
+    def queue_audit_event(event)
+      (@pending_audit_events ||= []) << event
+      # Outside any transaction the save already committed; flush now.
+      flush_audit_events unless self.class.connection.transaction_open?
+    end
+
+    def flush_audit_events
+      events, @pending_audit_events = @pending_audit_events, nil
+      events&.each { |event| audit_hook(event) }
+    end
 
     def single_use_only
       errors.add(:single_use, "must be true: multi-use enrolment tokens are not permitted") unless single_use
@@ -171,7 +195,10 @@ module System
     def expiry_within_cap
       return if expires_at.blank?
 
-      errors.add(:expires_at, "exceeds the maximum TTL of #{MAX_TTL.inspect}") if expires_at > MAX_TTL.from_now + 1.minute
+      cap = self.class.max_ttl_for(purpose)
+      return if expires_at <= (created_at || Time.current) + cap + TTL_CAP_SLACK
+
+      errors.add(:expires_at, "exceeds the maximum TTL of #{cap.inspect} for purpose #{purpose.inspect}")
     end
   end
 end

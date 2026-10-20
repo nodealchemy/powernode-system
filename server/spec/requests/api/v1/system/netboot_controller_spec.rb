@@ -32,6 +32,21 @@ RSpec.describe "Api::V1::System::NetbootController", type: :request do
         }.to change(System::BootstrapToken, :count).by(2)
       end
 
+      it "accepts ttl_minutes up to the 60 minute netboot cap" do
+        get "/api/v1/system/netboot/#{instance.id}/script.ipxe",
+            headers: auth_headers_for(user), params: { ttl_minutes: 45 }
+        expect(response).to have_http_status(:ok)
+        expect(System::BootstrapToken.order(:created_at).last.expires_at).to be_within(10.seconds).of(45.minutes.from_now)
+      end
+
+      it "refuses ttl_minutes above the cap with 422 and issues no token" do
+        expect {
+          get "/api/v1/system/netboot/#{instance.id}/script.ipxe",
+              headers: auth_headers_for(user), params: { ttl_minutes: 120 }
+        }.not_to change(System::BootstrapToken, :count)
+        expect(response).to have_http_status(:unprocessable_content)
+      end
+
       it "honors image_base override" do
         get "/api/v1/system/netboot/#{instance.id}/script.ipxe",
             headers: auth_headers_for(user),

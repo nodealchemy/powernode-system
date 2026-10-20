@@ -207,5 +207,37 @@ RSpec.describe System::NodeEnrollmentService do
       expect(replay.success?).to be false
       expect(replay.error).to match(/invalid or expired/)
     end
+
+    it "creates exactly one certificate row across a double enrol" do
+      described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem)
+      expect(System::InternalCaService).not_to receive(:issue_certificate)
+      expect {
+        described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem)
+      }.not_to change(System::NodeCertificate, :count)
+    end
+
+    it "signs nothing and creates no certificate when the token is revoked between find and consume" do
+      token_plaintext # issue
+      stale = System::BootstrapToken.find(token_record.id)
+      allow(System::BootstrapToken).to receive(:find_active_by_plaintext).and_return(stale)
+      token_record.revoke!
+      expect(System::InternalCaService).not_to receive(:issue_certificate)
+
+      result = nil
+      expect {
+        result = described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem)
+      }.not_to change(System::NodeCertificate, :count)
+      expect(result.success?).to be false
+      expect(result.error).to match(/revoked/)
+    end
+
+    it "rolls the consume back when enrolment fails after the token was taken" do
+      allow(System::NodeCertificate).to receive(:create!).and_raise(ActiveRecord::RecordInvalid.new(System::NodeCertificate.new))
+
+      result = described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem)
+
+      expect(result.success?).to be false
+      expect(token_record.reload.consumed_at).to be_nil
+    end
   end
 end

@@ -22,10 +22,13 @@ module Api
         # Returns text/plain so iPXE chainload (`chain http://...`) consumes
         # it directly. Optional ?image_base=... overrides the default.
         def script
+          ttl = parse_ttl
+          return if performed?
+
           result = ::System::BootstrapService.render_for_instance(
             instance: @instance,
             image_base: params[:image_base].presence,
-            ttl: parse_ttl,
+            ttl: ttl,
             purpose: "netboot"
           )
 
@@ -58,9 +61,17 @@ module Api
           render_not_found("NodeInstance")
         end
 
+        # Netboot tokens are platform-injected: capped at the netboot purpose
+        # maximum (1 hour). Anything above is refused, not silently clamped.
         def parse_ttl
+          return ::System::BootstrapToken.default_ttl_for("netboot") if params[:ttl_minutes].blank?
+
+          max = (::System::BootstrapToken.max_ttl_for("netboot") / 60).to_i
           val = params[:ttl_minutes].to_i
-          return 1.hour unless val.between?(1, 360) # 1 min – 6 hr
+          unless val.between?(1, max)
+            render_error("ttl_minutes must be between 1 and #{max}", 422)
+            return nil
+          end
           val.minutes
         end
       end
