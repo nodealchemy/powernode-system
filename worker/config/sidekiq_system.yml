@@ -71,6 +71,14 @@
     queue: system
     description: "Fleet: run sensors, route decisions, extract learnings, emit pressure signals"
 
+  # Post-enrolment seed cleanup (Provisioning D13). Best-effort, bounded
+  # (15s budget, 5 rows/tick, rows leased server-side); posted without retry.
+  system_seed_cleanup:
+    cron: "* * * * *"
+    class: "SystemSeedCleanupJob"
+    queue: system
+    description: "Provisioning: best-effort cleanup of spent enrolment seeds after enrolment"
+
   # CVE feed ingest (Golden Eclipse M-D2-2).
   # Hourly poll of NVD JSON. After ingestion, ExposureCalculator recomputes
   # System::CveExposure rows for every account. Operators can trigger

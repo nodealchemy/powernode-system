@@ -38,7 +38,7 @@ module Api
               tick_result = ::System::Fleet::FleetAutonomyService.tick!(
                 account: account, control_plane_reading: carried_reading
               )
-              { account_id: account_id, seed_cleanup: sweep_seed_cleanup(account, tick_result) }.merge(tick_result)
+              { account_id: account_id }.merge(tick_result)
             rescue StandardError => e
               Rails.logger.error("[FleetReconcile] account=#{account.id} failed: #{e.class}: #{e.message}")
               { account_id: account.id, ok: false, error: e.message }
@@ -49,20 +49,6 @@ module Api
               results: results
             })
           end
-
-          # D13: best-effort post-enrolment seed cleanup rides this tick (pull model; the
-          # server runs no Sidekiq). Skipped on a halted or standby tick so an emergency
-          # stop / the standby plane makes no provider writes. Never raises into the tick.
-          def sweep_seed_cleanup(account, tick_result)
-            return 0 if tick_result[:halted] || tick_result[:standby]
-            return 0 if ::Ai::Autonomy::KillSwitchService.new(account: account).halted?
-
-            ::System::EnrollmentSeedCleanup.sweep!(account: account)
-          rescue StandardError => e
-            Rails.logger.warn("[FleetReconcile] seed cleanup sweep failed account=#{account.id}: #{e.class}")
-            0
-          end
-          private :sweep_seed_cleanup
 
           # POST /api/v1/system/worker_api/fleet/retention_sweep
           # Nightly sweep — drops FleetEvents older than the configured

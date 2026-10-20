@@ -29,7 +29,12 @@ module System
     ACTIVE_STATES = %w[pending awaiting_stop].freeze
     AUDIT_ACTION = "system.enrollment_seed.cleanup"
     AUDITED_ACTIONS = [ AUDIT_ACTION ].freeze
-    SWEEP_LIMIT = 20
+    # Small per-tick batch + wall-clock budget: the sweep does synchronous provider I/O
+    # inside one worker request, so it must stop starting new items well inside the
+    # request timeout (SystemSeedCleanupJob). A row is leased before its provider call.
+    SWEEP_LIMIT = 5
+    SWEEP_BUDGET = 15 # seconds
+    LEASE = 3.minutes
 
     class << self
       # Called right after the enrolment commits. Never raises.
@@ -44,13 +49,23 @@ module System
         false
       end
 
-      # Runs every due cleanup of the account's instances. Returns how many ran.
-      # Never raises.
-      def sweep!(account:, limit: SWEEP_LIMIT)
+      def monotonic_now
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      # Runs due cleanups of the account's instances, at most `limit`, starting no
+      # new item once the monotonic `deadline` has passed. Each row is leased (CAS on
+      # next_attempt_at) before its provider call, so two concurrent sweeps never
+      # process the same instance. Returns how many ran. Never raises.
+      def sweep!(account:, limit: SWEEP_LIMIT, deadline: nil)
         return 0 unless limit.to_i.positive?
 
+        deadline ||= monotonic_now + SWEEP_BUDGET
         ran = 0
-        due(account).limit(limit.to_i).each do |instance|
+        due(account).limit(limit.to_i).to_a.each do |instance|
+          break if monotonic_now >= deadline
+          next unless lease!(instance)
+
           run!(instance)
           ran += 1
         rescue StandardError => e
@@ -62,7 +77,8 @@ module System
         0
       end
 
-      # One cleanup attempt. Never raises.
+      # One cleanup attempt. Never raises. The outcome is written back as a patch to
+      # the seed_cleanup key only (see #patch!), never as a whole-config rewrite.
       def run!(instance)
         cfg = instance.config.is_a?(Hash) ? instance.config[KEY] : nil
         return unless cfg.is_a?(Hash) && ACTIVE_STATES.include?(cfg["state"])
@@ -87,6 +103,35 @@ module System
           .order(:updated_at)
       end
 
+      # Compare-and-set: claims the row only while it is still due. The conditional
+      # UPDATE is the lock; a second sweep sees next_attempt_at in the future.
+      def lease!(instance)
+        now = Time.current.utc.iso8601
+        until_at = (Time.current + LEASE).utc.iso8601
+        sql = ::System::NodeInstance.sanitize_sql_array([
+          "UPDATE system_node_instances SET config = jsonb_set(config, '{#{KEY},next_attempt_at}', to_jsonb(?::text)) " \
+          "WHERE id = ? AND config->'#{KEY}'->>'state' IN ('pending','awaiting_stop') AND " \
+          "((config->'#{KEY}'->>'next_attempt_at') IS NULL OR (config->'#{KEY}'->>'next_attempt_at') <= ?)",
+          until_at, instance.id, now
+        ])
+        ::System::NodeInstance.connection.exec_update(sql, "seed_cleanup_lease").positive?
+      end
+
+      # Atomic write-back of ONLY the seed_cleanup fields this attempt changed,
+      # guarded on the request still being the one this attempt started from
+      # (requested_at), so neither a concurrent mark_pending! nor an unrelated
+      # config write is overwritten. A stale attempt's patch is dropped.
+      def patch!(instance, requested_at, patch)
+        sql = ::System::NodeInstance.sanitize_sql_array([
+          "UPDATE system_node_instances SET config = jsonb_set(config, '{#{KEY}}', " \
+          "COALESCE(config->'#{KEY}', '{}'::jsonb) || ?::jsonb) " \
+          "WHERE id = ? AND (config->'#{KEY}'->>'requested_at') IS NOT DISTINCT FROM ?",
+          patch.to_json, instance.id, requested_at
+        ])
+        ::System::NodeInstance.connection.exec_update(sql, "seed_cleanup_patch")
+        instance.reload
+      end
+
       def clear_at_provider(instance)
         return { outcome: :noop, note: "instance has no cloud id", provider_type: nil } if instance.cloud_instance_id.blank?
 
@@ -106,8 +151,8 @@ module System
             finish(instance, cfg, "done", result.merge(outcome: :abandoned,
                    note: "VM did not stop within #{STOP_WAIT_LIMIT.inspect}; the next start neutralises the seed"))
           else
-            write(instance, cfg.merge("state" => "awaiting_stop", "waiting_since" => since,
-                                      "next_attempt_at" => (now + STOP_POLL_INTERVAL).utc.iso8601))
+            write(instance, cfg, "state" => "awaiting_stop", "waiting_since" => since,
+                                 "next_attempt_at" => (now + STOP_POLL_INTERVAL).utc.iso8601)
             audit(instance, result) if first
           end
         else
@@ -116,27 +161,27 @@ module System
       end
 
       def finish(instance, cfg, state, result)
-        write(instance, cfg.merge("state" => state, "next_attempt_at" => nil, "finished_at" => Time.current.utc.iso8601,
-                                  "outcome" => result[:outcome].to_s))
+        write(instance, cfg, "state" => state, "next_attempt_at" => nil, "finished_at" => Time.current.utc.iso8601,
+                             "outcome" => result[:outcome].to_s)
         audit(instance, result)
       end
 
       def record_failure(instance, cfg, error_class)
         attempts = cfg["attempts"].to_i + 1
         if attempts >= MAX_ATTEMPTS
-          write(instance, cfg.merge("state" => "failed", "attempts" => attempts, "next_attempt_at" => nil,
-                                    "outcome" => "failed"))
+          write(instance, cfg, "state" => "failed", "attempts" => attempts, "next_attempt_at" => nil,
+                               "outcome" => "failed")
           audit(instance, { outcome: :failed, note: "gave up after #{attempts} attempts (#{error_class}); D12 neutralises the seed at the next start" })
         else
-          write(instance, cfg.merge("state" => cfg["state"].presence || "pending", "attempts" => attempts,
-                                    "next_attempt_at" => (Time.current + (RETRY_BACKOFF * attempts)).utc.iso8601))
+          write(instance, cfg, "state" => cfg["state"].presence || "pending", "attempts" => attempts,
+                               "next_attempt_at" => (Time.current + (RETRY_BACKOFF * attempts)).utc.iso8601)
         end
       rescue StandardError => e
         Rails.logger.warn("[EnrollmentSeedCleanup] could not record failure for #{instance.id}: #{e.class}")
       end
 
-      def write(instance, cfg)
-        instance.merge_config!(KEY => cfg)
+      def write(instance, cfg, patch)
+        patch!(instance, cfg["requested_at"], patch)
       end
 
       # Best-effort: an audit hiccup is logged, never raised. No key material.

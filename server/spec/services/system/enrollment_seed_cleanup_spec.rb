@@ -156,3 +156,81 @@ RSpec.describe System::EnrollmentSeedCleanup do
     end
   end
 end
+
+# Review fixes (H1 lease/budget, L5 atomic write-back).
+RSpec.describe System::EnrollmentSeedCleanup, "leasing and write-back" do
+  let(:account) { create(:account) }
+  let(:node) { create(:system_node, account: account) }
+  let(:adapter) { double("adapter", provider_type: "gcp") }
+
+  def seeded_instance
+    inst = create(:system_node_instance, node: node)
+    inst.merge_config!("cloud_instance_id" => "cid-#{SecureRandom.hex(3)}")
+    System::EnrollmentSeed.issue_token(instance: inst)
+    described_class.mark_pending!(inst)
+    inst
+  end
+
+  before { allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter) }
+
+  it "stops starting new items once the wall-clock budget is spent" do
+    2.times { seeded_instance }
+    allow(adapter).to receive(:clear_enrollment_seed!).and_return(outcome: :cleared, note: "ok")
+    allow(described_class).to receive(:monotonic_now).and_return(0.0, 20.0)
+
+    expect(described_class.sweep!(account: account, deadline: 15.0)).to eq(1)
+  end
+
+  it "leases the row before the provider call: a concurrent sweep never double-processes it" do
+    inst = seeded_instance
+    calls = 0
+    allow(adapter).to receive(:clear_enrollment_seed!) do
+      calls += 1
+      # a second sweep arriving while the first is mid provider call
+      expect(described_class.sweep!(account: account)).to eq(0)
+      { outcome: :cleared, note: "ok" }
+    end
+
+    expect(described_class.sweep!(account: account)).to eq(1)
+    expect(calls).to eq(1)
+    expect(inst.reload.config.dig("seed_cleanup", "state")).to eq("done")
+  end
+
+  it "holds a future next_attempt_at while the provider call is in flight" do
+    inst = seeded_instance
+    seen = nil
+    allow(adapter).to receive(:clear_enrollment_seed!) do
+      seen = inst.reload.config.dig("seed_cleanup", "next_attempt_at")
+      { outcome: :cleared, note: "ok" }
+    end
+    described_class.sweep!(account: account)
+    expect(Time.iso8601(seen)).to be > Time.current
+  end
+
+  it "does not overwrite a newer pending request written while the provider call ran" do
+    inst = seeded_instance
+    allow(adapter).to receive(:clear_enrollment_seed!) do
+      fresh = System::NodeInstance.find(inst.id)
+      fresh.merge_config!("seed_cleanup" => { "state" => "pending", "attempts" => 0,
+                                              "requested_at" => 1.minute.from_now.utc.iso8601 })
+      { outcome: :cleared, note: "ok" }
+    end
+
+    described_class.run!(inst)
+
+    cfg = inst.reload.config["seed_cleanup"]
+    expect(cfg["state"]).to eq("pending")
+    expect(cfg["requested_at"]).to be_present
+  end
+
+  it "keeps unrelated config keys intact when it writes back" do
+    inst = seeded_instance
+    allow(adapter).to receive(:clear_enrollment_seed!) do
+      System::NodeInstance.find(inst.id).merge_config!("other_key" => "keep")
+      { outcome: :cleared, note: "ok" }
+    end
+    described_class.run!(inst)
+    expect(inst.reload.config).to include("other_key" => "keep")
+    expect(inst.config.dig("seed_cleanup", "state")).to eq("done")
+  end
+end

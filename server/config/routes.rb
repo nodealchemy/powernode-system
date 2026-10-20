@@ -823,6 +823,11 @@ Rails.application.routes.draw do
           # on a cron schedule. Runs sensors → DecisionEngine → LearningExtractor.
           post "fleet/reconcile", to: "fleet#reconcile"
 
+          # Best-effort post-enrolment seed cleanup (D13) — invoked every minute
+          # by SystemSeedCleanupJob (post_no_retry, short timeout, own endpoint
+          # so provider I/O never rides the reconcile request).
+          post "seed_cleanup/sweep", to: "seed_cleanup#sweep"
+
           # CVE feed ingest tick — invoked hourly by SystemCveFeedJob.
           post "cve/ingest", to: "cve#ingest"
 
