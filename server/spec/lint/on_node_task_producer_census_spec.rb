@@ -221,6 +221,18 @@ RSpec.describe "on-node task producer census" do
         disposition: :out_of_scope, sites: 1,
         why: "Same as nfs_export_manager#dispatch_task — a storage.* verb passed as a method " \
              "parameter, agent-delegated rather than an on-node reconcile command."
+      },
+      "app/services/system/unit_dropin_service.rb#apply!" => {
+        disposition: :acknowledged, sites: 1,
+        why: "system_apply_unit_dropin's unit.dropin task (IMP-9951cbf20bb0). The scanner flags " \
+             "it because `command: COMMAND` is a constant it cannot resolve; the command is " \
+             "unit.dropin, not the sync_modules / apply_config reconcile pair. It is gated all " \
+             "the same, one frame up rather than inline: apply! re-runs #refusal, which calls " \
+             "System::UnitRestartService#target_refusal, whose instance_refusal returns " \
+             "NodeInstance#on_node_dispatch_refusal (status arm plus the silence verdict) and " \
+             "raises Refused before the task is built. Acknowledged rather than :gated because " \
+             "the predicate name is in the callee, outside this method's guard span; restating " \
+             "the consult here would be a rival threshold beside the one both unit verbs share."
       }
       # REMOVED — #create_instance_operation no longer exists (campaign 01a0790b
       # increment 1). It was the ungated association-form producer

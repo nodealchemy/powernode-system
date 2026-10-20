@@ -159,7 +159,11 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # "FIRES on the variable shape a literal grep cannot see" example, still
       # synthetic source handed to the scanner as a string, still constructing
       # nothing.
-      "lint/on_node_task_producer_census_spec.rb" => [ 513 ],
+      # MOVED 513 -> 525 when the unit_dropin_service#apply! producer was censused
+      # (12 lines above the site). RE-AUDITED — 525 is still the
+      # `::System::Task.create!(` head inside that <<~RUBY heredoc, synthetic
+      # source handed to the scanner as a string, constructing nothing.
+      "lint/on_node_task_producer_census_spec.rb" => [ 525 ],
       # (spec/services/system/runtime/control_instance_spec.rb was acknowledged
       # here until increment 3 DELETED it, along with the
       # System::Runtime::ControlInstance class it covered and the server
@@ -187,7 +191,20 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # unit.dropin exclusion (IMP-9951cbf20bb0); RE-AUDITED, unchanged.
       # 253 -> 278 when the pins above it were annotated and the
       # system_restart_unit site was enumerated; RE-AUDITED, unchanged.
-      "integration/gate_composed_task_categories_spec.rb" => [ 278 ]
+      # 278 -> 279 when the system_fleet_tool gate-site enumeration above it grew
+      # by a line; RE-AUDITED, unchanged (still `::System::Task.new(command:
+      # command, ...)` in #command_insertable?, .new + .valid? only).
+      "integration/gate_composed_task_categories_spec.rb" => [ 279 ],
+      # The #task! helper's `create(:system_task, ..., command: command, ...)`.
+      # `command` is a keyword defaulting to the migration's own COMMAND
+      # ("storage.smb_user.apply", a COMMANDS member); the only explicit
+      # callers pass the literal "storage.mount", also a member. Anchored on
+      # source text so edits above it do not break the pin. Red on develop
+      # since 8cc212c4 (IMP-ecb2cbef7173) reshaped this helper without
+      # acknowledging it.
+      "migrations/scrub_smb_user_apply_task_secrets_spec.rb" => [
+        "task = create(:system_task, account: account, command: command, status: status)"
+      ]
     }
   end
 
