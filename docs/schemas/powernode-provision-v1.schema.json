@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://powernode.org/schemas/powernode-provision-v1.schema.json",
+  "title": "powernode-provision document v1",
+  "description": "One document for every provisioning channel (USB file, cloud-init/NoCloud/config-drive, provider metadata, PXE pickup). Emitted by System::ProvisioningDocument, parsed strictly by agent/internal/identity.ParseProvisionDocument.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "server", "instance_id", "key", "ca_fingerprint", "issued_at", "expires_at", "purpose"],
+  "properties": {
+    "version": { "const": 1 },
+    "server": {
+      "type": "string",
+      "pattern": "^https://[^\\s@/]+(/[^\\s]*)?$",
+      "maxLength": 2048,
+      "description": "Platform base URL. https only, no credentials."
+    },
+    "instance_id": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[\\x21-\\x7e]+$",
+      "description": "Single-use bootstrap token (plaintext, present only in this document)."
+    },
+    "ca_fingerprint": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "ALWAYS REQUIRED. sha256 of the DER of the LAST certificate of the configured CA chain. Enforced on the enrolment connection: the server's verified chain must contain a certificate with this fingerprint."
+    },
+    "ca_pem": {
+      "type": "string",
+      "maxLength": 65536,
+      "description": "Optional CA chain (PEM). If present, one certificate in it MUST match ca_fingerprint."
+    },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "purpose": {
+      "type": "string",
+      "pattern": "^[a-z0-9_.-]{1,64}$"
+    }
+  }
+}
