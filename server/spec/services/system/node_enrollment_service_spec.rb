@@ -43,6 +43,20 @@ RSpec.describe System::NodeEnrollmentService do
       expect(System::BootstrapToken.last).not_to be_consumed
     end
 
+    it "refuses when the token is revoked between the peek and the lock, and issues no certificate" do
+      record = token_record
+      plaintext = token_plaintext
+      allow_any_instance_of(System::NodeInstance).to receive(:lock!).and_wrap_original do |m, *a|
+        System::BootstrapToken.find(record.id).revoke!
+        m.call(*a)
+      end
+      result = described_class.enroll!(bootstrap_token_plaintext: plaintext, csr_pem: csr_pem)
+      expect(result.success?).to be false
+      expect(result.error).to match(/invalid or expired/)
+      expect(System::NodeCertificate.where(node_instance: instance)).to be_empty
+      expect(record.reload).not_to be_consumed
+    end
+
     it "locks the instance BEFORE the token (the order mint uses), so mint and enrol cannot deadlock" do
       token_plaintext
       order = []

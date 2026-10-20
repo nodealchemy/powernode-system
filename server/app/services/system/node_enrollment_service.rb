@@ -106,9 +106,16 @@ module System
         instance = resolve_instance(token: peek, dmi_uuid: dmi_uuid)
         next failure("intended instance not found") unless instance
 
-        instance.lock!
+        begin
+          instance.lock!
+        rescue ::ActiveRecord::RecordNotFound
+          next failure("intended instance not found")
+        end
         token = ::System::BootstrapToken.find_active_by_plaintext(bootstrap_token_plaintext, lock: true)
-        next failure("invalid or expired bootstrap token") unless token
+        # Revalidate under lock: still the same token, still bound to the same instance.
+        unless token && token.id == peek.id && token.node_instance_id == peek.node_instance_id
+          next failure("invalid or expired bootstrap token")
+        end
 
         common_name = token.intended_subject.presence || instance.id
 
