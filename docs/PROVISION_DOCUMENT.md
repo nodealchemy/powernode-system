@@ -226,20 +226,32 @@ next start mints again.
 Single use is the real control; cleanup only narrows how long the spent seed stays
 readable. It never restarts a VM and never fails or rolls back the enrolment.
 `NodeEnrollmentService#enroll!` does one local write after commit
-(`EnrollmentSeedCleanup.mark_pending!`, only for platform-seeded instances); the
-worker's reconcile tick (`worker_api/fleet/reconcile`, skipped when halted or on
-standby) calls `EnrollmentSeedCleanup.sweep!`, which retries with backoff (5
-attempts) and writes a `system.enrollment_seed.cleanup` audit row per outcome:
+(`EnrollmentSeedCleanup.mark_pending!`, only for platform-seeded instances). The
+worker's `SystemSeedCleanupJob` (every minute, `post_no_retry`, 45s timeout) calls
+`worker_api/seed_cleanup/sweep`, which is fenced by the kill switch and the
+control-plane role, takes at most 5 rows per tick, stops starting new rows after a
+15s budget, and leases each row (compare-and-set on `next_attempt_at`) before its
+provider call so overlapping sweeps never double-process. Failures retry with
+backoff (5 attempts); each outcome writes a `system.enrollment_seed.cleanup` audit row:
 
 - GCP: the `user-data` metadata item is removed (live edit, other items kept).
-- Proxmox (pivot-boot QEMU, enrolled): the `ide2` seed ISO (ISO transport) or
-  `cicustom` (snippet transport) delete is queued as a PVE pending change and
-  applies at the next natural stop; once the live config no longer references it
-  the ISO or snippet files are deleted. A VM that never stops within 14 days is
+- Proxmox (pivot-boot QEMU, enrolled): ISO transport queues `delete=ide2` (applies
+  at the next natural stop), then deletes the ISO volume (percent-encoded volid,
+  task awaited). Snippet transport deletes `cicustom`, then regenerates the
+  attached cloud-init drive (`PUT .../cloudinit`, a CD media swap on a running VM,
+  not a restart) and only then removes the snippets; a failed regenerate stays
+  awaiting_stop. Once cleared, D12 does not re-write the neutral seed on start. A VM that never stops within 14 days is
   left to the start policy above.
 - AWS and OpenStack: no-op, recorded with a note (their user-data cannot change
   on a running instance; the start policy covers restarts). Azure is not covered
   here and relies on the start policy.
+
+Enrol throttle: `POST /node_api/enroll` is capped per source IP by Rack::Attack
+(`system_node_enroll_by_ip`, setting `node_enroll_attempts_per_minute`, default 20;
+`/enroll.json` and `/enroll/` count too). More than 20 VMs enrolling behind one
+SNAT address within a minute will see HTTP 429; the agent treats it as retryable
+and the key is not consumed, so they succeed on retry. Raise the setting for large
+boot storms. `/enroll/refresh` (mTLS) is not throttled.
 
 Size limits (raw bytes, enforced in `EnrollmentSeed`, `SeedError` names the limit):
 AWS 16384, OpenStack 49149 and Azure 49151 (64 KB base64), GCP 262144. The agent
