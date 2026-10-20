@@ -8,6 +8,7 @@ import { getStatusBadge } from './nodeDetailHelpers';
 import NodeInstanceControls from './NodeInstanceControls';
 import { BootImageDriftBadge } from './BootImageDriftBadge';
 import { ClaudeCodeCredentialPanel } from './ClaudeCodeCredentialPanel';
+import { OperatorKeyPanel } from './OperatorKeyPanel';
 
 export interface NodeInstancesTabProps {
   nodeId: string | null;
@@ -166,6 +167,12 @@ export const NodeInstancesTab: React.FC<NodeInstancesTabProps> = ({
                     this instance and auto-enrolls. The file carries no secret and is single-use (download is disabled
                     once claimed). Runbook: <code>fleet-imaging-claim-by-id.md</code>.
                   </div>
+                )}
+                {/* Operator enrolment key (D4) + provisioning file (D5): one-shot,
+                    only for instances not yet claimed/enrolled. Permission-gated. */}
+                {nodeId && canControlInstances && !instance.claimed && !instance.mtls_subject
+                  && !['running', 'terminated', 'error'].includes(instance.status) && (
+                  <OperatorKeyPanel nodeId={nodeId} instanceId={instance.id} />
                 )}
                 {/* IP Addresses with copy buttons + associate/disassociate */}
                 <div>

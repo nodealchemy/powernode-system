@@ -32,6 +32,15 @@ export interface NodeInstanceCreate {
   config?: Record<string, unknown>;
 }
 
+/** Mint response for an operator enrolment key (D4). The key and document are one-shot. */
+export interface OperatorKeyMint {
+  bootstrap_token: { id: string; expires_at: string; [k: string]: unknown };
+  /** Plaintext key, returned once - never persisted client-side. */
+  token: string;
+  /** powernode-provision v1 JSON, present only when requested. */
+  provisioning_document?: string;
+}
+
 export const nodesApi = {
   getNodes: async (params?: NodeFilters): Promise<{ nodes: SystemNode[]; meta: PaginationMeta }> => {
     const response = await apiClient.get<PaginatedEnvelope<{ nodes: SystemNode[] }>>(
@@ -240,6 +249,32 @@ export const nodesApi = {
       payload
     );
     return extractData(response).credential;
+  },
+
+  /**
+   * Mint a single-use operator enrolment key for an instance (D4), optionally
+   * with the provisioning document v1 (D5). The response is the ONLY place the
+   * key and document ever appear; callers must not log or persist them.
+   */
+  mintOperatorKey: async (
+    nodeId: string,
+    instanceId: string,
+    options: { ttlSeconds?: number; includeProvisioningDocument?: boolean } = {}
+  ): Promise<OperatorKeyMint> => {
+    const response = await apiClient.post<ApiEnvelope<OperatorKeyMint>>(
+      `/system/nodes/${nodeId}/node_instances/${instanceId}/bootstrap_tokens`,
+      {
+        ...(options.ttlSeconds ? { ttl_seconds: options.ttlSeconds } : {}),
+        include_provisioning_document: options.includeProvisioningDocument === true,
+      }
+    );
+    return extractData(response);
+  },
+
+  revokeOperatorKey: async (nodeId: string, instanceId: string, tokenId: string): Promise<void> => {
+    await apiClient.delete(
+      `/system/nodes/${nodeId}/node_instances/${instanceId}/bootstrap_tokens/${tokenId}`
+    );
   },
 
   deleteClaudeCodeCredential: async (nodeId: string, instanceId: string): Promise<void> => {
