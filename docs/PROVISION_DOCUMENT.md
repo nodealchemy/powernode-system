@@ -86,13 +86,16 @@ no key has been found, never after one, and:
   document. Metadata, the media scan, the console prompt and the claim poll are
   not run then, so none of them can supply a pin or refuse a local identity (a
   removable stick can neither veto an identity nor attach its own pin).
-- When metadata wins over media or BOOT (positions 4 over 5 and 6), a pin in the
-  BOOT file is still enforced on it and replaces any pin the metadata document
-  asserts, so a spoofed server cannot attach its own CA to a pinned device; the
-  enrolment fails closed instead.
-- A v1 refusal from metadata is terminal, with one exception: a BOOT `KEY` is
-  still tried, so a spoofed refusal cannot veto a local identity. The media
-  scan, console prompt, claim poll and legacy fallback are not tried after it.
+- Only LOCAL pins are authoritative (cmdline, fw-cfg, staged document, BOOT
+  file, `/etc/identity.cfg`, console). A pin asserted by metadata or by a
+  removable stick is not: when either wins over BOOT, the local pin is still
+  collected, and if it differs from the winner's pin the resolver refuses
+  (fail closed). Two local sources asserting different pins also refuse; the
+  agent never picks one silently.
+- A v1 refusal from provider metadata is deferred past ALL local sources (media
+  scan, BOOT key, console prompt, claim poll, `/etc/identity.cfg`) and returned
+  only if none of them yields a key, so a spoofed refusal cannot veto a local
+  identity, claim-by-ID devices included.
 - On a node with no earlier key the provider probes (about 1.5 s each, up to
   ~6 s off-cloud) run before the media scan, BOOT key and prompt.
 

@@ -33,7 +33,7 @@ func (s *BootKeyStrategy) Discover(ctx context.Context) (*Identity, error) {
 	if err != nil {
 		return nil, err
 	}
-	if id == nil || id.InstanceUUID == "" || id.BootstrapToken == "" {
+	if id == nil || id.InstanceUUID == "" || id.BootstrapToken == "" || id.PlatformURL == "" {
 		return nil, ErrNotFound
 	}
 	return id, nil

@@ -46,7 +46,9 @@ func TestResolverSkipsCloudSourcesAfterLocalHit(t *testing.T) {
 }
 
 // Any "{" user-data that is not a well-formed legacy JSON object is judged by
-// the strict parser, and its refusal is terminal (no fall-through).
+// the strict parser, and its refusal is terminal when no local source yields a
+// key (a local source, the legacy /etc file included, outranks a spoofable
+// refusal: see TestMetadataRefusalDoesNotVetoLegacyEtc).
 func TestCloudUserDataMalformedV1IsTerminal(t *testing.T) {
 	pki := newTestPKI(t)
 	good := v1Doc(pki, nil)
@@ -59,14 +61,12 @@ func TestCloudUserDataMalformedV1IsTerminal(t *testing.T) {
 		"duplicate version": strings.Replace(good, `"version":1`, `"version":1,"version":1`, 1),
 	}
 	dir := t.TempDir()
-	legacy := filepath.Join(dir, "legacy.cfg")
-	os.WriteFile(legacy, []byte("ID=legacy-uuid\nKEY=k\nSERVER=https://p.example.com\n"), 0o600)
 	for name, ud := range cases {
 		t.Run(name, func(t *testing.T) {
 			if _, err := parseUserData(ud); !errors.Is(err, ErrProvisionRefused) {
 				t.Fatalf("parseUserData err = %v, want ErrProvisionRefused", err)
 			}
-			r := &Resolver{Strategies: []Strategy{&CloudStrategy{Client: &fakeCloud{userData: ud}}, &LocalIdentityStrategy{Path: legacy}}}
+			r := &Resolver{Strategies: []Strategy{&CloudStrategy{Client: &fakeCloud{userData: ud}}, &LocalIdentityStrategy{Path: filepath.Join(dir, "absent.cfg")}}}
 			if id, err := r.Resolve(context.Background()); err == nil {
 				t.Fatalf("fell through to %+v", id)
 			}

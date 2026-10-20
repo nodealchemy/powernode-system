@@ -110,15 +110,17 @@ func InteractiveResolver() *Resolver {
 //
 //   - Metadata is unauthenticated (169.254.169.254 over HTTP, spoofable on
 //     L2). It is only ever consulted while no key has been found, so it never
-//     overrides cmdline / fw-cfg / the staged document. When it does win over
-//     media or BOOT, the BOOT pin is still collected and REPLACES any pin the
-//     metadata document carries, so a spoofed server cannot attach its own CA
-//     to a pinned device (the enrolment then fails closed).
-//   - A v1 refusal from metadata stays terminal, with one exception: the BOOT
-//     key (the only local source that used to run before the cloud probes)
-//     is still tried, so a spoofed refusal cannot veto a local identity.
-//   - Media sits behind metadata and is never run once a key exists, so a
-//     stick cannot veto an identity or attach a pin to it.
+//     overrides cmdline / fw-cfg / the staged document.
+//   - Only LOCAL pins are authoritative. A pin asserted by metadata or by the
+//     media scan (a hostile stick) is not: every local pin (cmdline, fw-cfg,
+//     staged, BOOT, /etc) is collected after any hit, a differing pin on a
+//     metadata/media winner is refused, and two differing local pins are
+//     refused. Nothing is picked silently.
+//   - A v1 refusal from metadata is deferred past ALL local sources (media,
+//     BOOT key, console, claim, /etc) and returned only if none yields a key,
+//     so a spoofed refusal cannot veto a local identity.
+//   - Media is never run once a key exists, so a stick cannot veto an identity
+//     or attach a pin to it.
 //   - The console prompt is interactive-resolver only and runs after every
 //     non-blocking source; the claim poll blocks, so it is last.
 //
@@ -163,26 +165,38 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 	}
 
 	var (
-		lastErr  error
-		first    *Identity // first usable identity, by strategy precedence
-		firstNet bool      // first came from provider metadata (self-asserted pin)
-		pin      string    // first pin seen from a LOCAL source
-		refused  error     // a cloud v1 refusal: terminal unless BOOT supplies a key
+		lastErr error
+		first   *Identity // first usable identity, by strategy precedence
+		// firstLocal: the winner came from a local, authoritative source
+		// (cmdline, fw-cfg, staged/etc/BOOT file, console). Provider metadata
+		// and the media scan are NOT: both are spoofable (L2 / hostile stick),
+		// so a pin they assert is never authoritative.
+		firstLocal bool
+		localPins  []string // distinct pins from LOCAL sources, in order seen
+		refused    error    // a cloud v1 refusal, returned only if nothing local yields a key
 	)
+	addPin := func(p string) {
+		if p == "" {
+			return
+		}
+		for _, q := range localPins {
+			if q == p {
+				return
+			}
+		}
+		localPins = append(localPins, p)
+	}
 	for _, s := range r.Strategies {
 		_, isCloud := s.(*CloudStrategy)
-		_, isBootKey := s.(*BootKeyStrategy)
-		if refused != nil && !isBootKey {
-			// Terminal refusal: only the BOOT key may still rescue it (it ran
-			// before the cloud probes in the old order, and a spoofed
-			// metadata server must not veto a local identity). Nothing weaker.
-			continue
+		_, isMedia := s.(*MediaScanStrategy)
+		if refused != nil && isCloud {
+			continue // a refused network source is not retried on another cloud
 		}
 		if first != nil {
 			// A hit was already found: keep scanning ONLY LOCAL sources (files,
-			// fw-cfg, cmdline) to collect a pin and let a refused local v1
-			// document stop us. Never run a strategy that blocks or polls
-			// (claim) or that goes over the network: unauthenticated cloud
+			// fw-cfg, cmdline) to collect EVERY local pin and let a refused
+			// local v1 document stop us. Never run a strategy that blocks or
+			// polls (claim) or that goes over the network: unauthenticated cloud
 			// metadata (169.254.169.254 over HTTP) is spoofable on L2, so it can
 			// neither supply a pin nor veto a local identity (and skipping it
 			// avoids seconds of probing on bare metal). The removable-media
@@ -193,17 +207,18 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 			case *ClaimStrategy, *CloudStrategy, *MediaScanStrategy, *ConsolePromptStrategy:
 				continue
 			}
-			if ps, ok := s.(pinSource); ok {
-				p, err := ps.DiscoverPin(ctx)
-				if err != nil {
-					if errors.Is(err, ErrProvisionRefused) {
-						return nil, fmt.Errorf("strategy %s: %w", s.Name(), err)
-					}
-					continue
+		}
+		if ps, ok := s.(pinSource); ok {
+			// Local file that may carry a pin without carrying the key.
+			p, err := ps.DiscoverPin(ctx)
+			if err != nil {
+				if errors.Is(err, ErrProvisionRefused) {
+					return nil, fmt.Errorf("strategy %s: %w", s.Name(), err)
 				}
-				if pin == "" {
-					pin = p
-				}
+			} else {
+				addPin(p)
+			}
+			if first != nil {
 				continue
 			}
 		}
@@ -224,8 +239,9 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 				// not fall through to a weaker source.
 				werr := fmt.Errorf("strategy %s: %w", s.Name(), err)
 				if isCloud && first == nil {
-					// Unauthenticated metadata must not veto a local BOOT key:
-					// remember the refusal; it is returned if no BOOT key shows.
+					// Unauthenticated metadata must not veto ANY local source
+					// (media, BOOT key, console, claim, /etc): remember the
+					// refusal and return it only if none of them yields a key.
 					refused = werr
 					continue
 				}
@@ -238,29 +254,34 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 			lastErr = fmt.Errorf("strategy %s: %w", s.Name(), err)
 			continue
 		}
+		local := !isCloud && !isMedia
+		if id != nil && local {
+			addPin(id.CAFingerprint) // even from a keyless source
+		}
 		if id == nil || id.InstanceUUID == "" {
 			continue
 		}
-		if !isCloud && pin == "" {
-			pin = id.CAFingerprint
-		}
 		if first == nil {
 			first = id
-			firstNet = isCloud
+			firstLocal = local
 			refused = nil
-			if pin != "" && !firstNet {
-				break // pinned local hit: nothing more to learn
-			}
 		}
 	}
 	if first == nil && refused != nil {
 		return nil, refused
 	}
 	if first != nil {
-		// A local pin is authoritative: it replaces a pin the (spoofable)
-		// metadata document carries; a pinless source never overrides a pin.
-		if pin != "" && (first.CAFingerprint == "" || firstNet) {
-			first.CAFingerprint = pin
+		if len(localPins) > 1 {
+			// Never pick one silently.
+			return nil, fmt.Errorf("%w: local sources assert different ca_fingerprints", ErrProvisionRefused)
+		}
+		if len(localPins) == 1 {
+			if !firstLocal && first.CAFingerprint != "" && first.CAFingerprint != localPins[0] {
+				// A stick / metadata server asserting a different CA than the
+				// device's own local pin: fail closed.
+				return nil, fmt.Errorf("%w: %s asserts a ca_fingerprint different from the local one", ErrProvisionRefused, first.CloudProvider)
+			}
+			first.CAFingerprint = localPins[0]
 		}
 		if first.Architecture == "" {
 			first.Architecture = runtime.GOARCH
