@@ -21,6 +21,12 @@ module System
     TTL_CAP_SLACK = 1.minute
     PLAINTEXT_BYTES = 32
 
+    AUDITED_ACTIONS = %w[
+      system.bootstrap_token.issued
+      system.bootstrap_token.consumed
+      system.bootstrap_token.revoked
+    ].freeze
+
     # Operator direction (IMP-cde9ee63c977 / memory:image-distribution-model):
     # operator-issued enrolment keys last 24h by default, 7d at most. Provider
     # seeds and netboot stay at the 1h DEFAULT_TTL.
@@ -85,17 +91,21 @@ module System
       end
 
       plaintext = SecureRandom.urlsafe_base64(PLAINTEXT_BYTES)
-      token = create!(
-        node: node,
-        node_instance: node_instance,
-        token_hash: hash_for(plaintext),
-        intended_subject: intended_subject,
-        expires_at: ttl.from_now,
-        single_use: single_use,
-        purpose: purpose,
-        created_by: created_by
-      )
-      token.send(:queue_audit_event, :issued)
+      token = nil
+      transaction do
+        token = create!(
+          node: node,
+          node_instance: node_instance,
+          token_hash: hash_for(plaintext),
+          intended_subject: intended_subject,
+          expires_at: ttl.from_now,
+          single_use: single_use,
+          purpose: purpose,
+          created_by: created_by
+        )
+        # Queued inside the transaction: delivered by after_commit, never on rollback.
+        token.send(:queue_audit_event, :issued)
+      end
       [ token, plaintext ]
     end
 
@@ -129,8 +139,8 @@ module System
         raise InvalidConsumption, "token expired"          if expired?
 
         update!(consumed_at: Time.current, consumed_from_ip: from_ip)
+        queue_audit_event(:consumed)
       end
-      queue_audit_event(:consumed)
       self
     end
 
@@ -138,15 +148,13 @@ module System
     # refuses a consumed one (nothing left to revoke). `by` is nil for machine
     # revocation.
     def revoke!(by: nil)
-      newly_revoked = false
       with_lock do
         next if revoked?
         raise InvalidConsumption, "token already consumed" if consumed?
 
         update!(revoked_at: Time.current, revoked_by: by)
-        newly_revoked = true
+        queue_audit_event(:revoked)
       end
-      queue_audit_event(:revoked) if newly_revoked
       self
     end
 
@@ -170,17 +178,53 @@ module System
 
     private
 
-    # Hook point for the D3 AuditLog work. Events (:issued, :consumed, :revoked)
-    # are queued when the transition is made and delivered to #audit_hook only
-    # AFTER COMMIT, so a rolled-back enrolment never emits an audit event.
-    # #audit_hook is deliberately a no-op here. Implementations must NEVER log
-    # the plaintext or token_hash (record id, purpose, node and actor only).
-    def audit_hook(_event); end
+    # Events (:issued, :consumed, :revoked) are queued when the transition is
+    # made and delivered to #audit_hook only AFTER COMMIT, so a rolled-back
+    # enrolment never writes an audit row. One AuditLog row per event, through
+    # the core AuditLog.log_action seam (same as System::LifecycleAuditable).
+    #
+    # FAIL-OPEN, matching that house pattern for lifecycle audits: a failed audit
+    # write is logged and swallowed so it can never block enrolment. The log line
+    # carries the token id and the error class/message only. The row and the log
+    # NEVER include the plaintext or token_hash.
+    def audit_hook(event)
+      return unless account.present?
+
+      actor = event == :revoked ? revoked_by : (event == :issued ? created_by : nil)
+      ::AuditLog.transaction(requires_new: true) do
+        ::AuditLog.log_action(
+          action: "system.bootstrap_token.#{event}",
+          resource: self,
+          user: actor,
+          account: account,
+          ip_address: event == :consumed ? consumed_from_ip : nil,
+          source: "system",
+          metadata: audit_metadata(event, actor)
+        )
+      end
+    rescue StandardError => e
+      Rails.logger.error(
+        "[System::BootstrapToken] audit write failed for token #{id} #{event}: #{e.class}: #{e.message}"
+      )
+    end
+
+    def audit_metadata(event, actor)
+      {
+        token_id: id,
+        purpose: purpose,
+        node_id: node_id,
+        node_instance_id: node_instance_id,
+        expires_at: expires_at&.iso8601(3),
+        actor_type: actor ? "user" : "system",
+        actor_id: actor&.id,
+        consumed_from_ip: (consumed_from_ip.to_s if event == :consumed)
+      }.compact
+    end
 
     def queue_audit_event(event)
+      # Always called inside the transaction making the transition; the
+      # after_commit callback delivers it.
       (@pending_audit_events ||= []) << event
-      # Outside any transaction the save already committed; flush now.
-      flush_audit_events unless self.class.connection.transaction_open?
     end
 
     def flush_audit_events

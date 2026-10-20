@@ -275,6 +275,107 @@ RSpec.describe System::BootstrapToken, type: :model do
     end
   end
 
+  describe "AuditLog rows (D3)" do
+    let(:user) { create(:user, account: account) }
+
+    def rows
+      AuditLog.where(resource_type: "System::BootstrapToken").order(:created_at)
+    end
+
+    it "registers the three actions with the audit allowlist" do
+      expect(AuditActions.all_actions).to include(*described_class::AUDITED_ACTIONS)
+    end
+
+    it "writes exactly one issued row carrying the token facts and the user actor" do
+      instance = create(:system_node_instance, node: node)
+      token, _ = described_class.issue!(
+        node: node, node_instance: instance, intended_subject: instance.id,
+        purpose: "operator_key", created_by: user
+      )
+
+      expect(rows.count).to eq(1)
+      row = rows.first
+      expect(row.action).to eq("system.bootstrap_token.issued")
+      expect(row.account_id).to eq(account.id)
+      expect(row.resource_id).to eq(token.id)
+      expect(row.user_id).to eq(user.id)
+      expect(row.metadata).to include(
+        "purpose" => "operator_key", "node_instance_id" => instance.id,
+        "actor_type" => "user", "actor_id" => user.id
+      )
+      expect(Time.zone.parse(row.metadata["expires_at"])).to be_within(1.second).of(token.expires_at)
+    end
+
+    it "attributes a machine issuer to the system actor" do
+      described_class.issue!(node: node, intended_subject: "x", purpose: "netboot")
+
+      row = rows.first
+      expect(row.user_id).to be_nil
+      expect(row.source).to eq("system")
+      expect(row.metadata).to include("actor_type" => "system")
+      expect(row.metadata).not_to have_key("actor_id")
+    end
+
+    it "writes exactly one consumed row with the source ip" do
+      token, _ = described_class.issue!(node: node, intended_subject: "x", purpose: "netboot")
+      token.consume!(from_ip: "203.0.113.9")
+
+      expect(rows.count).to eq(2)
+      row = rows.find_by(action: "system.bootstrap_token.consumed")
+      expect(row.metadata).to include("consumed_from_ip" => "203.0.113.9", "actor_type" => "system")
+      expect(row.ip_address.to_s).to eq("203.0.113.9")
+    end
+
+    it "writes exactly one revoked row naming the revoking user, and none on an idempotent re-revoke" do
+      token, _ = described_class.issue!(node: node, intended_subject: "x", purpose: "operator_key", created_by: user)
+      other = create(:user, account: account)
+      token.revoke!(by: other)
+      token.revoke!(by: other)
+
+      revoked = rows.where(action: "system.bootstrap_token.revoked")
+      expect(revoked.count).to eq(1)
+      expect(revoked.first.user_id).to eq(other.id)
+      expect(revoked.first.metadata).to include("actor_type" => "user", "actor_id" => other.id)
+    end
+
+    it "never contains the plaintext or the digest in any row" do
+      token, plaintext = described_class.issue!(node: node, intended_subject: "x", purpose: "operator_key", created_by: user)
+      token.consume!(from_ip: "203.0.113.9")
+      revoked, _ = described_class.issue!(node: node, intended_subject: "y", purpose: "operator_key")
+      revoked.revoke!
+
+      expect(rows.count).to eq(4)
+      dump = rows.map { |r| r.attributes.to_json }.join
+      expect(dump).not_to include(plaintext)
+      expect(dump).not_to include(token.token_hash)
+      expect(dump).not_to include(revoked.token_hash)
+    end
+
+    it "writes nothing when the surrounding transaction rolls back" do
+      node
+      ActiveRecord::Base.transaction do
+        token, _ = described_class.issue!(node: node, intended_subject: "x", purpose: "operator_key")
+        token.revoke!
+        raise ActiveRecord::Rollback
+      end
+      expect(rows.count).to eq(0)
+    end
+
+    it "does not break the operation when the audit write fails, and logs without secrets" do
+      allow(AuditLog).to receive(:log_action).and_raise(StandardError, "audit down")
+      logged = []
+      allow(Rails.logger).to receive(:error) { |m| logged << m.to_s }
+
+      token = plaintext = nil
+      expect { token, plaintext = described_class.issue!(node: node, intended_subject: "x") }.not_to raise_error
+      expect { token.consume! }.not_to raise_error
+      expect(token.reload).to be_consumed
+      expect(logged.join).to include("audit down")
+      expect(logged.join).not_to include(plaintext)
+      expect(logged.join).not_to include(token.token_hash)
+    end
+  end
+
   describe "scopes" do
     it "categorizes tokens by lifecycle state" do
       fresh, _    = described_class.issue!(node: node, intended_subject: "fresh")

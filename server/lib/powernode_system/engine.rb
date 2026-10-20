@@ -697,6 +697,7 @@ module PowernodeSystem
         ::AuditActions.register_actions(
           "system",
           ::System::LifecycleAuditable::AUDITED_ACTIONS +
+            ::System::BootstrapToken::AUDITED_ACTIONS +
             ::System::InternalCaService::AUDITED_ACTIONS +
             ::System::Governance::PolicyReconciler::AUDITED_ACTIONS +
             ::System::Governance::GapMaterializer::AUDITED_ACTIONS +
