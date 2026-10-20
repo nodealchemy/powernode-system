@@ -102,8 +102,8 @@ v1 and is never downgraded to a legacy shape. New writers emit v1 JSON only.
 
 | Writer | Emits | Follow-up |
 |---|---|---|
-| `System::Providers::Proxmox::EnrollmentSeed#render_cicustom` | `ID=/KEY=/SERVER=/CA_PEM_FILE=` NoCloud user-data + CA as meta-data | D12 |
-| `System::Providers::Proxmox::EnrollmentSeed#build` and `LocalQemu::CloudSeed#build` | fw-cfg entries `opt/com.powernode/{instance_uuid,bootstrap_token,ca_pem,platform_url}` | D12 |
+| `System::Providers::Proxmox::EnrollmentSeed#render_cicustom` | v1 JSON (D12). Legacy `ID=/KEY=/SERVER=/CA_PEM_FILE=` only under `POWERNODE_PVE_LEGACY_CIDATA=1`, for images whose `powernode-cidata-payload.sh` predates the v1 branch | remove the env escape one image release after the v1 stager ships |
+| `System::Providers::Proxmox::EnrollmentSeed#build` and `LocalQemu::CloudSeed#build` | fw-cfg entries `opt/com.powernode/{instance_uuid,bootstrap_token,ca_pem,platform_url}` (no pin): the agent's fw-cfg reader is entry-per-key, not a document reader. Keys are still minted by the single issuer | agent fw-cfg v1 reader |
 | `System::NetbootService.render_ipxe_script` (+ `initramfs/images/ipxe/template.ipxe.erb`) | kernel cmdline `powernode.*` keys | D11 |
 | `Api::V1::System::NodeInstancesController` identity download | `identity.cfg` (`SERVER=/ID=/CA_PEM_FILE=`, no key) | D12 |
 
@@ -113,3 +113,35 @@ Not yet pin-aware on the agent: the claim poll uses the pin when present
 The claim flow (`/node_api/claim` polling) is not expressed by v1: a v1
 document always carries a key. `ClaimStrategy` enforces a pin when one is
 present on its identity and ignores its `HTTPClient` test override then.
+
+## Platform-injected keys (D12)
+
+When the platform itself provisions a VM it mints the key and injects it with
+no human step. One issuer: `System::EnrollmentSeed` (`issue_token` for legacy
+channels, `render_user_data` for v1). Every mint is
+`BootstrapToken.issue!`: single-use, 1h TTL, bound to the NodeInstance, one
+audit row written in the mint transaction (fail closed). The document is
+rendered in the same transaction, so a missing/unusable CA or a non-https URL
+rolls the mint back and raises `EnrollmentSeed::SeedError`; there is no
+pin-less document. `ProvisioningService` surfaces that as a clear error and
+creates no cloud instance.
+
+Purposes: `cloud_seed` (AWS, OpenStack, GCP, Azure), `proxmox_uefi_provision`,
+`local_qemu_provision`.
+
+| Provider | Create-time channel | Re-mint on start |
+|---|---|---|
+| AWS | user-data = v1 (MIME multipart with the template `init_script` as part 2 when present) | yes: `modify_instance_attribute(user_data)` on the stopped instance, then start |
+| OpenStack | user-data = v1 (MIME as above) | **no**: Nova cannot change user_data after create (rebuild only). The create-time key is the only one; a server that already enrolled keeps its mTLS identity |
+| GCP | metadata `user-data` = bare v1; operator script in `startup-script` only | yes: `setMetadata` replaces only `user-data` (fingerprint kept) |
+| Azure | `properties.userData` = bare v1 (what the agent reads from IMDS); `osProfile.customData` = init script only | yes: PATCH `properties.userData` (customData is immutable) |
+| Proxmox (uefi_disk) | NoCloud cicustom/ISO seed = v1 (per-instance seed name) | yes: seed rewritten under the same name before `status/start` (cloud_init VMs, federation spawns and the fw-cfg opt-in are skipped) |
+| local_qemu | fw-cfg entries (legacy keys) | yes: domain XML regenerated with a fresh key on start |
+| pro_cloud | none (not wired) | n/a |
+
+Multipart user-data: the agent selects the part typed
+`application/x-powernode-provision+json` (`agent/internal/identity/cloud.go`);
+cloud-init ignores that unknown type and runs the script part. A multipart blob
+with no such part is "not found", a malformed one or a bad v1 part is terminal.
+An operator `user_data` override is not carried across a restart re-mint (the
+template `init_script` is).

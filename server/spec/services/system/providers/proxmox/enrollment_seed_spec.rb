@@ -4,7 +4,8 @@ require "rails_helper"
 
 RSpec.describe System::Providers::Proxmox::EnrollmentSeed do
   let(:instance) { create(:system_node_instance) }
-  let(:ca_pem) { "-----BEGIN CERTIFICATE-----\nFAKE-LE-CHAIN\n-----END CERTIFICATE-----" }
+  # A real self-signed CA: ProvisioningDocument refuses anything else (D12).
+  let(:ca_pem) { @ca_pem ||= self_signed_ca_pem }
   let(:platform_url) { "https://dev.example.test" }
 
   def stub_site_setting(ca: nil, url: nil)
@@ -148,29 +149,52 @@ RSpec.describe System::Providers::Proxmox::EnrollmentSeed do
         seed.render_cicustom(instance: instance)
       end
 
-      it "renders user_data as the sourced-shell identity.cfg format the agent's LocalIdentityStrategy parses" do
+      it "renders user_data as provisioning document v1 with the chain embedded and the pin present" do
         result = seed.render_cicustom(instance: instance)
 
-        expect(result).to be_present
-        plaintext = result[:user_data][/^KEY=(.+)$/, 1]
-        expect(plaintext).to be_present
-        expect(result[:user_data]).to eq(
-          "ID=#{instance.id}\n" \
-          "KEY=#{plaintext}\n" \
-          "SERVER=#{platform_url}\n" \
-          "CA_PEM_FILE=/run/powernode/enroll-ca.pem\n"
-        )
+        doc = JSON.parse(result[:user_data])
+        expect(doc).to include("version" => 1, "instance_id" => instance.id, "server" => platform_url,
+                               "purpose" => "proxmox_uefi_provision", "ca_pem" => ca_pem.strip + "\n")
+        expect(doc["ca_fingerprint"]).to match(/\Asha256:\h{64}\z/)
       end
 
-      it "renders meta_data as the raw CA PEM (no wrapping/transformation)" do
-        result = seed.render_cicustom(instance: instance)
-        expect(result[:meta_data]).to eq(ca_pem)
+      it "needs no meta_data (the CA travels in the document)" do
+        expect(seed.render_cicustom(instance: instance)[:meta_data]).to be_nil
       end
 
-      it "returns the ONE-TIME plaintext bootstrap token embedded in KEY=, and it verifies against the persisted (hashed) token row" do
+      it "writes exactly one audit row per mint" do
+        expect { seed.render_cicustom(instance: instance) }
+          .to change { AuditLog.where(action: "system.bootstrap_token.issued").count }.by(1)
+      end
+
+      it "fails closed (SeedError) when the configured CA is unusable, shipping no pin-less document" do
+        stub_site_setting(ca: "not-a-certificate", url: platform_url)
+        expect { seed.render_cicustom(instance: instance) }.to raise_error(::System::EnrollmentSeed::SeedError)
+      end
+
+      context "with POWERNODE_PVE_LEGACY_CIDATA=1 (images whose stager predates the v1 branch)" do
+        around do |ex|
+          ENV["POWERNODE_PVE_LEGACY_CIDATA"] = "1"
+          ex.run
+        ensure
+          ENV.delete("POWERNODE_PVE_LEGACY_CIDATA")
+        end
+
+        it "still emits the legacy ID=/KEY=/SERVER= text with the CA as meta_data, minted by the same issuer" do
+          result = seed.render_cicustom(instance: instance)
+          plaintext = result[:user_data][/^KEY=(.+)$/, 1]
+          expect(result[:user_data]).to eq(
+            "ID=#{instance.id}\nKEY=#{plaintext}\nSERVER=#{platform_url}\nCA_PEM_FILE=/run/powernode/enroll-ca.pem\n"
+          )
+          expect(result[:meta_data]).to eq(ca_pem)
+          expect(::System::BootstrapToken.find_active_by_plaintext(plaintext).purpose).to eq("proxmox_uefi_provision")
+        end
+      end
+
+      it "returns the ONE-TIME plaintext key in the document, and it verifies against the persisted (hashed) token row" do
         result = seed.render_cicustom(instance: instance)
 
-        plaintext = result[:user_data][/^KEY=(.+)$/, 1]
+        plaintext = JSON.parse(result[:user_data])["key"]
         expect(plaintext).to be_present
 
         token = ::System::BootstrapToken.find_active_by_plaintext(plaintext)
@@ -196,7 +220,7 @@ RSpec.describe System::Providers::Proxmox::EnrollmentSeed do
         end
 
         result = seed.render_cicustom(instance: instance)
-        plaintext = result[:user_data][/^KEY=(.+)$/, 1]
+        plaintext = JSON.parse(result[:user_data])["key"]
 
         expect(logged.join("\n")).not_to include(plaintext)
       end
@@ -210,8 +234,7 @@ RSpec.describe System::Providers::Proxmox::EnrollmentSeed do
           result = seed.render_cicustom(instance: instance)
 
           expect(result).to be_present
-          expect(result[:meta_data]).to eq(ca_pem)
-          expect(result[:user_data]).to include("SERVER=#{platform_url}")
+          expect(JSON.parse(result[:user_data])).to include("server" => platform_url, "ca_pem" => ca_pem.strip + "\n")
         ensure
           ENV.delete("POWERNODE_ENROLL_CA_PEM")
           ENV.delete("POWERNODE_ENROLL_PLATFORM_URL")
