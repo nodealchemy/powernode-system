@@ -31,14 +31,29 @@ export CIDATA_DEVICES="/nonexistent/cidata-probe-$$"
 if sh -n "$SCRIPT" 2>/dev/null; then ok "script is valid POSIX sh"
 else bad "script is valid POSIX sh" "$(sh -n "$SCRIPT" 2>&1 | head -2)"; fi
 
-# --- v1 provision documents are routed to identity, not federation -----
-# The v1 branch must come BEFORE the generic JSON (federation) branch, or a v1
-# document is copied to the federation payload path and the node never enrols.
-v1_line=$(grep -n "'{\"version\":'\*)" "$SCRIPT" | head -1 | cut -d: -f1)
-fed_line=$(grep -n '^        "{"\*)' "$SCRIPT" | head -1 | cut -d: -f1)
-if [ -n "$v1_line" ] && [ -n "$fed_line" ] && [ "$v1_line" -lt "$fed_line" ]; then
-  ok "v1 provision document branch precedes the federation JSON branch"
-else bad "v1 provision document branch precedes the federation JSON branch" "v1=$v1_line fed=$fed_line"; fi
+# --- routing is behavioural, not a prefix match ------------------------
+# Source the functions only (CIDATA_SOURCE_ONLY) against a temp "mount" and
+# check where each user-data shape lands. A provisioning document must reach the
+# identity file whatever its layout; a federation payload must reach the
+# federation path; the agent's strict parser (not this script) judges validity.
+route_case() { # name content expect(identity|federation)
+  _t=$(mktemp -d)
+  printf '%s' "$2" > "$_t/user-data"
+  (
+    export CIDATA_SOURCE_ONLY=1 MNT="$_t" IDENTITY_DEST="$_t/identity.cfg" PAYLOAD_DEST="$_t/federation.json" ENROLL_CA_DEST="$_t/ca.pem"
+    . "$SCRIPT" && stage_user_data
+  ) >/dev/null 2>&1
+  if [ "$3" = identity ] && [ -s "$_t/identity.cfg" ] && [ ! -e "$_t/federation.json" ]; then ok "$1 -> identity"
+  elif [ "$3" = federation ] && [ -s "$_t/federation.json" ] && [ ! -e "$_t/identity.cfg" ]; then ok "$1 -> federation payload"
+  else bad "$1 -> $3" "identity=$(ls "$_t"/identity.cfg 2>/dev/null) federation=$(ls "$_t"/federation.json 2>/dev/null)"; fi
+  rm -rf "$_t"
+}
+route_case "compact v1 (version first)" '{"version":1,"key":"not-a-real-enrol-key"}' identity
+route_case "reordered v1 (version last)" '{"key":"not-a-real-enrol-key","version":1}' identity
+route_case "pretty-printed v1" "$(printf '{\n  "server": "https://p.example.test",\n  "version": 1\n}\n')" identity
+route_case "case-variant VERSION key" '{"VERSION":1,"key":"x"}' identity
+route_case "legacy KEY= identity" "$(printf 'ID=abc\nKEY=not-a-real-enrol-key\n')" identity
+route_case "federation payload (contract_version only)" '{"parent_url":"https://p.example.test","contract_version":"v1"}' federation
 
 # --- never fails a boot -------------------------------------------------
 out=$(CIDATA_DEVICES="$CIDATA_DEVICES" CIDATA_SETTLE_TIMEOUT=1 CIDATA_WAIT_SECONDS=1 sh "$SCRIPT" 2>&1); rc=$?

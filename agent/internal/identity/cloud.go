@@ -84,7 +84,9 @@ func parseUserData(raw string) (*Identity, error) {
 		if part == "" {
 			return nil, ErrNotFound
 		}
-		raw = part
+		// The provision part MUST be a strict v1 document: no legacy shape, no
+		// KEY=VALUE, no downgrade. Any refusal is terminal.
+		return ParseProvisionDocument([]byte(part))
 	}
 	if strings.HasPrefix(raw, "{") {
 		if isLegacyJSON(raw) {
@@ -210,9 +212,15 @@ func httpDo(ctx context.Context, method, url string, headers map[string]string) 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("metadata service returned %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	// Large enough for a full v1 document (provisionMaxDocBytes) or a multipart
+	// envelope around one. An oversized body is an error, never silently
+	// truncated into a half document (which would be a terminal refusal).
+	body, err := io.ReadAll(io.LimitReader(resp.Body, provisionMultipartMaxBytes+1))
 	if err != nil {
 		return "", err
+	}
+	if len(body) > provisionMultipartMaxBytes {
+		return "", fmt.Errorf("metadata response larger than %d bytes", provisionMultipartMaxBytes)
 	}
 	return string(body), nil
 }
@@ -237,32 +245,59 @@ func isMIMEMultipart(raw string) bool {
 // multipart user-data blob, or "" when there is none (a cloud-init-only blob).
 // A malformed multipart envelope is an error, never a silent fall-through.
 func extractProvisionPart(raw string) (string, error) {
+	if len(raw) > provisionMultipartMaxBytes {
+		return "", fmt.Errorf("user-data multipart: larger than %d bytes", provisionMultipartMaxBytes)
+	}
 	br := bufio.NewReader(strings.NewReader(raw))
 	hdr, err := textproto.NewReader(br).ReadMIMEHeader()
 	if err != nil && err != io.EOF {
 		return "", fmt.Errorf("user-data multipart header: %w", err)
+	}
+	if len(hdr) > provisionMaxPartHeaders || len(hdr.Get("Content-Type")) > provisionMaxHeaderValue {
+		return "", fmt.Errorf("user-data multipart: oversized header block")
 	}
 	mt, params, err := mime.ParseMediaType(hdr.Get("Content-Type"))
 	if err != nil || !strings.HasPrefix(mt, "multipart/") || params["boundary"] == "" {
 		return "", fmt.Errorf("user-data multipart: bad Content-Type")
 	}
 	mr := multipart.NewReader(br, params["boundary"])
+	found := ""
+	count := 0
 	for {
 		p, err := mr.NextPart()
 		if err == io.EOF {
-			return "", nil
+			return found, nil
 		}
 		if err != nil {
 			return "", fmt.Errorf("user-data multipart: %w", err)
+		}
+		if len(p.Header) > provisionMaxPartHeaders || len(p.Header.Get("Content-Type")) > provisionMaxHeaderValue {
+			return "", fmt.Errorf("user-data multipart: oversized part header")
 		}
 		pt, _, _ := mime.ParseMediaType(p.Header.Get("Content-Type"))
 		if pt != provisionPartType {
 			continue
 		}
+		count++
+		if count > 1 {
+			return "", fmt.Errorf("user-data multipart: more than one provision part")
+		}
 		body, err := io.ReadAll(io.LimitReader(p, provisionMaxDocBytes+1))
 		if err != nil {
 			return "", fmt.Errorf("user-data multipart part: %w", err)
 		}
-		return strings.TrimSpace(string(body)), nil
+		if len(body) > provisionMaxDocBytes {
+			return "", fmt.Errorf("user-data multipart: provision part larger than %d bytes", provisionMaxDocBytes)
+		}
+		found = strings.TrimSpace(string(body))
+		if found == "" {
+			return "", fmt.Errorf("user-data multipart: empty provision part")
+		}
 	}
 }
+
+const (
+	provisionMultipartMaxBytes = 512 * 1024
+	provisionMaxPartHeaders    = 16
+	provisionMaxHeaderValue    = 1024
+)

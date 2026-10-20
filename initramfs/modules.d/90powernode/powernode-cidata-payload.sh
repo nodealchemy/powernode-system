@@ -44,12 +44,105 @@
 # local_qemu, direct-kernel, and bare-metal boots that never received a cicustom
 # seed. Never errors the boot, never hangs, adds no latency to those boots.
 
-PAYLOAD_DEST="/etc/powernode/federation-payload.json"
-IDENTITY_DEST="/run/powernode/identity.cfg"
-ENROLL_CA_DEST="/run/powernode/enroll-ca.pem"
-MNT="/run/powernode-cidata"
+PAYLOAD_DEST="${PAYLOAD_DEST:-/etc/powernode/federation-payload.json}"
+IDENTITY_DEST="${IDENTITY_DEST:-/run/powernode/identity.cfg}"
+ENROLL_CA_DEST="${ENROLL_CA_DEST:-/run/powernode/enroll-ca.pem}"
+MNT="${MNT:-/run/powernode-cidata}"
 
 log() { echo "[powernode-cidata] $*"; }
+
+# JSON user-data that carries a "version" key ANYWHERE (any letter case, any
+# whitespace/ordering/pretty-printing) is a provisioning document (or a refused
+# attempt at one): stage it as the identity file and let the agent's STRICT
+# parser decide - never gate on an exact prefix. Federation spawn payloads have
+# no key named exactly "version" (they carry contract_version). Scans every line
+# with the shell's own read builtin (no grep/head pre-pivot).
+json_has_version_key() {
+    _found=1
+    while IFS= read -r _l || [ -n "$_l" ]; do
+        case "$_l" in
+            *'"'[Vv][Ee][Rr][Ss][Ii][Oo][Nn]'"'*) _found=0; break ;;
+        esac
+    done < "$1"
+    return "$_found"
+}
+
+stage_user_data() {
+if [ -s "$MNT/user-data" ]; then
+    # Content-route: federation user-data is always a JSON object; enrollment
+    # identity.cfg never is. Read just the first line with the shell's own
+    # `read` builtin (no external `head`/`grep` dependency needed pre-pivot).
+    first_line=""
+    IFS= read -r first_line < "$MNT/user-data" 2>/dev/null || true
+
+    case "$first_line" in
+        "{"*)
+          if json_has_version_key "$MNT/user-data"; then
+            # powernode-provision document (System::EnrollmentSeed /
+            # ProvisioningDocument; docs/PROVISION_DOCUMENT.md): JSON, but
+            # enrolment identity, NOT a federation payload. Stage it where
+            # LocalIdentityStrategy reads it (strict v1 parse, pin enforced;
+            # the CA chain and pin travel inside the document).
+            mkdir -p /run/powernode
+            umask 077
+            rm -f "$IDENTITY_DEST"
+            if cp "$MNT/user-data" "$IDENTITY_DEST" && chmod 0600 "$IDENTITY_DEST"; then
+                log "staged provision document -> $IDENTITY_DEST (0600)"
+            else
+                log "WARN: failed to stage user-data -> $IDENTITY_DEST"
+            fi
+          else
+            mkdir -p /etc/powernode
+            # The payload carries a single-use acceptance_token in cleartext. umask
+            # keeps the file from being briefly group/world-readable between create and
+            # chmod; cp + chmod pin it at 0600; root ownership is implicit (this oneshot
+            # runs as root). Same 0600 rationale as the provider's stage_cicustom
+            # snippet write.
+            umask 077
+            rm -f "$PAYLOAD_DEST"
+            if cp "$MNT/user-data" "$PAYLOAD_DEST" && chmod 0600 "$PAYLOAD_DEST"; then
+                log "staged federation payload -> $PAYLOAD_DEST (0600)"
+            else
+                log "WARN: failed to stage user-data -> $PAYLOAD_DEST"
+            fi
+          fi
+            ;;
+        *)
+            # Option 3 enrollment identity — sourced-shell identity.cfg
+            # (ID=/KEY=/SERVER=/CA_PEM_FILE=), rendered by
+            # System::Providers::Proxmox::EnrollmentSeed#render_cicustom.
+            # KEY= carries a single-use bootstrap token in cleartext, so the
+            # same 0600 umask discipline as the federation branch applies.
+            mkdir -p /run/powernode
+            umask 077
+            rm -f "$IDENTITY_DEST"
+            if cp "$MNT/user-data" "$IDENTITY_DEST" && chmod 0600 "$IDENTITY_DEST"; then
+                log "staged enrollment identity -> $IDENTITY_DEST (0600)"
+            else
+                log "WARN: failed to stage user-data -> $IDENTITY_DEST"
+            fi
+            # meta-data carries the raw CA PEM (a public cert chain, not
+            # secret) that CA_PEM_FILE= in identity.cfg points at — 0644 is
+            # fine, mirroring the federation branch's own CA-is-public
+            # posture (see EnrollmentSeed's ca_pem class doc).
+            if [ -s "$MNT/meta-data" ]; then
+                if cp "$MNT/meta-data" "$ENROLL_CA_DEST" && chmod 0644 "$ENROLL_CA_DEST"; then
+                    log "staged enrollment CA -> $ENROLL_CA_DEST (0644)"
+                else
+                    log "WARN: failed to stage meta-data -> $ENROLL_CA_DEST"
+                fi
+            else
+                log "WARN: identity.cfg staged but no meta-data (CA PEM) present on the cidata drive"
+            fi
+            ;;
+    esac
+else
+    log "cidata drive has no non-empty user-data — nothing to stage"
+fi
+}
+
+# Test seam: source the functions above without touching devices.
+if [ -n "${CIDATA_SOURCE_ONLY:-}" ]; then return 0; fi
 
 # PVE always attaches its cloud-init seed as an optical (media=cdrom) device,
 # so the absence of both an optical node and a cidata-labelled device means
@@ -134,78 +227,7 @@ if [ "$mounted" -ne 0 ]; then
     exit 0
 fi
 
-if [ -s "$MNT/user-data" ]; then
-    # Content-route: federation user-data is always a JSON object; enrollment
-    # identity.cfg never is. Read just the first line with the shell's own
-    # `read` builtin (no external `head`/`grep` dependency needed pre-pivot).
-    first_line=""
-    IFS= read -r first_line < "$MNT/user-data" 2>/dev/null || true
-
-    case "$first_line" in
-        '{"version":'*)
-            # powernode-provision v1 document (System::EnrollmentSeed /
-            # ProvisioningDocument; docs/PROVISION_DOCUMENT.md). It is JSON, but
-            # it is enrolment identity, NOT a federation payload: stage it where
-            # LocalIdentityStrategy reads it (strict v1 parse, pin enforced). The
-            # CA chain and pin travel inside the document, so meta-data is unused.
-            # The renderer emits "version" as the first key (JSON.generate keeps
-            # insertion order); federation payloads have no "version" key.
-            mkdir -p /run/powernode
-            umask 077
-            rm -f "$IDENTITY_DEST"
-            if cp "$MNT/user-data" "$IDENTITY_DEST" && chmod 0600 "$IDENTITY_DEST"; then
-                log "staged provision document v1 -> $IDENTITY_DEST (0600)"
-            else
-                log "WARN: failed to stage user-data -> $IDENTITY_DEST"
-            fi
-            ;;
-        "{"*)
-            mkdir -p /etc/powernode
-            # The payload carries a single-use acceptance_token in cleartext. umask
-            # keeps the file from being briefly group/world-readable between create and
-            # chmod; cp + chmod pin it at 0600; root ownership is implicit (this oneshot
-            # runs as root). Same 0600 rationale as the provider's stage_cicustom
-            # snippet write.
-            umask 077
-            rm -f "$PAYLOAD_DEST"
-            if cp "$MNT/user-data" "$PAYLOAD_DEST" && chmod 0600 "$PAYLOAD_DEST"; then
-                log "staged federation payload -> $PAYLOAD_DEST (0600)"
-            else
-                log "WARN: failed to stage user-data -> $PAYLOAD_DEST"
-            fi
-            ;;
-        *)
-            # Option 3 enrollment identity — sourced-shell identity.cfg
-            # (ID=/KEY=/SERVER=/CA_PEM_FILE=), rendered by
-            # System::Providers::Proxmox::EnrollmentSeed#render_cicustom.
-            # KEY= carries a single-use bootstrap token in cleartext, so the
-            # same 0600 umask discipline as the federation branch applies.
-            mkdir -p /run/powernode
-            umask 077
-            rm -f "$IDENTITY_DEST"
-            if cp "$MNT/user-data" "$IDENTITY_DEST" && chmod 0600 "$IDENTITY_DEST"; then
-                log "staged enrollment identity -> $IDENTITY_DEST (0600)"
-            else
-                log "WARN: failed to stage user-data -> $IDENTITY_DEST"
-            fi
-            # meta-data carries the raw CA PEM (a public cert chain, not
-            # secret) that CA_PEM_FILE= in identity.cfg points at — 0644 is
-            # fine, mirroring the federation branch's own CA-is-public
-            # posture (see EnrollmentSeed's ca_pem class doc).
-            if [ -s "$MNT/meta-data" ]; then
-                if cp "$MNT/meta-data" "$ENROLL_CA_DEST" && chmod 0644 "$ENROLL_CA_DEST"; then
-                    log "staged enrollment CA -> $ENROLL_CA_DEST (0644)"
-                else
-                    log "WARN: failed to stage meta-data -> $ENROLL_CA_DEST"
-                fi
-            else
-                log "WARN: identity.cfg staged but no meta-data (CA PEM) present on the cidata drive"
-            fi
-            ;;
-    esac
-else
-    log "cidata drive has no non-empty user-data — nothing to stage"
-fi
+stage_user_data
 
 umount "$MNT" 2>/dev/null || true
 exit 0

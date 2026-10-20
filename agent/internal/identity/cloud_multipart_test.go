@@ -1,6 +1,9 @@
 package identity
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -47,5 +50,45 @@ func TestParseUserDataMultipartBadV1PartIsTerminal(t *testing.T) {
 	doc := v1Doc(pki, func(d map[string]any) { delete(d, "ca_fingerprint") })
 	if _, err := parseUserData(multipartSeed(doc, "#cloud-config")); err == nil {
 		t.Fatal("a pinless v1 part must be refused")
+	}
+}
+
+func TestParseUserDataMultipartRefusesTwoProvisionParts(t *testing.T) {
+	pki := newTestPKI(t)
+	doc := v1Doc(pki, nil)
+	raw := multipartSeed(doc, "#cloud-config")
+	raw = strings.Replace(raw, "--b-1--", "--b-1\nContent-Type: application/x-powernode-provision+json\n\n"+doc+"\n--b-1--", 1)
+	if _, err := parseUserData(raw); err == nil {
+		t.Fatal("two provision parts must be refused")
+	}
+}
+
+func TestParseUserDataMultipartRefusesLegacyShapeInProvisionPart(t *testing.T) {
+	legacy := `{"instance_uuid":"u","bootstrap_token":"not-a-real-enrol-key","platform_url":"https://p.example.test"}`
+	if _, err := parseUserData(multipartSeed(legacy, "#cloud-config")); err == nil {
+		t.Fatal("a legacy JSON shape inside a provision part must be refused")
+	}
+	if _, err := parseUserData(multipartSeed("ID=u\nKEY=not-a-real-enrol-key", "#cloud-config")); err == nil {
+		t.Fatal("KEY=VALUE inside a provision part must be refused")
+	}
+}
+
+func TestParseUserDataMultipartCapsPartAndEnvelope(t *testing.T) {
+	big := "{" + strings.Repeat(" ", provisionMaxDocBytes+10) + "}"
+	if _, err := parseUserData(multipartSeed(big, "#cloud-config")); err == nil {
+		t.Fatal("an oversized provision part must be refused")
+	}
+	if _, err := parseUserData(multipartSeed("{}", strings.Repeat("x", provisionMultipartMaxBytes))); err == nil {
+		t.Fatal("an oversized envelope must be refused")
+	}
+}
+
+func TestHttpDoDoesNotTruncateLargeDocuments(t *testing.T) {
+	body := strings.Repeat("a", 100*1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) }))
+	defer srv.Close()
+	got, err := httpDo(context.Background(), http.MethodGet, srv.URL, nil)
+	if err != nil || len(got) != len(body) {
+		t.Fatalf("len=%d err=%v", len(got), err)
 	}
 }
