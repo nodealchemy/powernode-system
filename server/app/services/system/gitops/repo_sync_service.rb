@@ -4,6 +4,7 @@ require "fileutils"
 require "open3"
 require "shellwords"
 require "tempfile"
+require "tmpdir"
 
 module System
   module Gitops
@@ -161,6 +162,18 @@ module System
         cleanup_secret_files!
       end
 
+      # Per-call 0700 directory for the three secret files, beside the work
+      # tree (the parent git already writes to and executes from) rather than
+      # in Dir.tmpdir, which hardened hosts mount noexec — the askpass script
+      # must be executable. Removed by cleanup_secret_files!.
+      def secret_dir
+        @secret_dir ||= begin
+          parent = File.dirname(work_tree_path)
+          FileUtils.mkdir_p(parent)
+          Dir.mktmpdir("gitops-secrets-", parent).tap { |d| File.chmod(0o700, d) }
+        end
+      end
+
       # Delete the one-shot askpass / ssh-key files written by build_git_env so the
       # git password and SSH key never linger on disk after the command, and
       # unlink THIS call's known_hosts tempfile. Runs on every run_git! exit
@@ -177,6 +190,8 @@ module System
             Rails.logger.warn("[Gitops::RepoSync] secret-file cleanup failed: #{e.class}")
           end
         end
+        FileUtils.rm_rf(@secret_dir) if @secret_dir
+        @secret_dir = nil
       rescue StandardError => e
         Rails.logger.warn("[Gitops::RepoSync] secret-file cleanup failed: #{e.message}")
       end
@@ -322,7 +337,7 @@ module System
       # host key is known for <alias> ... Host key verification failed" —
       # a false host_key_mismatch. Returns the path.
       def write_known_hosts!(entries)
-        file = Tempfile.new([ "gitops-known_hosts", "" ])
+        file = Tempfile.new([ "gitops-known_hosts", "" ], secret_dir)
         File.chmod(0o600, file.path)
         file.write(::System::SshHostKeys.known_hosts(host_alias, entries))
         file.close
@@ -409,7 +424,7 @@ module System
         # `username` was read and discarded. The comment here asserted the
         # username "is embedded in the URL via the standard Git mechanism" —
         # nothing put it there; clone_fresh uses repo_url verbatim.
-        file = Tempfile.new([ "gitops-askpass", "" ])
+        file = Tempfile.new([ "gitops-askpass", "" ], secret_dir)
         @askpass_file = file
         File.chmod(0o700, file.path)
         begin
@@ -433,7 +448,7 @@ module System
       end
 
       def build_ssh_key_file(key_content)
-        file = Tempfile.new([ "gitops-ssh_key", "" ])
+        file = Tempfile.new([ "gitops-ssh_key", "" ], secret_dir)
         @ssh_key_file = file
         File.chmod(0o600, file.path)
         begin

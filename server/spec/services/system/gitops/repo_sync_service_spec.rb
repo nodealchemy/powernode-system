@@ -148,6 +148,12 @@ RSpec.describe System::Gitops::RepoSyncService do
         second = paths_for(repo)
 
         expect(first.size).to eq(1)
+        parent = File.dirname(derived)
+        (first + second).each do |path|
+          expect(File.dirname(path)).to start_with(parent)
+          expect(File.dirname(path)).not_to start_with(Dir.tmpdir)
+          expect(Dir.exist?(File.dirname(path))).to be(false)
+        end
         expect(first).not_to eq(second)
         (first + second).each do |path|
           expect(path).not_to start_with(derived)
