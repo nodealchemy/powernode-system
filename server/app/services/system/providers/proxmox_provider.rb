@@ -349,6 +349,7 @@ module System
         log_operation("start_instance", instance_id: instance_id)
         node, kind, vmid = parse_instance_id!(instance_id)
         c = require_client!
+        reseed_enrollment!(c, node: node, kind: kind, vmid: vmid, instance_id: instance_id)
         upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/start")
         c.wait_task(node: node, upid: upid)
         sync_status(instance_id)
@@ -357,6 +358,34 @@ module System
       rescue Proxmox::Client::Error => e
         logger.error("[#{self.class.name}] start_instance failed: #{e.class}: #{e.message}")
         build_error_response(::System::CallerFacingMessages::GENERIC)
+      end
+
+      # Re-mint on start (D12), for pool-provisioned pivot-boot (uefi_disk)
+      # VMs: a fresh 1h key replaces the create-time seed under the SAME
+      # per-instance seed name (F1: never a bare vmid key), so PVE regenerates
+      # its cloud-init drive from it at start. Skipped, by design, for
+      # cloud_init VMs (no platform key rides that seed), federation spawns
+      # (their one snippet slot carries the spawn payload), the fw-cfg opt-in
+      # (static `args` set at create) and LXC. Never logs the seed.
+      private def reseed_enrollment!(c, node:, kind:, vmid:, instance_id:)
+        return unless kind == "qemu"
+        return if ENV["POWERNODE_PVE_USE_FWCFG"] == "1"
+
+        record = ::System::NodeInstance.where("config->>'cloud_instance_id' = ?", instance_id.to_s).first
+        return unless record&.pivot_boot?
+        return if record.config.is_a?(Hash) && record.config["federation_spawn"].present?
+
+        seed = ::System::Providers::Proxmox::EnrollmentSeed.new.render_cicustom(instance: record)
+        return unless seed
+
+        params = { instance: record, user_data: seed[:user_data], meta_data: seed[:meta_data] }
+        if cidata_iso_transport?
+          storage = connection&.config&.dig("cidata_iso_storage").presence ||
+                    pve_credential("default_storage", "default_storage").presence
+          stage_cidata_iso(c, {}, params, vmid: vmid, node: node, storage: storage)
+        else
+          stage_cicustom({}, params, vmid: vmid, c: c, node: node)
+        end
       end
 
       def stop_instance(instance_id, force: false)

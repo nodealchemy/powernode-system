@@ -71,6 +71,7 @@ module System
         log_operation("start_instance", instance_id: instance_id)
 
         begin
+          reseed_user_data!(instance_id)
           ec2_client.start_instances(instance_ids: [ instance_id ])
 
           # Get updated instance state
@@ -546,6 +547,17 @@ module System
         # were already provided. Operators see this in CloudTrail too.
         logger.warn("[AwsProvider] allowlist SG creation failed: #{e.class}: #{e.message}")
         params
+      end
+
+      # Re-mint on start (D12): a stopped EC2 instance's user-data attribute is
+      # writable, so replace it with a freshly minted provisioning document
+      # BEFORE the instance starts. The value is a blob (the SDK encodes it);
+      # it is never logged. No-op when the instance was not platform-seeded.
+      def reseed_user_data!(instance_id)
+        user_data = remint_user_data_for(instance_id)
+        return if user_data.nil?
+
+        ec2_client.modify_instance_attribute(instance_id: instance_id, user_data: { value: user_data })
       end
 
       def build_run_instance_params(params)

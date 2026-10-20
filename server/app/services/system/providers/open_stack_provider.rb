@@ -58,6 +58,11 @@ module System
         end
       end
 
+      # No re-mint on start (D12): Nova cannot change a server's user_data after
+      # create (only on rebuild), so the create-time document is the only seed.
+      # Its key is single-use with a 1h TTL; a server that already enrolled
+      # keeps its mTLS identity across restarts and needs no new key. Re-seeding
+      # a never-enrolled server means rebuild/replace.
       def start_instance(instance_id)
         log_operation("start_instance", instance_id: instance_id)
 

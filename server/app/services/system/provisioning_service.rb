@@ -16,6 +16,14 @@ module System
 
     class ProvisioningError < StandardError; end
 
+    # Providers whose guests read the platform provisioning document from cloud
+    # user-data / provider metadata (D12). Proxmox and local_qemu seed through
+    # their own channels (see Providers::Proxmox::EnrollmentSeed / LocalQemu::CloudSeed).
+    CLOUD_SEED_PROVIDERS = %w[aws openstack gcp azure].freeze
+    # Providers with a separate channel for the operator script, so the
+    # user-data stays the bare v1 document: GCP startup-script, Azure customData.
+    SEPARATE_SCRIPT_PROVIDERS = %w[gcp azure].freeze
+
     def self.provision_instance(node:, provider_region_id:, provider_instance_type_id:, operation_id: nil, options: {})
       new.provision_instance(
         node: node,
@@ -197,7 +205,8 @@ module System
         instance_type: instance_type,
         instance: instance,
         node: node,
-        options: options
+        options: options,
+        provider_type: provider_adapter.provider_type
       )
 
       # IMP-831a81e02d25 — declare the resolved boot mode on the row instead of
@@ -305,6 +314,16 @@ module System
 
         Runtime::Result.err(error: safe_cloud_error, data: { instance: instance })
       end
+    rescue ::System::EnrollmentSeed::SeedError => e
+      # Fail closed (D12): no CA / unusable platform URL => nothing was created.
+      # The message names the missing configuration and never carries a key.
+      Rails.logger.error("[ProvisioningService] #{e.message}")
+      mark_instance_errored(instance)
+      emit_provision_event(
+        account: node.account, kind: "system.instance_provision_failed", severity: :high,
+        instance: instance, node: node, payload: { error: e.message }
+      )
+      Runtime::Result.err(error: e.message, data: { instance: instance }.compact)
     rescue Providers::BaseProvider::ProviderError => e
       Rails.logger.error("[ProvisioningService] Provider error: #{e.message}")
       # The instance row is created before the provider call — a provider
@@ -644,7 +663,7 @@ module System
       )
     end
 
-    def build_provider_params(region:, instance_type:, instance:, node:, options:)
+    def build_provider_params(region:, instance_type:, instance:, node:, options:, provider_type: nil)
       params = {
         name: instance.name,
         # hostname becomes /etc/hostname inside the guest (cloud-init
@@ -669,10 +688,28 @@ module System
       template_init = node.node_template&.config.is_a?(Hash) ?
                       (node.node_template.config["init_script"] || node.node_template.config[:init_script]) :
                       nil
-      if options[:user_data].present?
-        params[:user_data] = options[:user_data]
+      operator_script = if options[:user_data].present?
+                          options[:user_data]
       elsif template_init.is_a?(String) && template_init.present?
-        params[:user_data] = template_init
+                          template_init
+      end
+
+      if CLOUD_SEED_PROVIDERS.include?(provider_type.to_s)
+        # D12: the platform mints a 1h single-use key and injects the
+        # provisioning document v1 as the user-data HEAD (fail closed: no CA
+        # configured => SeedError, nothing is provisioned). Providers with a
+        # separate script channel (GCP startup-script, Azure customData) keep
+        # the operator script there; the rest get a MIME multipart whose first
+        # part is the v1 document and second part the script.
+        separate = SEPARATE_SCRIPT_PROVIDERS.include?(provider_type.to_s)
+        seed = ::System::EnrollmentSeed.render_user_data(
+          instance: instance, extra: separate ? nil : operator_script
+        )
+        params[:user_data] = seed.user_data
+        params[:init_script] = operator_script if separate && operator_script
+        params[:startup_script] = operator_script if provider_type.to_s == "gcp" && operator_script
+      elsif operator_script
+        params[:user_data] = operator_script
       end
 
       # NodeTemplate stores boot_mode under its `config` JSONB blob too

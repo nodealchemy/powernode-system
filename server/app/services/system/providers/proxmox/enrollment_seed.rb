@@ -42,6 +42,8 @@ module System
       # side (no operator-visible error surfaces), so we never guess or
       # fall back to an internal CA default — see the resolver below.
       class EnrollmentSeed
+        PURPOSE = "proxmox_uefi_provision"
+
         def self.build(instance:)
           new.build(instance: instance)
         end
@@ -105,26 +107,35 @@ module System
             return nil
           end
 
-          _bootstrap_token, plaintext = issue_bootstrap_token(instance)
+          # Wire format: provisioning document v1 (strict JSON, CA pin always
+          # present, chain embedded) minted by the single issuer and staged by
+          # powernode-cidata-payload.sh to /run/powernode/identity.cfg, which
+          # LocalIdentityStrategy parses as v1. Fail closed: an unusable CA or a
+          # non-https URL raises EnrollmentSeed::SeedError (no pin-less document).
+          #
+          # POWERNODE_PVE_LEGACY_CIDATA=1 keeps the legacy ID=/KEY= text for
+          # fleets still booting images whose stager predates the v1 branch (an
+          # old stager would copy a v1 document to the FEDERATION payload path).
+          # TODO(remove with the legacy readers, one image release).
+          if ENV["POWERNODE_PVE_LEGACY_CIDATA"] == "1"
+            _bootstrap_token, plaintext = issue_bootstrap_token(instance)
+            user_data = "ID=#{instance.id}\n" \
+                        "KEY=#{plaintext}\n" \
+                        "SERVER=#{platform_url}\n" \
+                        "CA_PEM_FILE=/run/powernode/enroll-ca.pem\n"
+            return { user_data: user_data, meta_data: ca_pem }
+          end
 
-          user_data = "ID=#{instance.id}\n" \
-                      "KEY=#{plaintext}\n" \
-                      "SERVER=#{platform_url}\n" \
-                      "CA_PEM_FILE=/run/powernode/enroll-ca.pem\n"
-
-          { user_data: user_data, meta_data: ca_pem }
+          seed = ::System::EnrollmentSeed.render_user_data(
+            instance: instance, purpose: PURPOSE, server: platform_url, ca_pem: ca_pem
+          )
+          { user_data: seed.user_data, meta_data: nil, bootstrap_token_id: seed.bootstrap_token_id }
         end
 
         private
 
         def issue_bootstrap_token(instance)
-          ::System::BootstrapToken.issue!(
-            node: instance.node,
-            node_instance: instance,
-            intended_subject: instance.id,
-            ttl: 1.hour,
-            purpose: "proxmox_uefi_provision"
-          )
+          ::System::EnrollmentSeed.issue_token(instance: instance, purpose: PURPOSE)
         end
 
         # DO EXACTLY THIS — no fallbacks beyond the two listed here, ever.

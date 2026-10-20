@@ -71,6 +71,7 @@ module System
         log_operation("start_instance", instance_id: instance_id)
 
         begin
+          reseed_user_data!(instance_id)
           operation = instances_client.start(
             project: project_id,
             zone: zone,
@@ -822,6 +823,44 @@ module System
         raise Google::Cloud::Error, "Operation timed out"
       end
 
+      # [{key:, value:}] metadata items for a create. user_data -> "user-data";
+      # startup_script -> "startup-script" (operator scripts only, never the seed).
+      def metadata_items_for(params)
+        items = []
+        items << { key: "user-data", value: params[:user_data] } if params[:user_data].present?
+        items << { key: "startup-script", value: params[:startup_script] } if params[:startup_script].present?
+        items
+      end
+
+      def build_metadata(params)
+        items = metadata_items_for(params)
+        return nil if items.empty?
+
+        Google::Cloud::Compute::V1::Metadata.new(
+          items: items.map { |i| Google::Cloud::Compute::V1::Items.new(**i) }
+        )
+      end
+
+      # Re-mint on start (D12): setMetadata replaces ONLY the `user-data` item
+      # (other items, incl. an operator startup-script, are preserved) using the
+      # current fingerprint. The document is never logged.
+      def reseed_user_data!(instance_id)
+        user_data = remint_user_data_for(instance_id, compose: false)
+        return if user_data.nil?
+
+        current = instances_client.get(project: project_id, zone: zone, instance: instance_id)
+        kept = Array(current.metadata&.items).reject { |i| i.key == "user-data" }
+                                                .map { |i| { key: i.key, value: i.value } }
+        items = kept + [ { key: "user-data", value: user_data } ]
+        resource = Google::Cloud::Compute::V1::Metadata.new(
+          fingerprint: current.metadata&.fingerprint,
+          items: items.map { |i| Google::Cloud::Compute::V1::Items.new(**i) }
+        )
+        wait_for_operation(instances_client.set_metadata(
+          project: project_id, zone: zone, instance: instance_id, metadata_resource: resource
+        ))
+      end
+
       def build_instance_resource(params)
         machine_type = "zones/#{zone}/machineTypes/#{params[:instance_type]}"
 
@@ -857,18 +896,11 @@ module System
         end
         instance.network_interfaces = [ network_interface ]
 
-        # Metadata (including startup script)
-        if params[:user_data].present? || params[:startup_script].present?
-          script = params[:startup_script] || params[:user_data]
-          instance.metadata = Google::Cloud::Compute::V1::Metadata.new(
-            items: [
-              Google::Cloud::Compute::V1::Items.new(
-                key: "startup-script",
-                value: script
-              )
-            ]
-          )
-        end
+        # Metadata: `user-data` carries the platform provisioning document (the
+        # agent reads instance/attributes/user-data); `startup-script` is for
+        # operator scripts ONLY.
+        metadata = build_metadata(params)
+        instance.metadata = metadata if metadata
 
         # Tags
         if params[:tags].present?

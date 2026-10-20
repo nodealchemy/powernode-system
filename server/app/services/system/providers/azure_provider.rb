@@ -171,6 +171,7 @@ module System
 
       def start_instance(instance_id)
         rg = resource_group
+        reseed_user_data!(rg, instance_id)
         response = arm_post(
           "/subscriptions/#{subscription_id}/resourceGroups/#{rg}/providers/Microsoft.Compute/virtualMachines/#{instance_id}/start",
           api_version: ARM_API_VERSION
@@ -858,6 +859,10 @@ module System
         arm_request(:put, path, body: body, api_version: api_version, query: query)
       end
 
+      def arm_patch(path, body:, api_version:, query: {})
+        arm_request(:patch, path, body: body, api_version: api_version, query: query)
+      end
+
       def arm_delete(path, api_version:, query: {})
         arm_request(:delete, path, api_version: api_version, query: query)
       end
@@ -907,7 +912,7 @@ module System
       # ----- VM payload + status helpers -----
 
       def build_vm_payload(params, _name)
-        {
+        payload = {
           location: params[:region] || params[:location],
           properties: {
             hardwareProfile: { vmSize: params[:instance_type] || "Standard_B1s" },
@@ -936,6 +941,33 @@ module System
             }
           }
         }
+        # `userData` (base64) is what the agent reads from IMDS
+        # (compute/userData) and is updatable after create, so it carries the
+        # platform provisioning document. `osProfile.customData` is consumed by
+        # cloud-init at provisioning time and is immutable after create, so it
+        # carries the operator/template init script ONLY - never the key.
+        if params[:user_data].present?
+          payload[:properties][:userData] = Base64.strict_encode64(params[:user_data])
+        end
+        if params[:init_script].present?
+          payload[:properties][:osProfile][:customData] = Base64.strict_encode64(params[:init_script])
+        end
+        payload
+      end
+
+      # Re-mint on start (D12): PATCH properties.userData with a freshly minted
+      # provisioning document before the VM starts. customData cannot change
+      # after create, so the init script is untouched. Never logged.
+      def reseed_user_data!(rg, instance_id)
+        user_data = remint_user_data_for(instance_id, compose: false)
+        return if user_data.nil?
+
+        response = arm_patch(
+          "/subscriptions/#{subscription_id}/resourceGroups/#{rg}/providers/Microsoft.Compute/virtualMachines/#{instance_id}",
+          body: { properties: { userData: Base64.strict_encode64(user_data) } },
+          api_version: ARM_API_VERSION
+        )
+        azure_failure!(response) unless response.success?
       end
 
       def default_ubuntu_image

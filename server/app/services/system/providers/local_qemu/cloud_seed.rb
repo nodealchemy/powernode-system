@@ -124,26 +124,11 @@ module System
 
         private
 
+        # The single platform issuer (System::EnrollmentSeed): 1h, single-use,
+        # one audit row in the mint transaction. Fails closed - there is no
+        # placeholder token; a mint/audit failure aborts the (re)start.
         def issue_bootstrap_token(instance)
-          return [ nil, options_test_token ] unless defined?(::System::BootstrapToken)
-
-          ::System::BootstrapToken.issue!(
-            node: instance.node,
-            node_instance: instance,
-            intended_subject: instance.id,
-            ttl: 1.hour,
-            purpose: "local_qemu_provision"
-          )
-        rescue StandardError => e
-          Rails.logger.warn("[LocalQemu::CloudSeed] BootstrapToken.issue! failed: #{e.message}")
-          [ nil, options_test_token ]
-        end
-
-        # Test fallback when BootstrapToken model isn't available or token
-        # issuance fails. Provides a deterministic placeholder so the
-        # provider tests can assert on entry shape without DB churn.
-        def options_test_token
-          "test-token-#{SecureRandom.hex(8)}"
+          ::System::EnrollmentSeed.issue_token(instance: instance, purpose: "local_qemu_provision")
         end
 
         def resolve_ca_pem

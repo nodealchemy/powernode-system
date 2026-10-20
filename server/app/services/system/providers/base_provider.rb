@@ -639,7 +639,27 @@ module System
         acceptance_token bootstrap_token enrollment_token
         api_key password vault_token client_secret authorization
         user_data ssh_keys ssh_authorized_keys
+        init_script startup_script custom_data
       ].to_set.freeze
+
+      # Re-mint on start (design D12): the previous start's key was consumed by
+      # that boot's enrolment or has expired, so every (re)start of a
+      # platform-seeded VM mints a FRESH 1h key and re-renders the provisioning
+      # document. Returns the rendered user-data String, or nil when the cloud id
+      # does not resolve to a NodeInstance (a VM the platform did not seed).
+      # Raises System::EnrollmentSeed::SeedError (fail closed, no pin-less
+      # document) rather than starting a VM on a stale seed. Never logs the result.
+      def remint_user_data_for(cloud_id, compose: true)
+        return nil if cloud_id.blank?
+
+        record = ::System::NodeInstance.where("config->>'cloud_instance_id' = ?", cloud_id.to_s).first
+        return nil unless record
+
+        ::System::EnrollmentSeed.render_user_data(
+          instance: record,
+          extra: compose ? ::System::EnrollmentSeed.template_init_script(record.node) : nil
+        ).user_data
+      end
 
       def log_operation(operation, **details)
         logger.info("[#{self.class.name}] #{operation}: #{sanitize_for_log(details).to_json}")
