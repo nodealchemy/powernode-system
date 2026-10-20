@@ -20,6 +20,10 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
     AuditLog.where(resource_type: "System::BootstrapToken", action: "system.bootstrap_token.issued")
   end
 
+  def enroll!(record = instance)
+    record.update_columns(mtls_subject: "CN=not-a-real-subject")
+  end
+
   def doc_of(user_data)
     JSON.parse(user_data[/^\{.*\}$/])
   end
@@ -48,7 +52,7 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
   # ---------------------------------------------------------------- AWS
   describe System::Providers::AwsProvider do
     let(:connection) do
-      instance_double("System::ProviderConnection", access_key: "not-a-real-access", secret_key: "not-a-real-secret", config: {})
+      instance_double("System::ProviderConnection", account_id: instance.account_id, provider_id: instance.provider_region.provider_id, access_key: "not-a-real-access", secret_key: "not-a-real-secret", config: {})
     end
     let(:region) { instance_double("System::ProviderRegion", region_code: "us-east-1") }
     let(:ec2) { double("Aws::EC2::Client") }
@@ -85,15 +89,65 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
         expect(keys.uniq.size).to eq(2)
       end
 
+      it "ENROLLED: mints nothing, revokes nothing new, and overwrites the seed with the key-less placeholder" do
+        enroll!
+        sent = nil
+        allow(ec2).to receive(:modify_instance_attribute) { |**kw| sent = kw[:user_data][:value] }
+        expect { provider.start_instance(cloud_id) }.not_to change { issued_rows.count }
+        expect(sent).to eq(System::EnrollmentSeed::NEUTRAL_USER_DATA)
+        expect(sent).not_to match(/key|version/)
+      end
+
+      it "ENROLLED via an active NodeCertificate (no mtls_subject): same" do
+        create(:system_node_certificate, node_instance: instance, account: instance.account)
+        allow(ec2).to receive(:modify_instance_attribute)
+        expect { provider.start_instance(cloud_id) }.not_to change { issued_rows.count }
+        expect(ec2).to have_received(:modify_instance_attribute).with(hash_including(user_data: { value: System::EnrollmentSeed::NEUTRAL_USER_DATA }))
+      end
+
+      it "never crosses tenants: another account's instance with the same cloud id is not touched" do
+        other = create(:system_node_instance)
+        other.merge_config!("cloud_instance_id" => cloud_id)
+        expect(ec2).to receive(:modify_instance_attribute).once { |**kw| expect(doc_of(kw[:user_data][:value])["instance_id"]).to eq(instance.id) }
+        provider.start_instance(cloud_id)
+      end
+
+      it "refuses (error response, no start) when two live rows in the account match, and ignores terminated ones" do
+        twin = create(:system_node_instance, node: instance.node, provider_region: instance.provider_region)
+        twin.merge_config!("cloud_instance_id" => cloud_id)
+        expect(ec2).not_to receive(:start_instances)
+        result = provider.start_instance(cloud_id)
+        expect(result).to include(success: false, error_code: "SeedUnavailable")
+      end
+
+      it "ignores a terminated row that shares the cloud id" do
+        twin = create(:system_node_instance, node: instance.node, provider_region: instance.provider_region)
+        twin.merge_config!("cloud_instance_id" => cloud_id)
+        twin.update_columns(status: "terminated")
+        allow(ec2).to receive(:modify_instance_attribute)
+        expect(provider.start_instance(cloud_id)[:error_code]).to be_nil
+        expect(ec2).to have_received(:modify_instance_attribute).once
+      end
+
+      it "turns a SeedError (no CA) into a provider error response and does not start" do
+        stub_enroll_settings(ca: nil)
+        expect(ec2).not_to receive(:start_instances)
+        expect(provider.start_instance(cloud_id)).to include(success: false, error_code: "SeedUnavailable")
+      end
+
+      it "revokes the prior active seed key (audited, same purpose) when it re-mints" do
+        allow(ec2).to receive(:modify_instance_attribute)
+        provider.start_instance(cloud_id)
+        first = System::BootstrapToken.where(node_instance_id: instance.id, purpose: "cloud_seed").sole
+        expect { provider.start_instance(cloud_id) }
+          .to change { AuditLog.where(action: "system.bootstrap_token.revoked").count }.by(1)
+        expect(first.reload).to be_revoked
+        expect(System::BootstrapToken.active.where(node_instance_id: instance.id, purpose: "cloud_seed").count).to eq(1)
+      end
+
       it "starts a VM the platform did not seed without touching user-data" do
         expect(ec2).not_to receive(:modify_instance_attribute)
         provider.start_instance("i-unknown")
-      end
-
-      it "fails closed (no start) when no CA is configured" do
-        stub_enroll_settings(ca: nil)
-        expect(ec2).not_to receive(:start_instances)
-        expect { provider.start_instance(cloud_id) }.to raise_error(System::EnrollmentSeed::SeedError)
       end
 
       it_behaves_like "never logs the seed" do
@@ -116,7 +170,7 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
   # ---------------------------------------------------------- OpenStack
   describe System::Providers::OpenStackProvider do
     let(:connection) do
-      instance_double("System::ProviderConnection", access_key: "u", secret_key: "p", tenant: "t",
+      instance_double("System::ProviderConnection", account_id: instance.account_id, provider_id: instance.provider_region.provider_id, access_key: "u", secret_key: "p", tenant: "t",
                       endpoint_url: "https://openstack.example.test:5000/v3", config: {}, account: nil, provider: nil)
     end
     let(:region) { instance_double("System::ProviderRegion", region_code: "RegionOne") }
@@ -152,7 +206,7 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
   # ---------------------------------------------------------------- GCP
   describe System::Providers::GcpProvider do
     let(:connection) do
-      instance_double("System::ProviderConnection", tenant: "test-project", secret_key: "{}",
+      instance_double("System::ProviderConnection", account_id: instance.account_id, provider_id: instance.provider_region.provider_id, tenant: "test-project", secret_key: "{}",
                       config: { "project_id" => "test-project", "default_zone" => "us-central1-a" })
     end
     let(:region) { instance_double("System::ProviderRegion", region_code: "us-central1") }
@@ -217,6 +271,21 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
         expect(sent.map { |m| doc_of(m.items.find { |i| i.key == "user-data" }.value)["key"] }.uniq.size).to eq(2)
       end
 
+      it "ENROLLED: mints nothing and REMOVES user-data, keeping the operator startup-script" do
+        enroll!
+        sent = nil
+        allow(client).to receive(:set_metadata) { |**kw| sent = kw[:metadata_resource] }
+        expect { provider.start_instance(cloud_id) }.not_to change { issued_rows.count }
+        expect(sent.items.map(&:key)).to eq([ "startup-script" ])
+        expect(sent.fingerprint).to eq("fp-1")
+      end
+
+      it "ignores a same-named GCE instance that belongs to another account" do
+        instance.update_columns(account_id: create(:account).id)
+        expect(client).not_to receive(:set_metadata)
+        provider.start_instance(cloud_id)
+      end
+
       it_behaves_like "never logs the seed" do
         def exercise
           allow(client).to receive(:set_metadata) do |**kw|
@@ -240,7 +309,7 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
   # -------------------------------------------------------------- Azure
   describe System::Providers::AzureProvider do
     let(:connection) do
-      instance_double("System::ProviderConnection", access_key: "id", secret_key: "s", tenant: "t",
+      instance_double("System::ProviderConnection", account_id: instance.account_id, provider_id: instance.provider_region.provider_id, access_key: "id", secret_key: "s", tenant: "t",
                       config: { "subscription_id" => "sub-12345", "resource_group" => "test-rg" })
     end
     let(:region) { instance_double("System::ProviderRegion", region_code: "eastus") }
@@ -294,9 +363,18 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
         expect(bodies.first["properties"].keys).to eq([ "userData" ])
       end
 
-      it "fails closed without a CA: no PATCH, no start" do
+      it "fails closed without a CA: a provider error, no PATCH, no start" do
         stub_enroll_settings(ca: nil)
-        expect { provider.start_instance(cloud_id) }.to raise_error(System::EnrollmentSeed::SeedError)
+        expect { provider.start_instance(cloud_id) }.to raise_error(System::Providers::AzureProvider::AzureError, /could not be minted/)
+      end
+
+      it "ENROLLED: mints nothing and PATCHes the key-less placeholder" do
+        enroll!
+        body = nil
+        stubs.patch(vm_path) { |env| body = JSON.parse(env.body); [ 200, {}, {} ] }
+        stub_start
+        expect { provider.start_instance(cloud_id) }.not_to change { issued_rows.count }
+        expect(Base64.decode64(body.dig("properties", "userData"))).to eq(System::EnrollmentSeed::NEUTRAL_USER_DATA)
       end
 
       it_behaves_like "never logs the seed" do
@@ -321,7 +399,7 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
   describe System::Providers::ProxmoxProvider do
     let(:tmp) { Dir.mktmpdir }
     let(:connection) do
-      instance_double("System::ProviderConnection", access_key: "root@pam!powernode", secret_key: "00000000-0000-0000-0000-000000000000",
+      instance_double("System::ProviderConnection", account_id: instance.account_id, provider_id: instance.provider_region.provider_id, access_key: "root@pam!powernode", secret_key: "00000000-0000-0000-0000-000000000000",
                       endpoint_url: "https://pve.example:8006", provider: instance_double("System::Provider", config: {}),
                       config: { "verify_ssl" => "false", "snippets_storage" => "snip", "snippets_local_path" => tmp })
     end
@@ -338,6 +416,14 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
 
     after { FileUtils.remove_entry(tmp) }
 
+    # v1 is opt-in on Proxmox until rebuilt images are promoted (M2).
+    around do |ex|
+      ENV["POWERNODE_PVE_V1_CIDATA"] = "1"
+      ex.run
+    ensure
+      ENV.delete("POWERNODE_PVE_V1_CIDATA")
+    end
+
     def seed_file
       Dir[File.join(tmp, "*-user.yml")].first
     end
@@ -353,6 +439,21 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
       expect(second["key"]).not_to eq(first["key"])
       expect(second).to include("version" => 1, "purpose" => "proxmox_uefi_provision")
       expect(File.stat(seed_file).mode & 0o777).to eq(0o600)
+    end
+
+    it "ENROLLED: mints nothing and overwrites the seed IN PLACE with the key-less placeholder" do
+      provider.start_instance(cloud_id)
+      path = seed_file
+      enroll!
+      expect { provider.start_instance(cloud_id) }.not_to change { issued_rows.count }
+      expect(seed_file).to eq(path)
+      expect(File.read(path)).to eq(System::EnrollmentSeed::NEUTRAL_USER_DATA)
+    end
+
+    it "defaults to the LEGACY KEY= seed when v1 is not opted into (single issuer, audited)" do
+      ENV.delete("POWERNODE_PVE_V1_CIDATA")
+      expect { provider.start_instance(cloud_id) }.to change { issued_rows.count }.by(1)
+      expect(File.read(seed_file)).to match(/\AID=#{instance.id}\nKEY=\S+\nSERVER=/)
     end
 
     it "skips VMs that are not platform-seeded pivot boots (no mint, no file)" do

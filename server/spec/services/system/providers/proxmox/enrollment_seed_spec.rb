@@ -134,6 +134,15 @@ RSpec.describe System::Providers::Proxmox::EnrollmentSeed do
   describe "#render_cicustom" do
     subject(:seed) { described_class.new }
 
+    # v1 is opt-in (operator decision); the examples below that assert the v1
+    # document run with the opt-in set, the default-format ones unset it.
+    around do |ex|
+      ENV["POWERNODE_PVE_V1_CIDATA"] = "1"
+      ex.run
+    ensure
+      ENV.delete("POWERNODE_PVE_V1_CIDATA")
+    end
+
     context "when both enroll_ca_pem and enroll_platform_url resolve" do
       before { stub_site_setting(ca: ca_pem, url: platform_url) }
 
@@ -172,22 +181,24 @@ RSpec.describe System::Providers::Proxmox::EnrollmentSeed do
         expect { seed.render_cicustom(instance: instance) }.to raise_error(::System::EnrollmentSeed::SeedError)
       end
 
-      context "with POWERNODE_PVE_LEGACY_CIDATA=1 (images whose stager predates the v1 branch)" do
-        around do |ex|
-          ENV["POWERNODE_PVE_LEGACY_CIDATA"] = "1"
-          ex.run
-        ensure
-          ENV.delete("POWERNODE_PVE_LEGACY_CIDATA")
-        end
+      context "without POWERNODE_PVE_V1_CIDATA (the DEFAULT until rebuilt images are promoted)" do
+        before { ENV.delete("POWERNODE_PVE_V1_CIDATA") }
 
-        it "still emits the legacy ID=/KEY=/SERVER= text with the CA as meta_data, minted by the same issuer" do
+        it "emits the legacy ID=/KEY=/SERVER= text with the CA as meta_data, minted by the same issuer" do
           result = seed.render_cicustom(instance: instance)
           plaintext = result[:user_data][/^KEY=(.+)$/, 1]
           expect(result[:user_data]).to eq(
             "ID=#{instance.id}\nKEY=#{plaintext}\nSERVER=#{platform_url}\nCA_PEM_FILE=/run/powernode/enroll-ca.pem\n"
           )
           expect(result[:meta_data]).to eq(ca_pem)
-          expect(::System::BootstrapToken.find_active_by_plaintext(plaintext).purpose).to eq("proxmox_uefi_provision")
+          token = ::System::BootstrapToken.find_active_by_plaintext(plaintext)
+          expect(token.purpose).to eq("proxmox_uefi_provision")
+          expect(token.expires_at).to be_within(5.seconds).of(1.hour.from_now)
+        end
+
+        it "writes one audit row per mint" do
+          expect { seed.render_cicustom(instance: instance) }
+            .to change { AuditLog.where(action: "system.bootstrap_token.issued").count }.by(1)
         end
       end
 

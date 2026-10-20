@@ -92,6 +92,23 @@ RSpec.describe System::ProvisioningService, "platform-injected enrolment seed" d
     end
   end
 
+  context "init script the seed cannot carry (L3) or that is too big (M4)" do
+    let(:ptype) { "aws" }
+
+    it "errs clearly on an unrecognised script type and creates nothing" do
+      result = provision(options: { user_data: "echo no shebang" })
+      expect(result).not_to be_success
+      expect(result.error).to match(/unsupported init script type/)
+      expect(adapter).not_to have_received(:create_instance)
+    end
+
+    it "errs clearly when the AWS user-data would exceed 16 KB" do
+      result = provision(options: { user_data: "#cloud-config\n# #{'x' * 17_000}" })
+      expect(result.error).to match(/over the aws limit/)
+      expect(adapter).not_to have_received(:create_instance)
+    end
+  end
+
   context "providers outside the cloud-metadata set" do
     let(:ptype) { "mock" }
 

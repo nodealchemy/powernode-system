@@ -102,7 +102,7 @@ v1 and is never downgraded to a legacy shape. New writers emit v1 JSON only.
 
 | Writer | Emits | Follow-up |
 |---|---|---|
-| `System::Providers::Proxmox::EnrollmentSeed#render_cicustom` | v1 JSON (D12). Legacy `ID=/KEY=/SERVER=/CA_PEM_FILE=` only under `POWERNODE_PVE_LEGACY_CIDATA=1`, for images whose `powernode-cidata-payload.sh` predates the v1 branch | remove the env escape one image release after the v1 stager ships |
+| `System::Providers::Proxmox::EnrollmentSeed#render_cicustom` | **Legacy `ID=/KEY=/SERVER=/CA_PEM_FILE=` by DEFAULT** (operator decision): images built before the new stager would copy a v1 document to the federation payload path. v1 JSON is opt-in with `POWERNODE_PVE_V1_CIDATA=1` | **Follow-up: flip the default to v1 once UKI images built from develop (new `powernode-cidata-payload.sh`) are promoted**, then drop the legacy branch |
 | `System::Providers::Proxmox::EnrollmentSeed#build` and `LocalQemu::CloudSeed#build` | fw-cfg entries `opt/com.powernode/{instance_uuid,bootstrap_token,ca_pem,platform_url}` (no pin): the agent's fw-cfg reader is entry-per-key, not a document reader. Keys are still minted by the single issuer | agent fw-cfg v1 reader |
 | `System::NetbootService.render_ipxe_script` (+ `initramfs/images/ipxe/template.ipxe.erb`) | kernel cmdline `powernode.*` keys | D11 |
 | `Api::V1::System::NodeInstancesController` identity download | `identity.cfg` (`SERVER=/ID=/CA_PEM_FILE=`, no key) | D12 |
@@ -133,9 +133,9 @@ Purposes: `cloud_seed` (AWS, OpenStack, GCP, Azure), `proxmox_uefi_provision`,
 |---|---|---|
 | AWS | user-data = v1 (MIME multipart with the template `init_script` as part 2 when present) | yes: `modify_instance_attribute(user_data)` on the stopped instance, then start |
 | OpenStack | user-data = v1 (MIME as above) | **no**: Nova cannot change user_data after create (rebuild only). The create-time key is the only one; a server that already enrolled keeps its mTLS identity |
-| GCP | metadata `user-data` = bare v1; operator script in `startup-script` only | yes: `setMetadata` replaces only `user-data` (fingerprint kept) |
+| GCP | metadata `user-data` = bare v1; operator script in `startup-script` only | yes: `setMetadata` replaces only `user-data` (fingerprint kept); enrolled: the `user-data` item is removed |
 | Azure | `properties.userData` = bare v1 (what the agent reads from IMDS); `osProfile.customData` = init script only | yes: PATCH `properties.userData` (customData is immutable) |
-| Proxmox (uefi_disk) | NoCloud cicustom/ISO seed = v1 (per-instance seed name) | yes: seed rewritten under the same name before `status/start` (cloud_init VMs, federation spawns and the fw-cfg opt-in are skipped) |
+| Proxmox (uefi_disk) | NoCloud cicustom/ISO seed, legacy text by default, v1 with `POWERNODE_PVE_V1_CIDATA=1` (per-instance seed name) | yes: seed rewritten under the same name before `status/start` (cloud_init VMs, federation spawns and the fw-cfg opt-in are skipped) |
 | local_qemu | fw-cfg entries (legacy keys) | yes: domain XML regenerated with a fresh key on start |
 | pro_cloud | none (not wired) | n/a |
 
@@ -145,3 +145,36 @@ cloud-init ignores that unknown type and runs the script part. A multipart blob
 with no such part is "not found", a malformed one or a bad v1 part is terminal.
 An operator `user_data` override is not carried across a restart re-mint (the
 template `init_script` is).
+
+### Start policy: only an UNENROLLED instance gets a key
+
+On every start the provider resolves the NodeInstance by cloud id, **scoped to
+the connection's account and provider, excluding terminated rows**; more than one
+match is refused (`SeedError`, surfaced as a provider error). Then:
+
+- not enrolled: a fresh 1h document is minted. Under the instance row lock the
+  prior ACTIVE tokens of that instance and purpose are revoked first (one audited
+  `revoked` row each, same transaction), so at most one seed key is live;
+- enrolled (an `mtls_subject` or an active NodeCertificate): **nothing is minted**
+  and the seed is neutralised: AWS user-data and Azure `userData` are overwritten
+  with a key-less placeholder, GCP's `user-data` item is removed, the Proxmox
+  seed is overwritten in place (the VM's cicustom/ISO still points at it).
+
+A mint failure on start (no CA, bad URL, size) returns a provider error and the
+VM is not started.
+
+Size limits (raw bytes, enforced in `EnrollmentSeed`, `SeedError` names the limit):
+AWS 16384, OpenStack and Azure 49151 (64 KB base64), GCP 262144. The agent
+fetches up to 512 KiB of user-data and a provision part up to 128 KiB.
+
+Init scripts: `#cloud-config`, `#!`, `#include`, `#include-once`,
+`#cloud-boothook`, `#part-handler`, `#upstart-job`, or an operator's own complete
+multipart (nested as a part). Anything else is refused. On a restart re-mint only
+the template `init_script` is re-attached (an operator `user_data` override is
+not stored, since it may embed secrets; cloud-init runs scripts once per instance
+so this does not re-run them).
+
+The agent requires the provision part of a multipart to parse as strict v1 and
+refuses more than one such part or a legacy shape inside it. The initramfs
+stager stages any JSON user-data that has a `"version"` key (any case, any
+layout) as the identity file and lets the agent's strict parser decide.

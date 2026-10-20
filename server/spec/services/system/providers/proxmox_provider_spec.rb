@@ -16,6 +16,7 @@ RSpec.describe System::Providers::ProxmoxProvider do
       secret_key: "00000000-0000-0000-0000-000000000000",
       endpoint_url: "https://pve.example:8006",
       config: { "verify_ssl" => "false" },
+      account_id: nil, provider_id: nil,
       provider: proxmox_provider
     )
   end
