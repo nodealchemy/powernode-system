@@ -78,6 +78,9 @@ Rails.application.routes.draw do
               # identity.cfg the operator drops onto a card's BOOT partition.
               get :boot_config
             end
+            # IMP-5c6a03c3b335 — operator-issued single-use enrolment keys
+            # bound to this instance. Plaintext is returned once, on create.
+            resources :bootstrap_tokens, only: %i[index create destroy]
             # Operator-facing CRUD for this instance's Claude Code CLI
             # credential (claude-tmux NodeModule). Singular — one credential
             # per instance. See ClaudeCodeCredentialsController.

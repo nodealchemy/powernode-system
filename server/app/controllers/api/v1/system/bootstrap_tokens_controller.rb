@@ -1,0 +1,127 @@
+# frozen_string_literal: true
+
+module Api
+  module V1
+    module System
+      # Operator-issued, single-use enrolment keys bound to ONE NodeInstance
+      # (IMP-5c6a03c3b335, design step D4). The operator pre-configures a node
+      # and its instance, mints a key here, and hands it to a generic image.
+      #
+      #   POST   /api/v1/system/nodes/:node_id/node_instances/:node_instance_id/bootstrap_tokens
+      #   GET    /api/v1/system/nodes/:node_id/node_instances/:node_instance_id/bootstrap_tokens
+      #   DELETE /api/v1/system/nodes/:node_id/node_instances/:node_instance_id/bootstrap_tokens/:id
+      #
+      # Permission: system.instances.control (permission-based only, never roles).
+      #
+      # CRYPTO-MATERIAL RULES. The plaintext is generated server-side by
+      # System::BootstrapToken.issue!, returned ONCE in the create response body
+      # and nowhere else on this surface: list and revoke serialize through
+      # System::BootstrapTokenSerializer, an allowlist with no token, digest or
+      # sealed-copy field. It is never logged here; the key operation's audit
+      # row is written inside the model's transaction and fails closed.
+      class BootstrapTokensController < BaseController
+        before_action :set_account
+        before_action -> { require_permission("system.instances.control") }
+        before_action :set_node
+        before_action :set_instance
+        before_action :set_token, only: :destroy
+
+        # The operator-key TTL window: 1h minimum (operator ruling), 7d maximum
+        # (System::BootstrapToken::MAX_TTLS["operator_key"]).
+        MIN_TTL = 1.hour
+        MAX_TTL = ::System::BootstrapToken::MAX_TTLS.fetch("operator_key")
+
+        def index
+          tokens = instance_tokens.includes(:created_by).order(created_at: :desc)
+          render_success(bootstrap_tokens: tokens.map { |t| serialize(t) })
+        end
+
+        def create
+          # Same guard as NodeInstancesController#boot_config: once a device has
+          # claimed (or is running as) this instance, a fresh key would only
+          # invite a second device to try to bind it.
+          if @instance.claimed? || @instance.status == "running"
+            return render_error(
+              "A bootstrap key cannot be issued: this instance has already been claimed by a device or is running.",
+              status: :conflict
+            )
+          end
+
+          ttl = requested_ttl
+          return if performed?
+
+          token, plaintext = ::System::BootstrapToken.issue!(
+            node: @node,
+            node_instance: @instance,
+            intended_subject: @instance.id,
+            purpose: "operator_key",
+            ttl: ttl,
+            created_by: current_user
+          )
+          render_success(
+            data: { bootstrap_token: serialize(token), token: plaintext },
+            status: :created
+          )
+        rescue ::System::BootstrapToken::AuditFailure
+          render_error("Bootstrap key was not issued: the audit record could not be written.",
+                       status: :service_unavailable)
+        end
+
+        def destroy
+          @token.revoke!(by: current_user)
+          render_success(bootstrap_token: serialize(@token.reload))
+        rescue ::System::BootstrapToken::InvalidConsumption => e
+          render_error(e.message, status: :conflict)
+        rescue ::System::BootstrapToken::AuditFailure
+          render_error("Bootstrap key was not revoked: the audit record could not be written.",
+                       status: :service_unavailable)
+        end
+
+        private
+
+        def set_node
+          @node = @account.system_nodes.find(params[:node_id])
+        rescue ActiveRecord::RecordNotFound
+          render_not_found("Node")
+        end
+
+        def set_instance
+          @instance = @node.node_instances.find(params[:node_instance_id])
+        rescue ActiveRecord::RecordNotFound
+          render_not_found("Node Instance")
+        end
+
+        def instance_tokens
+          ::System::BootstrapToken.where(node_id: @node.id, node_instance_id: @instance.id)
+        end
+
+        def set_token
+          @token = instance_tokens.find(params[:id])
+        rescue ActiveRecord::RecordNotFound
+          render_not_found("Bootstrap token")
+        end
+
+        # nil ttl_seconds takes the model's 24h operator default. Anything that
+        # is not an integer inside [MIN_TTL, MAX_TTL] is refused, not clamped.
+        def requested_ttl
+          raw = params[:ttl_seconds]
+          return nil if raw.nil?
+
+          seconds = Integer(raw.to_s, 10, exception: false)
+          if seconds.nil? || seconds < MIN_TTL.to_i || seconds > MAX_TTL.to_i
+            render_error(
+              "ttl_seconds must be an integer between #{MIN_TTL.to_i} (1 hour) and #{MAX_TTL.to_i} (7 days)",
+              status: :unprocessable_content
+            )
+            return nil
+          end
+          seconds.seconds
+        end
+
+        def serialize(token)
+          ::System::BootstrapTokenSerializer.new(token).as_json
+        end
+      end
+    end
+  end
+end
