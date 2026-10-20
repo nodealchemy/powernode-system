@@ -20,9 +20,6 @@ module System
         enabled: @architecture.enabled,
         public: @architecture.public,
         is_canonical: @architecture.is_canonical,
-        kernel_file_object_id: @architecture.kernel_file_object_id,
-        ramdisk_file_object_id: @architecture.ramdisk_file_object_id,
-        image_file_object_id: @architecture.image_file_object_id,
         usage: {
           node_platforms: @architecture.node_platform_count,
           package_repositories: @architecture.package_repository_count,

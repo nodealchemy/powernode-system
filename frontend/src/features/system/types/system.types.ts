@@ -356,9 +356,6 @@ export interface SystemNodeArchitecture {
   enabled: boolean;
   public: boolean;
   is_canonical: boolean;
-  kernel_file_object_id?: string;
-  ramdisk_file_object_id?: string;
-  image_file_object_id?: string;
   usage?: {
     node_platforms: number;
     package_repositories: number;

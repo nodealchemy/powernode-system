@@ -16,13 +16,6 @@ module System
     # Associations
     has_many :node_platforms, class_name: "System::NodePlatform", dependent: :restrict_with_error
 
-    # File attachments via FileManagement::Object (platform-shared file
-    # management — provides multi-backend storage, versioning, sharing,
-    # processing pipeline, ACL).
-    belongs_to :kernel_file_object,  class_name: "FileManagement::Object", optional: true
-    belongs_to :ramdisk_file_object, class_name: "FileManagement::Object", optional: true
-    belongs_to :image_file_object,   class_name: "FileManagement::Object", optional: true
-
     # Normalization callbacks
     # Aliases must be lowercase + deduped + non-empty so the GIN-indexed
     # containment lookup in find_normalized matches without case-folding.
@@ -241,22 +234,6 @@ module System
     end
 
     # === Boot Image Methods ===
-    def has_kernel?
-      kernel_file_object.present?
-    end
-
-    def has_ramdisk?
-      ramdisk_file_object.present?
-    end
-
-    def has_image?
-      image_file_object.present?
-    end
-
-    def boot_ready?
-      has_kernel? && has_image?
-    end
-
     def verify_kernel_checksum(file_checksum)
       return true if kernel_checksum.blank?
       kernel_checksum.downcase == file_checksum.to_s.downcase
@@ -275,16 +252,13 @@ module System
     def boot_files_info
       {
         kernel: {
-          present: has_kernel?,
           checksum: kernel_checksum,
           version: kernel_version
         },
         ramdisk: {
-          present: has_ramdisk?,
           checksum: ramdisk_checksum
         },
         image: {
-          present: has_image?,
           checksum: image_checksum,
           format: image_format
         }

@@ -79,68 +79,6 @@ RSpec.describe System::NodeArchitecture, 'boot image functionality', type: :mode
     end
   end
 
-  describe '#has_kernel?' do
-    let(:kernel_file) { create(:file_object) }
-
-    it 'returns true when kernel_file_object is present' do
-      arch = create(:system_node_architecture, kernel_file_object: kernel_file)
-      expect(arch.has_kernel?).to be true
-    end
-
-    it 'returns false when kernel_file_object is nil' do
-      arch = create(:system_node_architecture, kernel_file_object: nil)
-      expect(arch.has_kernel?).to be false
-    end
-  end
-
-  describe '#has_ramdisk?' do
-    let(:ramdisk_file) { create(:file_object) }
-
-    it 'returns true when ramdisk_file_object is present' do
-      arch = create(:system_node_architecture, ramdisk_file_object: ramdisk_file)
-      expect(arch.has_ramdisk?).to be true
-    end
-
-    it 'returns false when ramdisk_file_object is nil' do
-      arch = create(:system_node_architecture, ramdisk_file_object: nil)
-      expect(arch.has_ramdisk?).to be false
-    end
-  end
-
-  describe '#has_image?' do
-    let(:image_file) { create(:file_object) }
-
-    it 'returns true when image_file_object is present' do
-      arch = create(:system_node_architecture, image_file_object: image_file)
-      expect(arch.has_image?).to be true
-    end
-
-    it 'returns false when image_file_object is nil' do
-      arch = create(:system_node_architecture, image_file_object: nil)
-      expect(arch.has_image?).to be false
-    end
-  end
-
-  describe '#boot_ready?' do
-    let(:kernel_file) { create(:file_object) }
-    let(:image_file) { create(:file_object) }
-
-    it 'returns true when both kernel and image are present' do
-      arch = create(:system_node_architecture,                     kernel_file_object: kernel_file, image_file_object: image_file)
-      expect(arch.boot_ready?).to be true
-    end
-
-    it 'returns false when kernel is missing' do
-      arch = create(:system_node_architecture,                     kernel_file_object: nil, image_file_object: image_file)
-      expect(arch.boot_ready?).to be false
-    end
-
-    it 'returns false when image is missing' do
-      arch = create(:system_node_architecture,                     kernel_file_object: kernel_file, image_file_object: nil)
-      expect(arch.boot_ready?).to be false
-    end
-  end
-
   describe '#verify_kernel_checksum' do
     let(:checksum) { Digest::SHA256.hexdigest('kernel_data') }
 
@@ -204,22 +142,18 @@ RSpec.describe System::NodeArchitecture, 'boot image functionality', type: :mode
   end
 
   describe '#boot_files_info' do
-    let(:kernel_file) { create(:file_object) }
     let(:kernel_checksum) { Digest::SHA256.hexdigest('kernel') }
 
     it 'returns structured boot files information' do
-      arch = create(:system_node_architecture,                     kernel_file_object: kernel_file,
+      arch = create(:system_node_architecture,
                     kernel_checksum: kernel_checksum,
                     kernel_version: '5.15.0',
                     image_format: 'qcow2')
 
       info = arch.boot_files_info
 
-      expect(info[:kernel][:present]).to be true
       expect(info[:kernel][:checksum]).to eq(kernel_checksum)
       expect(info[:kernel][:version]).to eq('5.15.0')
-      expect(info[:ramdisk][:present]).to be false
-      expect(info[:image][:present]).to be false
       expect(info[:image][:format]).to eq('qcow2')
     end
   end

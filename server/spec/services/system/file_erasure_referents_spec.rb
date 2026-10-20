@@ -3,11 +3,10 @@
 require "rails_helper"
 
 # IMP-d97f6e3bbc2b — the system extension's side of core's
-# FileManagement::ErasureReferentRegistry seam. Six columns in this
-# extension point at file_objects: five through NO ACTION foreign keys with
+# FileManagement::ErasureReferentRegistry seam. Three columns in this
+# extension point at file_objects: two through NO ACTION foreign keys with
 # no inverse association (system_disk_image_publications.file_object_id /
-# prior_file_object_id, system_node_architectures.kernel_file_object_id /
-# ramdisk_file_object_id / image_file_object_id) and one unconstrained
+# prior_file_object_id) and one unconstrained
 # pointer (system_node_platforms.disk_image_file_object_id). Every one of
 # them binds a platform boot/rollback artifact, so the posture is HOLD: a
 # GDPR erasure refuses the file with a reason naming the holder, instead of
@@ -30,29 +29,20 @@ RSpec.describe System::FileErasureReferents do
   end
 
   describe ".call(:holds, ids)" do
-    it "names every file an architecture, a publication or a platform points at, and nothing else" do
-      kernel = upload
-      ramdisk = upload
-      image = upload
+    it "names every file a publication or a platform points at, and nothing else" do
       published = upload
       prior = upload
       platform_image = upload
       free = upload
 
-      arch = create(:system_node_architecture)
-      arch.update_columns(kernel_file_object_id: kernel.id, ramdisk_file_object_id: ramdisk.id,
-                          image_file_object_id: image.id)
       pub = create(:system_disk_image_publication, account: account)
       pub.update_columns(file_object_id: published.id, prior_file_object_id: prior.id)
       pub.node_platform.update_columns(disk_image_file_object_id: platform_image.id)
 
-      ids = [ kernel, ramdisk, image, published, prior, platform_image, free ].map(&:id)
+      ids = [ published, prior, platform_image, free ].map(&:id)
       held = described_class.call(:holds, ids)
 
       expect(held).to eq(
-        kernel.id => "held_by_system_node_architecture",
-        ramdisk.id => "held_by_system_node_architecture",
-        image.id => "held_by_system_node_architecture",
         published.id => "held_by_system_disk_image_publication",
         prior.id => "held_by_system_disk_image_publication",
         platform_image.id => "held_by_system_node_platform"
@@ -68,22 +58,22 @@ RSpec.describe System::FileErasureReferents do
 
   describe ".call(:release, file_object)" do
     it "releases nothing — a boot-image pointer is never nullified by an erasure" do
-      kernel = upload
-      arch = create(:system_node_architecture)
-      arch.update_columns(kernel_file_object_id: kernel.id)
+      published = upload
+      pub = create(:system_disk_image_publication, account: account)
+      pub.update_columns(file_object_id: published.id)
 
-      expect(described_class.call(:release, kernel)).to be_nil
-      expect(arch.reload.kernel_file_object_id).to eq(kernel.id)
+      expect(described_class.call(:release, published)).to be_nil
+      expect(pub.reload.file_object_id).to eq(published.id)
     end
   end
 
   describe "through core's erasure (integration)" do
-    it "refuses a personal upload promoted to a kernel image, with the reason, and never touches it" do
+    it "refuses a personal upload promoted to a published disk image, with the reason, and never touches it" do
       user = create(:user, account: account)
       kernel = upload(uploaded_by: user, category: "user_upload")
       plain = upload(uploaded_by: user, category: "user_upload")
-      arch = create(:system_node_architecture)
-      arch.update_columns(kernel_file_object_id: kernel.id)
+      pub = create(:system_disk_image_publication, account: account)
+      pub.update_columns(file_object_id: kernel.id)
 
       result = FileManagement::Erasure.call(
         scope: FileManagement::Object.where(account_id: account.id, uploaded_by_id: user.id)
@@ -91,11 +81,11 @@ RSpec.describe System::FileErasureReferents do
 
       expect(result.erased_count).to eq(1)
       expect(result.failures).to contain_exactly(
-        hash_including(id: kernel.id, kind: "held", reason: "held_by_system_node_architecture")
+        hash_including(id: kernel.id, kind: "held", reason: "held_by_system_disk_image_publication")
       )
       expect(FileManagement::Object.exists?(kernel.id)).to be true
       expect(FileManagement::Object.exists?(plain.id)).to be false
-      expect(arch.reload.kernel_file_object_id).to eq(kernel.id)
+      expect(pub.reload.file_object_id).to eq(kernel.id)
     end
 
     # The one column where the handler is LOAD-BEARING: no foreign key backs

@@ -2,13 +2,12 @@
 
 module System
   # This extension's handler on core's FileManagement::ErasureReferentRegistry
-  # seam (IMP-d97f6e3bbc2b). Six columns here point at file_objects — five
+  # seam (IMP-d97f6e3bbc2b). Three columns here point at file_objects — two
   # through NO ACTION foreign keys with no inverse association, which made a
   # GDPR erasure of a referenced file raise InvalidForeignKey, and one
-  # unconstrained pointer:
+  # unconstrained pointer (architectures no longer hold boot-file pointers;
+  # images are generic per platform, IMP-c7e9b31f7498):
   #
-  #   system_node_architectures.kernel_file_object_id / ramdisk_file_object_id
-  #     / image_file_object_id          — an architecture's boot images
   #   system_disk_image_publications.file_object_id / prior_file_object_id
   #     — a published disk image and the one it replaced (rollback substrate)
   #   system_node_platforms.disk_image_file_object_id
@@ -25,12 +24,6 @@ module System
   # lib/powernode_system/engine.rb.
   class FileErasureReferents
     HOLDERS = [
-      [ "held_by_system_node_architecture", ->(ids) {
-        ::System::NodeArchitecture
-          .where(kernel_file_object_id: ids).or(::System::NodeArchitecture.where(ramdisk_file_object_id: ids))
-          .or(::System::NodeArchitecture.where(image_file_object_id: ids))
-          .pluck(:kernel_file_object_id, :ramdisk_file_object_id, :image_file_object_id)
-      } ],
       [ "held_by_system_disk_image_publication", ->(ids) {
         ::System::DiskImagePublication
           .where(file_object_id: ids).or(::System::DiskImagePublication.where(prior_file_object_id: ids))
