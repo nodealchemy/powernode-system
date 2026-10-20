@@ -357,7 +357,7 @@ module System
         raise ResourceNotFoundError, e.message
       rescue ::System::EnrollmentSeed::SeedError => e
         logger.error("[#{self.class.name}] start_instance refused: #{e.message}")
-        build_error_response("Enrollment seed could not be minted (check the platform CA and URL)", code: "SeedUnavailable")
+        build_error_response(seed_failure_message(e), code: "SeedUnavailable")
       rescue Proxmox::Client::Error => e
         logger.error("[#{self.class.name}] start_instance failed: #{e.class}: #{e.message}")
         build_error_response(::System::CallerFacingMessages::GENERIC)
@@ -374,8 +374,9 @@ module System
         return unless kind == "qemu"
         return if ENV["POWERNODE_PVE_USE_FWCFG"] == "1"
 
-        record = ::System::EnrollmentSeed.resolve_instance(connection: connection, cloud_id: instance_id)
+        record = seed_instance_for(instance_id)
         return unless record&.pivot_boot?
+        return unless ::System::EnrollmentSeed.ever_seeded?(record)
         return if record.config.is_a?(Hash) && record.config["federation_spawn"].present?
 
         if ::System::EnrollmentSeed.enrolled?(record)
@@ -383,7 +384,7 @@ module System
           # so it is overwritten, not deleted). Never writes a key.
           params = { instance: record, user_data: ::System::EnrollmentSeed::NEUTRAL_USER_DATA, meta_data: nil }
         else
-          seed = ::System::Providers::Proxmox::EnrollmentSeed.new.render_cicustom(instance: record)
+          seed = ::System::Providers::Proxmox::EnrollmentSeed.new.render_cicustom(instance: record, unless_enrolled: true)
           return unless seed
 
           params = { instance: record, user_data: seed[:user_data], meta_data: seed[:meta_data] }

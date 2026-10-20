@@ -175,7 +175,7 @@ module System
           reseed_user_data!(rg, instance_id)
         rescue ::System::EnrollmentSeed::SeedError => e
           logger.error("[AzureProvider] start_instance refused: #{e.message}")
-          raise AzureError, "Enrollment seed could not be minted (check the platform CA and URL)"
+          raise AzureError, seed_failure_message(e)
         end
         response = arm_post(
           "/subscriptions/#{subscription_id}/resourceGroups/#{rg}/providers/Microsoft.Compute/virtualMachines/#{instance_id}/start",

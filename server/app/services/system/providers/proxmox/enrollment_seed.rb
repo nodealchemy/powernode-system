@@ -94,7 +94,7 @@ module System
         # the CA chain and platform URL resolve — never guess, never fall
         # back to an internal CA default. NEVER log the plaintext bootstrap
         # token; it only ever lands in the returned `user_data` string.
-        def render_cicustom(instance:)
+        def render_cicustom(instance:, unless_enrolled: false)
           ca_pem = resolve_enroll_ca_pem
           platform_url = resolve_platform_url
 
@@ -120,7 +120,21 @@ module System
           # develop are promoted, then drop the legacy branch with the legacy
           # readers (one image release).
           if ENV["POWERNODE_PVE_V1_CIDATA"] != "1"
-            _bootstrap_token, plaintext = issue_bootstrap_token(instance)
+            # Re-checked under the instance lock: nil (nothing staged, no key
+            # minted) when it enrolled since the caller looked.
+            plaintext = nil
+            enrolled = false
+            ::System::BootstrapToken.transaction do
+              instance.with_lock do
+                if unless_enrolled && ::System::EnrollmentSeed.enrolled?(instance)
+                  enrolled = true
+                else
+                  _bootstrap_token, plaintext = issue_bootstrap_token(instance)
+                end
+              end
+            end
+            return nil if enrolled
+
             user_data = "ID=#{instance.id}\n" \
                         "KEY=#{plaintext}\n" \
                         "SERVER=#{platform_url}\n" \
@@ -129,8 +143,11 @@ module System
           end
 
           seed = ::System::EnrollmentSeed.render_user_data(
-            instance: instance, purpose: PURPOSE, server: platform_url, ca_pem: ca_pem
+            instance: instance, purpose: PURPOSE, server: platform_url, ca_pem: ca_pem,
+            unless_enrolled: unless_enrolled
           )
+          return nil if seed.nil?
+
           { user_data: seed.user_data, meta_data: nil, bootstrap_token_id: seed.bootstrap_token_id }
         end
 

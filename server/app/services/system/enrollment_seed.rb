@@ -27,7 +27,7 @@ module System
     # Raw (pre-base64) user-data byte limits per provider. AWS: 16 KB raw. OpenStack
     # (Nova): 65535 base64 chars => ~49151 raw. Azure userData: 64 KB base64 =>
     # ~49151 raw. GCP: 256 KB per metadata value. Others are unlimited here.
-    SIZE_LIMITS = { "aws" => 16_384, "openstack" => 49_151, "azure" => 49_151, "gcp" => 262_144 }.freeze
+    SIZE_LIMITS = { "aws" => 16_384, "openstack" => 49_149, "azure" => 49_151, "gcp" => 262_144 }.freeze
 
     # Written instead of a seed when an ALREADY-ENROLLED instance starts: no key,
     # nothing secret. cloud-init treats it as a no-op config; the agent finds no
@@ -49,6 +49,15 @@ module System
     Result = Struct.new(:user_data, :bootstrap_token_id, :expires_at, keyword_init: true)
 
     class SeedError < StandardError; end
+    # More than one live row matches a cloud id: never guess between them.
+    class AmbiguousInstanceError < SeedError; end
+    # A lock deadlock/timeout while minting: nothing was written, retry the start.
+    class BusyError < SeedError; end
+
+    # Purposes of keys the PLATFORM injects into a VM. An instance that never had
+    # one of these was not platform-seeded (imported, enrolled another way): its
+    # user-data/metadata is not ours to rewrite or clear.
+    SEED_PURPOSES = %w[cloud_seed proxmox_uefi_provision local_qemu_provision].freeze
 
     class << self
       # Single mint path for every channel (v1 JSON, fw-cfg, cicustom). Under the
@@ -74,6 +83,13 @@ module System
             )
           end
         end
+      rescue ::ActiveRecord::Deadlocked, ::ActiveRecord::LockWaitTimeout
+        raise BusyError, "enrollment seed busy (concurrent enrolment/start); retry"
+      end
+
+      # Has the platform ever injected a key into this instance?
+      def ever_seeded?(instance)
+        ::System::BootstrapToken.where(node_instance_id: instance.id, purpose: SEED_PURPOSES).exists?
       end
 
       # An enrolled instance (agent holds an mTLS identity) never gets a new key.
@@ -95,7 +111,7 @@ module System
                .where.not(status: "terminated")
                .where("system_node_instances.config->>'cloud_instance_id' = ?", cloud_id.to_s)
                .limit(2).to_a
-        raise SeedError, "ambiguous cloud id #{cloud_id.inspect}: #{rows.size}+ live instances match; refusing to seed" if rows.size > 1
+        raise AmbiguousInstanceError, "ambiguous cloud id #{cloud_id.inspect}: #{rows.size}+ live instances match; refusing to seed" if rows.size > 1
 
         rows.first
       end
@@ -107,26 +123,35 @@ module System
       #   is the bare v1 JSON (what the agent reads from cloud user-data).
       # @param server [String, nil] https platform URL override (default: configured)
       # @return [Result]
-      def render_user_data(instance:, purpose: CLOUD_PURPOSE, extra: nil, server: nil, ca_pem: nil, provider_type: nil)
+      def render_user_data(instance:, purpose: CLOUD_PURPOSE, extra: nil, server: nil, ca_pem: nil,
+                           provider_type: nil, unless_enrolled: false)
         result = nil
         ::System::BootstrapToken.transaction do
-          token, plaintext = issue_token(instance: instance, purpose: purpose)
-          document = ::System::ProvisioningDocument.render(
-            instance: instance, key: plaintext, purpose: purpose,
-            expires_at: token.expires_at, server: server, ca_pem: ca_pem
-          )
-          user_data = compose(document, extra)
-          check_size!(user_data, provider_type)
-          result = Result.new(
-            user_data: user_data,
-            bootstrap_token_id: token.id,
-            expires_at: token.expires_at
-          )
+          instance.with_lock do
+            # Re-checked UNDER the lock (with_lock reloads the row): an instance
+            # that enrolled since the caller looked gets no key. Returns nil.
+            next if unless_enrolled && enrolled?(instance)
+
+            token, plaintext = issue_token(instance: instance, purpose: purpose)
+            document = ::System::ProvisioningDocument.render(
+              instance: instance, key: plaintext, purpose: purpose,
+              expires_at: token.expires_at, server: server, ca_pem: ca_pem
+            )
+            user_data = compose(document, extra)
+            check_size!(user_data, provider_type)
+            result = Result.new(
+              user_data: user_data,
+              bootstrap_token_id: token.id,
+              expires_at: token.expires_at
+            )
+          end
         end
         result
       rescue ::System::ProvisioningDocument::RenderError => e
         # RenderError messages never carry the key (see ProvisioningDocument).
         raise SeedError, "refusing to seed instance #{instance.id}: #{e.message}"
+      rescue ::ActiveRecord::Deadlocked, ::ActiveRecord::LockWaitTimeout
+        raise BusyError, "enrollment seed busy (concurrent enrolment/start); retry"
       end
 
       # The template's stored init_script (NodeTemplate#config), carried as the

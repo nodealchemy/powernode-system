@@ -86,7 +86,7 @@ module System
           )
         rescue ::System::EnrollmentSeed::SeedError => e
           logger.error("[AwsProvider] start_instance refused: #{e.message}")
-          build_error_response("Enrollment seed could not be minted (check the platform CA and URL)", code: "SeedUnavailable")
+          build_error_response(seed_failure_message(e), code: "SeedUnavailable")
         rescue Aws::EC2::Errors::ServiceError => e
           handle_aws_error(e)
         end

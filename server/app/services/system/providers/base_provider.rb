@@ -655,20 +655,58 @@ module System
       StartSeed = Struct.new(:action, :user_data, keyword_init: true)
       NO_SEED = StartSeed.new(action: :none, user_data: nil).freeze
 
-      def seed_for_start(cloud_id, compose: true)
-        record = ::System::EnrollmentSeed.resolve_instance(connection: connection, cloud_id: cloud_id)
-        return NO_SEED unless record
+      # The NodeInstance the caller (InstanceControlService) already holds. When
+      # set and its cloud id matches, no cloud-id lookup is made at all, so an
+      # in-account name collision cannot refuse the start. Set around a single
+      # start call by #with_known_instance.
+      attr_accessor :known_instance
 
-        if ::System::EnrollmentSeed.enrolled?(record)
-          return StartSeed.new(action: :clear, user_data: ::System::EnrollmentSeed::NEUTRAL_USER_DATA)
-        end
+      def with_known_instance(instance)
+        self.known_instance = instance
+        yield
+      ensure
+        self.known_instance = nil
+      end
+
+      public :known_instance, :known_instance=, :with_known_instance
+
+      def seed_instance_for(cloud_id)
+        known = known_instance
+        return known if known && known.cloud_instance_id.to_s == cloud_id.to_s && known.cloud_instance_id.present?
+
+        ::System::EnrollmentSeed.resolve_instance(connection: connection, cloud_id: cloud_id)
+      end
+
+      # Only a platform-seeded instance (one that ever had a seed-purpose token) is
+      # touched; imported / otherwise-enrolled instances keep their user-data.
+      def seed_for_start(cloud_id, compose: true)
+        record = seed_instance_for(cloud_id)
+        return NO_SEED unless record
+        return NO_SEED unless ::System::EnrollmentSeed.ever_seeded?(record)
+
+        clear = StartSeed.new(action: :clear, user_data: ::System::EnrollmentSeed::NEUTRAL_USER_DATA)
+        return clear if ::System::EnrollmentSeed.enrolled?(record)
 
         seed = ::System::EnrollmentSeed.render_user_data(
           instance: record,
           extra: compose ? ::System::EnrollmentSeed.template_init_script(record.node) : nil,
-          provider_type: provider_type
+          provider_type: provider_type,
+          unless_enrolled: true
         )
-        StartSeed.new(action: :remint, user_data: seed.user_data)
+        # nil: enrolled between the check above and the lock. Never mint then.
+        seed ? StartSeed.new(action: :remint, user_data: seed.user_data) : clear
+      end
+
+      # Caller-facing text for a refused seed; the cause decides the wording.
+      def seed_failure_message(error)
+        case error
+        when ::System::EnrollmentSeed::AmbiguousInstanceError
+          "Enrollment seed refused: more than one live instance matches this cloud id"
+        when ::System::EnrollmentSeed::BusyError
+          "Enrollment seed temporarily unavailable (concurrent enrolment); retry the start"
+        else
+          "Enrollment seed could not be minted (check the platform CA, URL and user-data size)"
+        end
       end
 
       def log_operation(operation, **details)

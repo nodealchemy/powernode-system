@@ -291,7 +291,12 @@ module System
 
       case action.to_sym
       when :start
-        result = provider_adapter.start_instance(instance.cloud_instance_id)
+        # Hand the held NodeInstance down so the seed path needs no cloud-id lookup.
+        result = if provider_adapter.respond_to?(:with_known_instance)
+                   provider_adapter.with_known_instance(instance) { provider_adapter.start_instance(instance.cloud_instance_id) }
+        else
+                   provider_adapter.start_instance(instance.cloud_instance_id)
+        end
         result[:status] = "running" if result[:success]
         result
       when :stop

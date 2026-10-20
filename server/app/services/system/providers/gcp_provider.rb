@@ -94,7 +94,7 @@ module System
           )
         rescue ::System::EnrollmentSeed::SeedError => e
           logger.error("[GcpProvider] start_instance refused: #{e.message}")
-          build_error_response("Enrollment seed could not be minted (check the platform CA and URL)", code: "SeedUnavailable")
+          build_error_response(seed_failure_message(e), code: "SeedUnavailable")
         rescue Google::Cloud::NotFoundError
           build_error_response("Instance not found", code: "NotFound")
         rescue Google::Cloud::Error => e
