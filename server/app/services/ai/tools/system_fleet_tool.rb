@@ -1237,7 +1237,7 @@ module Ai
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :revoke_bootstrap_token_gate_context,
                      on_proceed: :deferred_tool_call_result,
-                     returns: "bootstrap_token, the revoked key's metadata",
+                     returns: "operator_key, the revoked key's metadata",
                      refuses: "the key is not in this account or has already been consumed"
       declare_action "system_reveal_bootstrap_token",
                      mutating: true,
@@ -1796,13 +1796,13 @@ module Ai
           "system_revoke_bootstrap_token" => {
             description: "Revoke an UNCONSUMED operator enrolment key so it can never enrol a device; its sealed recoverable copy is purged in the same transaction. Irreversible. APPROVAL-GATED (system.bootstrap_token.revoke): this returns {pending: true} with an approval_request_id and NOTHING is revoked until it is approved; do not report a change on that response. Audited (system.bootstrap_token.revoked). Refused for a key that is already consumed.",
             parameters: {
-              token_id: { type: "string", required: true, description: "UUID of the bootstrap token (account-scoped; see system_list_bootstrap_tokens)" }
+              key_id: { type: "string", required: true, description: "UUID of the operator key (account-scoped; see system_list_bootstrap_tokens)" }
             }
           },
           "system_reveal_bootstrap_token" => {
             description: "Recover the plaintext of an UNCONSUMED, UNREVOKED, UNEXPIRED operator enrolment key from its sealed copy. HUMAN-ONLY and APPROVAL-GATED (system.bootstrap_token.reveal): this returns {pending: true, requires_human_session: true} with an approval_request_id and NOTHING is revealed to the requester; the plaintext is shown once, to the person who approves in their own session, who is the audited actor (system.bootstrap_token.revealed — never the key). A consumed, revoked or expired key, or one with no sealed copy, is refused. Refused for an instance principal.",
             parameters: {
-              token_id: { type: "string", required: true, description: "UUID of the bootstrap token (account-scoped; see system_list_bootstrap_tokens)" }
+              key_id: { type: "string", required: true, description: "UUID of the operator key (account-scoped; see system_list_bootstrap_tokens)" }
             }
           },
           # IMP-4e49eb79c5e0 — the disaster-recovery lane, on demand.
@@ -5663,7 +5663,7 @@ module Ai
         instance = account_instances.find_by(id: params[:instance_id].to_s)
         return error_result("Instance not found") unless instance
 
-        rows = ::System::BootstrapToken.where(node_id: instance.node_id, node_instance_id: instance.id)
+        rows = ::System::BootstrapToken.where(node_id: instance.node_id, node_instance_id: instance.id, purpose: "operator_key")
                                        .includes(:created_by)
         paginated_result(:bootstrap_tokens, rows, params) { |t| ::System::BootstrapTokenSerializer.new(t).as_json }
       rescue CallerFacingError => e
@@ -5676,7 +5676,7 @@ module Ai
       # key material.
       def revoke_bootstrap_token_gate_context(params)
         bootstrap_token_refuse_instance_principal!("system_revoke_bootstrap_token")
-        bootstrap_token = bootstrap_token_in_account!(params[:token_id])
+        bootstrap_token = bootstrap_token_in_account!(params[:key_id])
         raise CallerFacingError, "token already consumed" if bootstrap_token.consumed?
 
         deferred_tool_call_context(params).merge(
@@ -5689,9 +5689,9 @@ module Ai
 
       def revoke_bootstrap_token(params)
         bootstrap_token_refuse_instance_principal!("system_revoke_bootstrap_token")
-        bootstrap_token = bootstrap_token_in_account!(params[:token_id])
+        bootstrap_token = bootstrap_token_in_account!(params[:key_id])
         bootstrap_token.revoke!(by: user)
-        success_result(bootstrap_token: ::System::BootstrapTokenSerializer.new(bootstrap_token.reload).as_json)
+        success_result(operator_key: ::System::BootstrapTokenSerializer.new(bootstrap_token.reload).as_json)
       rescue ::System::BootstrapToken::InvalidConsumption, CallerFacingError => e
         error_result(e.message)
       rescue ::System::BootstrapToken::AuditFailure
@@ -5700,7 +5700,7 @@ module Ai
 
       def reveal_bootstrap_token_gate_context(params)
         bootstrap_token_refuse_instance_principal!("system_reveal_bootstrap_token")
-        bootstrap_token = bootstrap_token_in_account!(params[:token_id])
+        bootstrap_token = bootstrap_token_in_account!(params[:key_id])
         bootstrap_token_revealable!(bootstrap_token)
 
         deferred_tool_call_context(params).merge(
@@ -5717,10 +5717,10 @@ module Ai
       # handed to the approver once through the reveal-once slot.
       def reveal_bootstrap_token(params)
         bootstrap_token_refuse_instance_principal!("system_reveal_bootstrap_token")
-        bootstrap_token = bootstrap_token_in_account!(params[:token_id])
+        bootstrap_token = bootstrap_token_in_account!(params[:key_id])
         plaintext = bootstrap_token.reveal!(by: user)
         success_result(token: plaintext,
-                       bootstrap_token: ::System::BootstrapTokenSerializer.new(bootstrap_token.reload).as_json,
+                       operator_key: ::System::BootstrapTokenSerializer.new(bootstrap_token.reload).as_json,
                        note: "Shown once. The key stays valid until it enrols a device, is revoked or expires.")
       rescue ::System::BootstrapToken::NotRevealable, CallerFacingError => e
         error_result(e.message)
@@ -5729,7 +5729,8 @@ module Ai
       end
 
       def bootstrap_token_in_account!(token_id)
-        ::System::BootstrapToken.where(node_id: ::System::Node.where(account_id: account.id).select(:id))
+        ::System::BootstrapToken.where(node_id: ::System::Node.where(account_id: account.id).select(:id),
+                                       purpose: "operator_key")
                                 .find_by(id: token_id.to_s) ||
           raise(CallerFacingError, "Bootstrap token not found")
       end
@@ -5739,6 +5740,10 @@ module Ai
         raise CallerFacingError, "token already consumed" if bootstrap_token.consumed?
         raise CallerFacingError, "token expired"          if bootstrap_token.expired?
         raise CallerFacingError, "no recoverable copy of this key" if bootstrap_token.sealed_plaintext.blank?
+
+        instance = bootstrap_token.node_instance
+        why = instance && ::System::BootstrapToken.instance_refusal(instance)
+        raise CallerFacingError, why.capitalize if why
       end
 
       def bootstrap_token_instance_name(bootstrap_token)

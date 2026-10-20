@@ -37,11 +37,11 @@ RSpec.describe Ai::Tools::SystemFleetTool, "operator enrolment keys" do
   def workflow = Ai::Autonomy::ApprovalWorkflowService.new(account: account)
 
   def reveal!(t = tool, id: token.id)
-    t.execute(params: { action: "system_reveal_bootstrap_token", token_id: id })
+    t.execute(params: { action: "system_reveal_bootstrap_token", key_id: id })
   end
 
   def revoke!(t = tool, id: token.id)
-    t.execute(params: { action: "system_revoke_bootstrap_token", token_id: id })
+    t.execute(params: { action: "system_revoke_bootstrap_token", key_id: id })
   end
 
   def list!(t = tool, **rest)
@@ -117,6 +117,13 @@ RSpec.describe Ai::Tools::SystemFleetTool, "operator enrolment keys" do
       expect(response.to_json).not_to include(token.token_hash)
     end
 
+    it "lists operator keys only" do
+      System::BootstrapToken.issue!(node: node, node_instance: instance, intended_subject: instance.id,
+                                    purpose: "cloud_seed")
+      purposes = list!(user.then { tool })[:data][:bootstrap_tokens].map { |r| r[:purpose] }.uniq
+      expect(purposes).to eq([ "operator_key" ])
+    end
+
     it "does not list another account's instance" do
       other = create(:account)
       other_instance = create(:system_node_instance, node: create(:system_node, account: other), account: other)
@@ -175,31 +182,36 @@ RSpec.describe Ai::Tools::SystemFleetTool, "operator enrolment keys" do
       expect(token.sealed_plaintext).to eq(plaintext)
     end
 
-    it "never writes the plaintext to the Rails log during park, approval and replay" do
+    it "never writes the plaintext to any logger (Rails, ActionController, ActiveRecord) during park, approval and replay" do
       io = StringIO.new
-      original = Rails.logger
-      Rails.logger = ActiveSupport::Logger.new(io)
+      capture = ActiveSupport::Logger.new(io)
+      originals = [ Rails, ActionController::Base, ActiveRecord::Base ].map { |k| [ k, k.logger ] }
+      originals.each { |k, orig| k.logger = ActiveSupport::BroadcastLogger.new(*[ orig, capture ].compact) }
       begin
         deferred = parked_after(reveal!)
-        approve_in_own_session!(deferred)
+        _, request = approve_in_own_session!(deferred)
+        expect(request.take_revealed_result!.dig(:data, :token)).to eq(plaintext)
       ensure
-        Rails.logger = original
+        originals.each { |k, orig| k.logger = orig }
       end
+      expect(io.string).to be_present
       expect(io.string).not_to include(plaintext)
     end
 
     it "refuses and parks nothing for a consumed key" do
-      token.consume!
+      token.update_columns(consumed_at: Time.current) # sealed copy KEPT: the state check must refuse
       response = reveal!
       expect(response[:success]).to be(false)
+      expect(response[:error]).to match(/consumed/)
       expect(response.to_json).not_to include(plaintext)
       expect(parked(reveal_category)).to be_empty
     end
 
     it "refuses and parks nothing for a revoked key" do
-      token.revoke!(by: user)
+      token.update_columns(revoked_at: Time.current) # sealed copy KEPT
       response = reveal!
       expect(response[:success]).to be(false)
+      expect(response[:error]).to match(/revoked/)
       expect(parked(reveal_category)).to be_empty
     end
 
@@ -208,6 +220,37 @@ RSpec.describe Ai::Tools::SystemFleetTool, "operator enrolment keys" do
       response = reveal!
       expect(response[:success]).to be(false)
       expect(parked(reveal_category)).to be_empty
+    end
+
+    it "refuses and parks nothing once the instance is claimed, running or enrolled" do
+      { claimed: { claimed_at: Time.current, claim_code: "ABCD-1234" }, running: { status: "running" },
+        enrolled: { mtls_subject: "CN=enrolled" } }.each do |label, attrs|
+        instance.update_columns(attrs)
+        response = reveal!
+        expect(response[:success]).to be(false), "#{label}: #{response.inspect}"
+        expect(response.to_json).not_to include(plaintext)
+        instance.update_columns(claimed_at: nil, claim_code: nil, status: "pending", mtls_subject: nil)
+      end
+      expect(parked(reveal_category)).to be_empty
+    end
+
+    it "reveals nothing when the instance enrols while the request is parked" do
+      deferred = parked_after(reveal!)
+      instance.update_columns(mtls_subject: "CN=enrolled")
+      _, request = approve_in_own_session!(deferred)
+      expect(request.take_revealed_result!).to be_nil
+      expect(revealed_audits).to be_empty
+    end
+
+    it "K2 enrols: K1 is revoked, unrevealable, and its sealed copy gone" do
+      k1 = token
+      k2, _ = System::BootstrapToken.issue!(node: node, node_instance: instance, intended_subject: instance.id,
+                                            purpose: "operator_key", created_by: user)
+      expect(k1.reload).to be_revoked # minting K2 revoked K1
+      response = reveal!(id: k1.id)
+      expect(response[:success]).to be(false)
+      k2.consume!
+      expect(reveal!(id: k2.id)[:success]).to be(false)
     end
 
     it "refuses a key with no sealed copy (other purpose)" do
@@ -283,6 +326,16 @@ RSpec.describe Ai::Tools::SystemFleetTool, "operator enrolment keys" do
       expect(token.reload.revoked_at).to be_nil
       expect(token.sealed_plaintext).to eq(plaintext)
       expect(deferred.description).to include(instance.name)
+      # the card shows the key id: its param name is not a secret-shaped key
+      expect(deferred.params.dig("tool_params", "key_id")).to eq(token.id)
+    end
+
+    it "does not trigger a reveal-once modal on approval (result holds no secret-shaped key)" do
+      deferred = parked_after(revoke!)
+      deferred, request = approve_in_own_session!(deferred)
+      expect(request.take_revealed_result!).to be_nil
+      expect(deferred.result.to_json).not_to include("FILTERED")
+      expect(deferred.result.dig("data", "operator_key", "id")).to eq(token.id)
     end
 
     it "revokes, purges the sealed copy and audits once approved" do
@@ -316,6 +369,33 @@ RSpec.describe Ai::Tools::SystemFleetTool, "operator enrolment keys" do
       nobody = create(:user, account: account, permissions: %w[system.nodes.read])
       expect(revoke!(tool(nobody))[:success]).to be(false)
       expect(parked(revoke_category)).to be_empty
+    end
+  end
+
+  describe "an instance principal" do
+    let(:instance_tool) do
+      described_class.new(account: account, user: nil).tap do |x|
+        x.instance_authorized = true
+        x.node_instance = instance
+      end
+    end
+
+    it "is denied by the overlay" do
+      %w[system_revoke_bootstrap_token system_reveal_bootstrap_token].each do |verb|
+        expect(::Mcp::Principal.destructive_tool?("platform.#{verb}")).to be true
+      end
+    end
+
+    it "is refused by the tool itself, whatever the overlay says" do
+      %w[bootstrap_token_refuse_instance_principal!].each do |m|
+        expect { instance_tool.send(m, "system_reveal_bootstrap_token") }
+          .to raise_error(Ai::Tools::BaseTool::CallerFacingError, /instance principal/)
+      end
+      expect(instance_tool.send(:list_bootstrap_tokens, { instance_id: instance.id })[:success]).to be(false)
+      expect(instance_tool.send(:reveal_bootstrap_token, { key_id: token.id })[:success]).to be(false)
+      expect(instance_tool.send(:revoke_bootstrap_token, { key_id: token.id })[:success]).to be(false)
+      expect(token.reload).to be_usable
+      expect(revealed_audits).to be_empty
     end
   end
 end
