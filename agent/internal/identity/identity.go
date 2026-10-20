@@ -38,6 +38,10 @@ type Identity struct {
 	// legacy field. When set it is enforced on the enrolment connection.
 	CAFingerprint string
 
+	// Purpose is the v1 document's purpose field ("" for legacy sources). The
+	// console prompt stages its document with ConsolePurpose.
+	Purpose string
+
 	// Architecture is the node's CPU architecture as the kernel sees it.
 	Architecture string
 
@@ -64,7 +68,21 @@ var ErrNotFound = errors.New("identity: not found by this strategy")
 // Resolver runs strategies in order and returns the first hit.
 type Resolver struct {
 	Strategies []Strategy
-	Timeout    time.Duration
+	// Timeout bounds the non-interactive strategies. It does NOT apply to the
+	// console prompt, which has its own timeout (default 60s).
+	Timeout time.Duration
+	// Interactive lets ConsolePromptStrategy prompt on /dev/console. Only the
+	// boot and service paths set it (InteractiveResolver); CLI commands,
+	// soft_recompose and prepare-root never prompt.
+	Interactive bool
+}
+
+// InteractiveResolver is DefaultResolver with the console prompt enabled, for
+// the boot and service enrolment paths only.
+func InteractiveResolver() *Resolver {
+	r := DefaultResolver()
+	r.Interactive = true
+	return r
 }
 
 // DefaultResolver returns a resolver pre-loaded with the standard strategies
@@ -132,6 +150,7 @@ func DefaultResolver() *Resolver {
 // can distinguish from a partial failure). Architecture is filled from
 // runtime.GOARCH if no strategy provided one.
 func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
+	parent := ctx // the console prompt honours cancellation but not Timeout
 	if r.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.Timeout)
@@ -160,8 +179,18 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 				continue
 			}
 		}
-		id, err := s.Discover(ctx)
+		sctx := ctx
+		if _, ok := s.(*ConsolePromptStrategy); ok {
+			if !r.Interactive {
+				continue
+			}
+			sctx = parent
+		}
+		id, err := s.Discover(sctx)
 		if err != nil {
+			if errors.Is(err, context.Canceled) && parent.Err() != nil {
+				return nil, err
+			}
 			if errors.Is(err, ErrProvisionRefused) {
 				// TERMINAL: a v1 document / pin was present but invalid. Do
 				// not fall through to a weaker source.

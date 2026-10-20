@@ -908,7 +908,7 @@ func (s *Service) bootstrap(ctx context.Context, paths enroll.PKIPaths) (*transp
 	var ident *identity.Identity
 	if platformURL == "" {
 		var err error
-		ident, err = identity.DefaultResolver().Resolve(ctx)
+		ident, err = identity.InteractiveResolver().Resolve(ctx)
 		if err == nil && ident != nil && ident.PlatformURL != "" {
 			platformURL = ident.PlatformURL
 		}
@@ -926,7 +926,7 @@ func (s *Service) bootstrap(ctx context.Context, paths enroll.PKIPaths) (*transp
 	// 3. Need to enroll. Discover identity if step 1 didn't already.
 	if ident == nil {
 		var err error
-		ident, err = identity.DefaultResolver().Resolve(ctx)
+		ident, err = identity.InteractiveResolver().Resolve(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("identity discovery: %w", err)
 		}
@@ -960,11 +960,15 @@ func (s *Service) bootstrap(ctx context.Context, paths enroll.PKIPaths) (*transp
 		Subject:        ident.InstanceUUID,
 	})
 	if err != nil {
+		if enroll.IsRefused(err) {
+			ident.EnrolRefused() // dead credential: next attempt re-prompts
+		}
 		return nil, fmt.Errorf("enroll: %w", err)
 	}
 	if err := enroll.Save(enrolled, paths); err != nil {
 		return nil, fmt.Errorf("save enrollment: %w", err)
 	}
+	ident.EnrolSucceeded() // delete a console-staged plaintext key
 
 	// Persist resolved URL so heartbeat (which reads s.cfg.PlatformURL via
 	// transport.Client.PlatformURL) targets the right host.

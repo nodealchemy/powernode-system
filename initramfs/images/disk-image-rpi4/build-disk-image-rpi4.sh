@@ -210,12 +210,26 @@ cat >"$STAGE/cmdline.txt" <<CMDLINE
 console=serial0,115200 console=tty1 powernode.boot=1 root=/dev/mmcblk0p2 rootfstype=ext4 rootwait${RPI4_IMAGE_SHA_ARG}
 CMDLINE
 
+# CA pin for BOOT identity.cfg (powernode-provision v1 requires one). Same rule
+# as System::ProvisioningDocument: sha256 of the DER of the LAST certificate,
+# which must be a self-signed CA. No CA supplied => no pin baked; a bare key
+# typed at the console is then refused and a provisioning document must be
+# pasted instead (docs/PROVISION_DOCUMENT.md).
+CA_FINGERPRINT_LINE=""
+if [[ -n "$CA_PEM_FILE" && -f "$CA_PEM_FILE" ]]; then
+  # shellcheck source=../lib/ca-fingerprint.sh
+  source "${SCRIPT_DIR}/../lib/ca-fingerprint.sh"
+  CA_FP="$(ca_fingerprint_from_pem "$CA_PEM_FILE")" || { log "ERROR: cannot compute CA_FINGERPRINT from $CA_PEM_FILE"; exit 1; }
+  CA_FINGERPRINT_LINE="CA_FINGERPRINT=${CA_FP}"
+  log "baking ${CA_FINGERPRINT_LINE}"
+fi
 cat >"$STAGE/identity.cfg" <<EOF
 # Powernode device identity — Path C placeholder
 # Agent will fill in ID + KEY via the claim flow on first boot.
 ID=
 KEY=
 SERVER=${PLATFORM_URL}
+${CA_FINGERPRINT_LINE}
 CA_PEM_FILE=/boot/powernode-ca.pem
 EOF
 

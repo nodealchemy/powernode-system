@@ -40,6 +40,9 @@ ExecStartPre=-/bin/sh -c 'modprobe -a overlay erofs'
 # the pivot_root smoke until both halves were taught to agree.
 ExecStart=/sbin/powernode-agent service
 Restart=on-failure
+# The agent may hold an enrolment key in memory while the console prompt is
+# open: never write a core dump.
+LimitCORE=0
 RestartSec=5s
 StandardOutput=journal+console
 StandardError=journal+console

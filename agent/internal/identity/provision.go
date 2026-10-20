@@ -229,6 +229,7 @@ func ParseProvisionDocument(raw []byte) (*Identity, error) {
 		BootstrapToken: v["key"],
 		PlatformURL:    v["server"],
 		CAFingerprint:  v["ca_fingerprint"],
+		Purpose:        v["purpose"],
 	}
 	if ca := v["ca_pem"]; ca != "" {
 		if len(ca) > provisionMaxCAPEM || !printable(ca, true) {

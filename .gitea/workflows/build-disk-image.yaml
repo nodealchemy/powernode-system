@@ -266,7 +266,9 @@ jobs:
           # SIZE_GB on dispatch.
           SIZE_GB: "1"
           RPI4_FIRMWARE_DIR: /tmp/rpi4-firmware-rootfs/rootfs/boot/firmware
-          CA_PEM_FILE: ${{ inputs.ca_pem_url != '' && '/tmp/platform-ca.pem' || '' }}
+          # The rpi4 script bakes CA_FINGERPRINT into BOOT identity.cfg from this
+          # file when it exists (fetched from the dispatch input OR the secret).
+          CA_PEM_FILE: /tmp/platform-ca.pem
           # Bake the build sha into the rpi4 cmdline.txt for boot-image drift (019f505f).
           POWERNODE_IMAGE_GIT_SHA: ${{ github.sha }}
         run: |
@@ -290,7 +292,7 @@ jobs:
           # the workspace so it rides along with the docker cp below; CA_PEM_FILE
           # points at the in-container path.
           ca_env=()
-          if [ -n "${{ inputs.ca_pem_url }}" ] && [ -f /tmp/platform-ca.pem ]; then
+          if [ -f /tmp/platform-ca.pem ]; then
             cp /tmp/platform-ca.pem ./platform-ca.pem
             ca_env=(-e "CA_PEM_FILE=/work/platform-ca.pem")
           fi
@@ -318,7 +320,7 @@ jobs:
             apt-get install -y --no-install-recommends \
               systemd iproute2 gdisk mtools dosfstools e2fsprogs util-linux fdisk \
               systemd-ukify systemd-boot-efi python3-pefile \
-              dracut-core dracut-network linux-image-generic systemd-resolved jq zstd ca-certificates \
+              dracut-core dracut-network linux-image-generic systemd-resolved jq zstd ca-certificates openssl \
               openssh-server openssh-client nftables kmod fsverity
             for t in sfdisk resize2fs partx blkid blockdev udevadm fsverity; do command -v "$t" >/dev/null || { echo "FATAL: $t missing in build container — the initramfs stages it (persist bounded-grow; fsverity for the boot composer module check)"; exit 1; }; done
             cd /work && ./build.sh --arch arm64 --variants "kernel-initrd,disk-image-arm64-uefi"
@@ -767,7 +769,7 @@ jobs:
           # 1GB image: 512MB ESP (the ~85MB UKI fits) + ~512MB ext4 persist —
           # under the registry's typical ~1GB blob limit.
           ca_env=()
-          if [ -n "${{ inputs.ca_pem_url }}" ] && [ -f /tmp/platform-ca.pem ]; then
+          if [ -f /tmp/platform-ca.pem ]; then
             cp /tmp/platform-ca.pem ./platform-ca.pem
             ca_env=(-e "CA_PEM_FILE=/work/platform-ca.pem")
           fi
@@ -799,7 +801,7 @@ jobs:
             apt-get install -y --no-install-recommends \
               systemd iproute2 gdisk mtools dosfstools e2fsprogs util-linux fdisk \
               systemd-ukify systemd-boot-efi python3-pefile \
-              dracut-core dracut-network linux-image-generic systemd-resolved jq zstd ca-certificates \
+              dracut-core dracut-network linux-image-generic systemd-resolved jq zstd ca-certificates openssl \
               openssh-server openssh-client nftables kmod fsverity
             # Fail loud (in-container) if any persist grow tool is absent — a
             # non-fatal dracut-install warning must not ship a broken initramfs.

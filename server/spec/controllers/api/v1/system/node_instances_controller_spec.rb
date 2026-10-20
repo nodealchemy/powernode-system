@@ -89,6 +89,48 @@ RSpec.describe "Api::V1::System::NodeInstances", type: :request do
       expect(response.body).not_to match(/^KEY=/) # bootstrap token never written to the file
     end
 
+    context "CA_FINGERPRINT pin" do
+      def self_signed_pem
+        key = OpenSSL::PKey::EC.generate("prime256v1")
+        cert = OpenSSL::X509::Certificate.new
+        cert.version = 2
+        cert.serial = 1
+        cert.subject = cert.issuer = OpenSSL::X509::Name.parse("/CN=boot-config-test-ca")
+        cert.public_key = key
+        cert.not_before = 1.hour.ago
+        cert.not_after = 1.day.from_now
+        cert.add_extension(OpenSSL::X509::ExtensionFactory.new(cert, cert).create_extension("basicConstraints", "CA:TRUE", true))
+        cert.sign(key, OpenSSL::Digest.new("SHA256"))
+        cert
+      end
+
+      it "emits CA_FINGERPRINT equal to the provisioning-document pin of the configured chain" do
+        cert = self_signed_pem
+        allow(System::ProvisioningDocument).to receive(:configured_ca_pem).and_return(cert.to_pem)
+        get "/api/v1/system/nodes/#{node.id}/node_instances/#{pending_instance.id}/boot_config",
+            headers: auth_headers_for(read_user)
+        want = "sha256:#{OpenSSL::Digest::SHA256.hexdigest(cert.to_der)}"
+        expect(response.body).to match(/^CA_FINGERPRINT=#{Regexp.escape(want)}$/)
+        expect(response.body).to include("CA_FINGERPRINT=#{System::ProvisioningDocument.fingerprint_for(cert.to_pem)}")
+      end
+
+      it "emits no pin (only an explanatory comment) when no CA is configured" do
+        allow(System::ProvisioningDocument).to receive(:configured_ca_pem).and_return(nil)
+        get "/api/v1/system/nodes/#{node.id}/node_instances/#{pending_instance.id}/boot_config",
+            headers: auth_headers_for(read_user)
+        expect(response.body).not_to match(/^CA_FINGERPRINT=/)
+        expect(response.body).to include("no CA_FINGERPRINT pin")
+      end
+
+      it "does not fail the download when the configured chain is unusable" do
+        allow(System::ProvisioningDocument).to receive(:configured_ca_pem).and_return("not a pem")
+        get "/api/v1/system/nodes/#{node.id}/node_instances/#{pending_instance.id}/boot_config",
+            headers: auth_headers_for(read_user)
+        expect(response).to have_http_status(:ok)
+        expect(response.body).not_to match(/^CA_FINGERPRINT=/)
+      end
+    end
+
     it "returns 409 once the instance has been claimed (no re-issue)" do
       unclaimed = System::PhysicalEnrollmentService.record_discovery!(
         account: account, mac: "aa:bb:cc:dd:ee:99"

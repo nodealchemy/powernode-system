@@ -88,7 +88,7 @@ switch_root's into the assembled rootfs.`,
 			_ = bootstrapTok // reserved for future override path
 
 			o := boot.Orchestrator{
-				Resolver:     identity.DefaultResolver(),
+				Resolver:     identity.InteractiveResolver(), // boot: may prompt on the console
 				EnrollClient: &enroll.Client{},
 				PKIDir:       pkiDir,
 				AgentVersion: Version,

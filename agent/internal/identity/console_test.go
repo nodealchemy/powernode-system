@@ -96,7 +96,9 @@ func newConsole(t *testing.T, input string, bootCfg string) *consoleFixture {
 			Open: func() (ConsoleTTY, error) { return tty, nil }, Term: fakeTerm{ev: ev},
 			Timeout: 2 * time.Second, Skip: func() bool { return false },
 			BootStrategy: &BootIdentityStrategy{Path: boot}, StagePath: stage,
-			Now: func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
+			LockPath: filepath.Join(dir, "lock"), RefusalsPath: filepath.Join(dir, "refusals"),
+			Lock: func(string) (func(), error) { return func() {}, nil },
+			Now:  func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
 		},
 	}
 }
@@ -248,7 +250,7 @@ func TestConsoleInvalidDocumentTerminal(t *testing.T) {
 				t.Fatal("refused document must not be staged")
 			}
 			// terminal at the Resolver: a later source must not rescue it
-			r := &Resolver{Strategies: []Strategy{f.s, stubStrategy{id: &Identity{InstanceUUID: "u", BootstrapToken: "k"}}}}
+			r := &Resolver{Interactive: true, Strategies: []Strategy{f.s, stubStrategy{id: &Identity{InstanceUUID: "u", BootstrapToken: "k"}}}}
 			f2 := newConsole(t, doc+"\n", bootCfgPinned)
 			r.Strategies[0] = f2.s
 			if _, err := r.Resolve(context.Background()); !errors.Is(err, ErrProvisionRefused) {

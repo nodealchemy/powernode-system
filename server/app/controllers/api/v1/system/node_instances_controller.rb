@@ -105,6 +105,13 @@ module Api
               "# CA_PEM_FILE=/boot/powernode-ca.pem\n"
             end
 
+          # The CA pin (powernode-provision v1 requires one). Derived from the
+          # configured chain with the same last-certificate / self-signed-CA rule
+          # as System::ProvisioningDocument, so it equals the pin in every
+          # provisioning document. Without it a bare key typed at the device
+          # console is refused (a pasted provisioning document still works).
+          pin_line = boot_config_pin_line
+
           config = <<~CFG
             # Powernode claim-by-ID identity for "#{@instance.name}" (#{@instance.id})
             # Copy to the device's BOOT partition as /boot/identity.cfg. On first
@@ -113,13 +120,25 @@ module Api
             # TLS by the claim poll, never written to this file.
             #{url_note}SERVER=#{platform_url.presence || "<<REPLACE-WITH-PLATFORM-URL>>"}
             ID=#{@instance.id}
-            #{ca_lines}
+            #{ca_lines}#{pin_line}
           CFG
           send_data config,
                     filename: "identity-#{@instance.name.parameterize}.cfg",
                     type: "text/plain",
                     disposition: "attachment"
         end
+
+        # CA_FINGERPRINT= line for boot_config, or an explanatory comment when
+        # no usable CA is configured. Never raises.
+        def boot_config_pin_line
+          chain = ::System::ProvisioningDocument.configured_ca_pem
+          return "# No platform CA configured: no CA_FINGERPRINT pin. A bare key typed at the console is refused; paste a provisioning document instead.\n" if chain.blank?
+
+          "CA_FINGERPRINT=#{::System::ProvisioningDocument.fingerprint_for(chain)}\n"
+        rescue ::System::ProvisioningDocument::RenderError => e
+          "# CA_FINGERPRINT omitted (#{e.message.tr("\n", ' ')}).\n"
+        end
+        private :boot_config_pin_line
 
         def create
           require_permission("system.instances.create")

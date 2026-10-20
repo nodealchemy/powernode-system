@@ -149,6 +149,19 @@ if [[ -n "${OUTPUT:-}" ]]; then
 fi
 
 # ── 2. identity.cfg placeholder + optional CA ──────────────────────────────
+# CA pin for BOOT identity.cfg (powernode-provision v1 requires one). Same rule
+# as System::ProvisioningDocument: sha256 of the DER of the LAST certificate,
+# which must be a self-signed CA. No CA supplied => no pin baked; a bare key
+# typed at the console is then refused and a provisioning document must be
+# pasted instead (docs/PROVISION_DOCUMENT.md).
+CA_FINGERPRINT_LINE=""
+if [[ -n "$CA_PEM_FILE" && -f "$CA_PEM_FILE" ]]; then
+  # shellcheck source=../lib/ca-fingerprint.sh
+  source "${SCRIPT_DIR}/../lib/ca-fingerprint.sh"
+  CA_FP="$(ca_fingerprint_from_pem "$CA_PEM_FILE")" || { log "ERROR: cannot compute CA_FINGERPRINT from $CA_PEM_FILE"; exit 1; }
+  CA_FINGERPRINT_LINE="CA_FINGERPRINT=${CA_FP}"
+  log "baking ${CA_FINGERPRINT_LINE}"
+fi
 cat >"$STAGE/identity.cfg" <<EOF
 # Powernode claim-by-ID identity — PLACEHOLDER.
 # Overwrite this per device before installing: download the boot config from
@@ -157,6 +170,7 @@ cat >"$STAGE/identity.cfg" <<EOF
 ID=
 KEY=
 SERVER=${PLATFORM_URL}
+${CA_FINGERPRINT_LINE}
 # Private-CA platforms: ship the CA as /boot/powernode-ca.pem and uncomment:
 # CA_PEM_FILE=/boot/powernode-ca.pem
 EOF

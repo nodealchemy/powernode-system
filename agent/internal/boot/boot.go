@@ -137,7 +137,7 @@ func (o *Orchestrator) Boot(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("identity discovery: %w", err)
 	}
-	o.stage("identity", fmt.Sprintf("ok (instance=%s, source=%s)", ident.InstanceUUID, ident.CloudProvider))
+	o.stage("identity", fmt.Sprintf("ok (instance=%s, source=%s)", ident.InstanceLabel(), ident.CloudProvider))
 
 	paths := enroll.PathsUnder(o.PKIDir)
 
@@ -240,9 +240,16 @@ func (o *Orchestrator) enroll(ctx context.Context, ident *identity.Identity, pat
 		Subject:        ident.InstanceUUID,
 	})
 	if err != nil {
+		if enroll.IsRefused(err) {
+			ident.EnrolRefused() // dead credential: next attempt re-prompts
+		}
 		return err
 	}
-	return enroll.Save(enrolled, paths)
+	if err := enroll.Save(enrolled, paths); err != nil {
+		return err
+	}
+	ident.EnrolSucceeded() // delete a console-staged plaintext key
+	return nil
 }
 
 // mountUnion composes the modules into the overlay union rootfs.

@@ -274,28 +274,68 @@ of an UNENROLLED node until it is removed. An enrolled node is unaffected.
 ## Console prompt (last resort before the claim poll)
 
 Every image carries a masked prompt on `/dev/console` (`ConsolePromptStrategy`,
-`agent/internal/identity/console.go`). It runs only when no earlier source
-supplied a key, only on a node with a boot `identity.cfg` carrying `SERVER`
-(the same condition that starts the claim poll; cloud VMs are never blocked),
-and never on an already-enrolled node. There is no per-platform flag.
+`agent/internal/identity/console.go`). There is no per-platform flag.
 
-- Input is **masked**: the terminal is put in no-echo, non-canonical mode
-  before the first read and restored afterwards (no characters, not even `*`,
-  are echoed). If no-echo cannot be established the prompt is not shown.
-- Timeout 60 s, then the boot continues to the claim poll. Override with the
-  kernel cmdline `powernode.console_prompt_timeout=<seconds>`; `0` disables.
-- Accepts either a **bare key** (combined with `SERVER`, the CA pin and CA from
-  the boot `identity.cfg`; a bare key without a pin there is refused, because
-  v1 requires one) or a **pasted v1 document** (strict parser).
-- Anything the operator typed that is refused is **terminal** (D5 rule); the
-  agent unit restarts and prompts again.
-- The accepted identity is staged as a v1 document at
-  `/run/powernode/identity.cfg` (0600, tmpfs) and the identity is the re-parse
-  of those bytes. Staging means later `DefaultResolver` calls (runtime service,
-  CLI) find it through the local-file source instead of prompting again. A
-  staged bare key uses the nil UUID as `instance_id` (the server derives the
-  instance from the token) and `purpose` `console-prompt`.
-- Input is never logged or echoed in an error, and the buffers are zeroed.
+**When it runs** (all must hold):
 
-No new systemd unit is needed: the strategy opens `/dev/console` itself from
-the existing `powernode-agent.service`.
+- No earlier source supplied a key. A `KEY=` baked into the BOOT `identity.cfg`
+  counts as an earlier source and suppresses the prompt.
+- The BOOT `identity.cfg` has `SERVER` (the same condition that starts the
+  claim poll; cloud VMs are never blocked).
+- The node is not enrolled yet, and the agent runs **in the initramfs**
+  (`/etc/initrd-release`). After the pivot the console belongs to the getty
+  units; an unenrolled node never gets past the initramfs, so no
+  `Before=`/`Conflicts=` juggling with `getty@`/`serial-getty@` is needed.
+- The caller is the `boot` or `service` enrolment path
+  (`identity.InteractiveResolver()`). CLI commands, `soft_recompose` and
+  `prepare-root` use `DefaultResolver()`, which never prompts.
+- An exclusive `flock` on `/run/powernode/console-prompt.lock` is obtained, so
+  two readers never share the tty.
+- Fewer than 3 consecutive refusals were counted in
+  `/run/powernode/console-refusals`; after 3 the prompt is off for this boot and
+  the claim poll runs. A successful enrolment resets the counter.
+
+**Input.** Masked: the terminal is put in no-echo, non-canonical mode before
+the first read and restored before the descriptor is closed (also on timeout,
+cancellation, panic and SIGTERM/SIGINT). Nothing is echoed, not even `*`. If
+no-echo cannot be established the prompt is not shown.
+
+- **Timeout** 60 s, then the boot continues to the claim poll. Override with
+  the kernel cmdline `powernode.console_prompt_timeout=<seconds>`; `0` disables.
+  The prompt has its **own** timeout: the Resolver's 30 s budget applies to the
+  other sources and does not cut the prompt short (cancelling the context does).
+- A **bare key** is combined with `SERVER`, the CA pin and the CA from the BOOT
+  `identity.cfg`. Without a pin there a bare key is refused (v1 requires one);
+  paste a provisioning document instead.
+- A **pasted v1 document** (first non-space byte `{`) is read across newlines
+  until the braces balance (string- and escape-aware), so a pretty-printed paste
+  works, within the 128 KiB cap. It is parsed strictly and must match the
+  image: `server` must equal the BOOT `SERVER`, and `ca_fingerprint` must equal
+  the BOOT pin when the image carries one. Otherwise it is refused, so a
+  console paste cannot point the node at another platform.
+- Anything the operator typed that is refused is **terminal**; the agent unit
+  restarts and prompts again (counted, see above).
+
+**Staging.** The accepted identity is staged as a v1 document with purpose
+`console-prompt` at `/run/powernode/identity.cfg` (0600, tmpfs), and the
+returned identity is the re-parse of those bytes. It is staged *before*
+enrolment (rather than only after) so a transient network failure or an agent
+restart does not lose a key the operator typed. The enrol path then cleans up:
+a **4xx refusal** (`enroll.IsRefused`) deletes the staged file and counts a
+refusal, so the next attempt re-prompts instead of re-reading a dead key forever;
+a **successful** enrolment deletes it and resets the counter. A staged bare key
+uses the nil UUID as `instance_id` (the server derives the instance from the
+token); logs show it as "assigned by the platform at enrolment", not as an
+instance. The unit sets `LimitCORE=0` so a crash cannot dump the key.
+
+**Input is never logged** or echoed in an error, and the buffers are zeroed.
+
+**Baking the pin.** The disk-image build scripts (`amd64-uefi`, `arm64-uefi`,
+`rpi4`) write `CA_FINGERPRINT=sha256:<hex>` into BOOT `identity.cfg` when a CA is
+supplied (`--ca-pem-file`), computed by `initramfs/images/lib/ca-fingerprint.sh`
+with the same rule as the renderer (DER sha256 of the LAST certificate, which
+must be a self-signed CA); the build fails if the supplied CA does not satisfy
+it. With no CA supplied no pin is baked and a bare key then needs a pasted
+document. "Download boot config" (`node_instances#boot_config`) emits the same
+`CA_FINGERPRINT=` from the configured chain. The agent never derives the pin
+from `/boot/powernode-ca.pem`.

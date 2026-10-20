@@ -156,13 +156,13 @@ func (c *Client) Enroll(ctx context.Context, req EnrollRequest) (*EnrolledIdenti
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("enroll: bootstrap token rejected (401): %s", string(respBody))
+		return nil, refused(resp.StatusCode, fmt.Errorf("enroll: bootstrap token rejected (401): %s", string(respBody)))
 	}
 	if resp.StatusCode == 422 || resp.StatusCode == http.StatusUnprocessableEntity {
-		return nil, fmt.Errorf("enroll: validation failed (%d): %s", resp.StatusCode, string(respBody))
+		return nil, refused(resp.StatusCode, fmt.Errorf("enroll: validation failed (%d): %s", resp.StatusCode, string(respBody)))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("enroll: unexpected status %d: %s", resp.StatusCode, string(respBody))
+		return nil, refused(resp.StatusCode, fmt.Errorf("enroll: unexpected status %d: %s", resp.StatusCode, string(respBody)))
 	}
 
 	var er EnrollResponse
@@ -239,4 +239,28 @@ func (c *Client) pinnedBundle(resp *http.Response) []byte {
 		return nil
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: matched.Raw})
+}
+
+// RefusedError is a definitive client-side (4xx) refusal of the enrolment
+// request: the credential was looked at and rejected, so retrying the same
+// credential cannot succeed. 408 and 429 are retryable and are NOT refusals.
+type RefusedError struct {
+	Status int
+	err    error
+}
+
+func (e *RefusedError) Error() string { return e.err.Error() }
+func (e *RefusedError) Unwrap() error { return e.err }
+
+func refused(status int, err error) error {
+	if status >= 400 && status < 500 && status != http.StatusRequestTimeout && status != http.StatusTooManyRequests {
+		return &RefusedError{Status: status, err: err}
+	}
+	return err
+}
+
+// IsRefused reports whether err is a definitive 4xx refusal (see RefusedError).
+func IsRefused(err error) bool {
+	var r *RefusedError
+	return errors.As(err, &r)
 }
