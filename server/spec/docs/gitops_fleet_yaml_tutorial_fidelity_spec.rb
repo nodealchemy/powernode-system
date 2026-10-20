@@ -178,7 +178,7 @@ RSpec.describe "Tutorial 10 fleet.yaml vs. the real GitOps schema" do
     end
   end
 
-  it "diffs against an empty account into create diffs of dispatchable kinds only" do
+  it "diffs against an empty account into create diffs of dispatchable kinds only", :account_bootstrap do
     account = create(:account)
     # Account bootstrap seeds templates + modules; clear them so the diff is
     # the tutorial's file against nothing, not against onboarding defaults.

@@ -23,7 +23,7 @@ require_relative "../../support/abortable_seed_helpers"
 # example scheduled after it (CI run 1762 reported 89 of 2172), while
 # `not_to raise_error` — which rescues no SystemExit either — read as one
 # ordinary failure.
-RSpec.describe "smoke_test_instance_replace seed" do
+RSpec.describe "smoke_test_instance_replace seed", :account_bootstrap do
   # ActiveSupport's Kernel#silence_stream was removed in Rails 5 and this
   # extension has no global replacement, so the seed's progress output is
   # captured locally rather than left to flood the spec run.

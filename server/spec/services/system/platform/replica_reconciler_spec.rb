@@ -129,7 +129,7 @@ RSpec.describe System::Platform::ReplicaReconciler do
       expect(result.terminated_instance_ids).to be_empty
     end
 
-    it "clamps the per-pass delta to the configured maximum" do
+    it "clamps the per-pass delta to the configured maximum", :account_bootstrap do
       node
       SiteSetting.set(described_class::MAX_DELTA_SETTING_KEY, "1")
       deployment.update!(target_replicas: 5)
@@ -289,7 +289,7 @@ RSpec.describe System::Platform::ReplicaReconciler do
       expect(result.message).to include(described_class::PROVISION_PERMISSION)
     end
 
-    it "provisions for a caller that holds system.instances.create" do
+    it "provisions for a caller that holds system.instances.create", :account_bootstrap do
       node
       deployment.update!(target_replicas: 2)
       release_scale_out!(ceiling: 2)

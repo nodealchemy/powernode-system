@@ -2,7 +2,7 @@
 
 require "rails_helper"
 
-RSpec.describe "Worker API: disk_image_publications", type: :request do
+RSpec.describe "Worker API: disk_image_publications", :account_bootstrap, type: :request do
   let(:account) { create(:account) }
   # See disk_image_built_spec for the rationale: Account bootstrap pre-creates
   # this NodePlatform, so we reference the bootstrapped row via the

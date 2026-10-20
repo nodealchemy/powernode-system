@@ -22,7 +22,7 @@ require "rails_helper"
 # The realistic trigger needs no compromise: an ordinary CI re-run of the same
 # git_sha producing different bytes — a rebuild, a re-tag, a retried job, a
 # non-reproducible build. Builds are frequently not bit-reproducible.
-RSpec.describe "Disk image built webhook — replayed delivery conflict", type: :request do
+RSpec.describe "Disk image built webhook — replayed delivery conflict", :account_bootstrap, type: :request do
   let(:account) { create(:account) }
   let(:platform) { account.system_node_platforms.find_by!(name: "ubuntu-24.04-rpi4") }
   let!(:webhook_pair) { ::System::DiskImageWebhook.create_with_secret!(account: account, label: "ci") }

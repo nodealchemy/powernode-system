@@ -141,7 +141,7 @@ RSpec.describe System::AccountBootstrapService do
     end
   end
 
-  describe "Account.after_create_commit hook" do
+  describe "Account.after_create_commit hook", :account_bootstrap do
     it "auto-bootstraps a new account synchronously with the starter catalog only" do
       account = create(:account)
       expect(::System::Provider.where(account: account, name: "Pro Cloud").count).to eq(1)

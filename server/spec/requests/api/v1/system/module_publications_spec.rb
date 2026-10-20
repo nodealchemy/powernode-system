@@ -216,7 +216,7 @@ RSpec.describe "POST /api/v1/system/module_publications", type: :request do
       expect(new_mod.versions.count).to eq(1)
     end
 
-    it "prefers the canonical 'Workloads' taxonomy category + 'ubuntu-24.04-lts' platform when present" do
+    it "prefers the canonical 'Workloads' taxonomy category + 'ubuntu-24.04-lts' platform when present", :account_bootstrap do
       # Verify the resolver's preference for seed-managed canonical names
       # ("Workloads" category — campaign 019f6084 retired "Powernode
       # Platform" in favor of System::NodeModuleCategory::PLATFORM_TAXONOMY

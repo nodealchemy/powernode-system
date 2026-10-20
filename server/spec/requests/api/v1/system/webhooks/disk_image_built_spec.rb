@@ -2,7 +2,7 @@
 
 require "rails_helper"
 
-RSpec.describe "Disk image built webhook", type: :request do
+RSpec.describe "Disk image built webhook", :account_bootstrap, type: :request do
   let(:account) { create(:account) }
   # Account.after_create_commit :run_account_bootstrap calls
   # System::AccountBootstrapService, which find_or_create_by!s a

@@ -40,7 +40,7 @@ RSpec.describe "Api::V1::System::Platform::Deployments — deploy create/wizard"
     end
   end
 
-  describe "POST /deployments" do
+  describe "POST /deployments", :account_bootstrap do
     let(:provision_success) do
       instance_double(System::Runtime::Result, success?: true,
                                                  data: { instance: build_stubbed(:system_node_instance, name: "sim-x") })

@@ -107,7 +107,7 @@ RSpec.describe "fleet rows carry an environment" do
     end
   end
 
-  describe "account bootstrap ordering" do
+  describe "account bootstrap ordering", :account_bootstrap do
     it "creates the default environments BEFORE the extension bootstrap composes templates, so every seeded template is placed" do
       fresh = create(:account)
       expect(fresh.environments.count).to eq(5)

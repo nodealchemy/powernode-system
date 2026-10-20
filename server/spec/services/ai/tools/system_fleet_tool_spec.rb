@@ -272,7 +272,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       end
     end
 
-    context "with only the bootstrap default provider" do
+    context "with only the bootstrap default provider", :account_bootstrap do
       it "keeps the implicit binding" do
         bootstrap_provider = System::Provider.where(account: account).order(:created_at).first
         bootstrap_region = System::ProviderRegion.where(provider: bootstrap_provider).order(:created_at).first
@@ -6195,7 +6195,7 @@ end
     # Guard: the refusal is scoped to the federated path, not to the action.
     # This is what keeps the fix from reading as a removal of the capability.
     context "the paths that stay open" do
-      it "still deploys standalone" do
+      it "still deploys standalone", :account_bootstrap do
         provisioned = instance_double("ProvisionResult", success?: true, data: { instance: nil })
         allow(::System::ProvisioningService).to receive(:provision_instance).and_return(provisioned)
 

@@ -65,7 +65,7 @@ require "rails_helper"
 # applied by running migration 20260710090000's two DDL statements directly
 # against it — no tracked file changed.
 
-RSpec.describe "base-os closure guarantee (campaign 019f6084 inc1)" do
+RSpec.describe "base-os closure guarantee (campaign 019f6084 inc1)", :account_bootstrap do
   SEED_DIR = Rails.root.join("..", "extensions", "system", "server", "db", "seeds")
 
   ELF_SHIPPING_MODULES = %w[

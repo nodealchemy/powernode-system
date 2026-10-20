@@ -313,7 +313,7 @@ RSpec.describe "SystemFleetTool release verb gating (HIER-P2B-ENG)" do
       expect(::System::ProvisioningService).not_to have_received(:provision_instance)
     end
 
-    it "deploys on approval, replayed as the original principal" do
+    it "deploys on approval, replayed as the original principal", :account_bootstrap do
       trust!(:monitored)
       call("system_deploy_platform", mode: "standalone", name: "child-platform", template_slug: deploy_template.name)
 
