@@ -997,8 +997,8 @@ module PowernodeSystem
     # FileManagement::ErasureReferentRegistry seam asks, per batch, which
     # file_objects a registered handler HOLDS (refuses to let an erasure
     # destroy) and lets it RELEASE its own references before each destroy.
-    # This extension's six boot-image pointers (node architectures, disk
-    # image publications, node platforms) all hold — see
+    # This extension's three boot-image pointers (disk image
+    # publications current/prior, node platforms) all hold — see
     # System::FileErasureReferents. Same to_prepare / defined? / rescue
     # posture as the container lifecycle hook above, for the same reasons.
     initializer "powernode_system.file_erasure_referents", after: :load_config_initializers do
