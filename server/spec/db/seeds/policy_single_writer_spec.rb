@@ -190,6 +190,7 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
                          declarations::OUT_OF_BAND_EXEC_POLICIES.size +
                          declarations::UNIT_DROPIN_POLICIES.size +
                          declarations::SSH_HOST_KEY_CLEAR_POLICIES.size +
+                         declarations::BOOTSTRAP_TOKEN_POLICIES.size +
                          declarations::POLICY_SETS.sum { |set| set[:policies].size }
 
         core_rows = core_written_rows.count
@@ -389,6 +390,7 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
                        declarations::OUT_OF_BAND_EXEC_POLICIES.size +
                        declarations::UNIT_DROPIN_POLICIES.size +
                        declarations::SSH_HOST_KEY_CLEAR_POLICIES.size +
+                       declarations::BOOTSTRAP_TOKEN_POLICIES.size +
                        declarations::POLICY_SETS.sum { |set| set[:policies].size }
 
       expect { load_seed!(reconcile_seed) }

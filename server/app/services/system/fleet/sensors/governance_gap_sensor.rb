@@ -235,11 +235,13 @@ module System
           # here too, or this sensor reads them as unowned despite
           # PolicyReconciler writing their rows just the same.
           # UNIT_DROPIN_POLICIES (IMP-9951cbf20bb0) is the third such set, and
-          # SSH_HOST_KEY_CLEAR_POLICIES (IMP-a41ceb3cdd64) the fourth.
+          # SSH_HOST_KEY_CLEAR_POLICIES (IMP-a41ceb3cdd64) the fourth, and
+          # BOOTSTRAP_TOKEN_POLICIES (IMP-5c6a03c3b335) the fifth.
           (sets + declarations::MANUAL_OPERATION_POLICIES.keys +
             declarations::OUT_OF_BAND_EXEC_POLICIES.keys +
             declarations::UNIT_DROPIN_POLICIES.keys +
-            declarations::SSH_HOST_KEY_CLEAR_POLICIES.keys).to_set
+            declarations::SSH_HOST_KEY_CLEAR_POLICIES.keys +
+            declarations::BOOTSTRAP_TOKEN_POLICIES.keys).to_set
         end
 
         def category_unowned

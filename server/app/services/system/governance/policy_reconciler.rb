@@ -462,7 +462,23 @@ module System
         }
       end
 
-      def declared_sets = [ manual_set, out_of_band_exec_set, unit_dropin_set, ssh_host_key_clear_set ] + PolicyDeclarations::POLICY_SETS
+      # IMP-5c6a03c3b335 (D4). A fifth member of the same "no owner, not a
+      # POLICY_SETS entry" class, for exactly #ssh_host_key_clear_set's reasons.
+      def bootstrap_token_set
+        {
+          key: "bootstrap-token-operator",
+          agent_key: nil,
+          scope: "global",
+          priority: 5,
+          conditions: {},
+          policies: PolicyDeclarations::BOOTSTRAP_TOKEN_POLICIES
+        }
+      end
+
+      def declared_sets
+        [ manual_set, out_of_band_exec_set, unit_dropin_set, ssh_host_key_clear_set, bootstrap_token_set ] +
+          PolicyDeclarations::POLICY_SETS
+      end
 
       # Yields (set, agent, skip_reason). skip_reason is non-nil when the set
       # cannot be reconciled — today only "agent absent". A set is SKIPPED, never

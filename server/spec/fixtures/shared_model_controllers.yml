@@ -15,6 +15,7 @@ shared_models:
   Sdwan::UserDevice: lookup
   System::AcmeCertificate: served_twice
   System::AcmeDnsCredential: served_twice
+  System::BootstrapToken: lookup
   System::CiRunnerLease: lookup
   System::ClaudeCodeCredential: served_twice
   System::DiskImageWebhook: lookup

@@ -1381,6 +1381,17 @@ module System
         "system.instance.ssh_host_key_clear" => "require_approval"
       }.freeze
 
+      # IMP-5c6a03c3b335 (D4) — operator-issued enrolment keys: the gated reveal
+      # (system_reveal_bootstrap_token, human_only, so the gate forces
+      # require_approval whatever this row says) and the gated revoke
+      # (system_revoke_bootstrap_token). Declared exactly as
+      # SSH_HOST_KEY_CLEAR_POLICIES is: agent-less rows at scope "global", no
+      # owning agent. Releasing a key is a person's decision, never a tool call's.
+      BOOTSTRAP_TOKEN_POLICIES = {
+        "system.bootstrap_token.reveal" => "require_approval",
+        "system.bootstrap_token.revoke" => "require_approval"
+      }.freeze
+
       # IMP-0467eee9fc57 — the cordon-only (unschedulable) mode for a
       # NodeInstance, gated by Ai::Tools::SystemFleetTool's
       # system_cordon_instance AND system_uncordon_instance under ONE category:

@@ -1111,7 +1111,8 @@ module PowernodeSystem
         # both directions.
         declarations = ::System::Governance::PolicyDeclarations
         categories = ([ declarations::MANUAL_OPERATION_POLICIES, declarations::OUT_OF_BAND_EXEC_POLICIES,
-                        declarations::UNIT_DROPIN_POLICIES, declarations::SSH_HOST_KEY_CLEAR_POLICIES ] +
+                        declarations::UNIT_DROPIN_POLICIES, declarations::SSH_HOST_KEY_CLEAR_POLICIES,
+                        declarations::BOOTSTRAP_TOKEN_POLICIES ] +
                       declarations::POLICY_SETS.map { |set| set[:policies] })
                      .flat_map(&:keys)
 

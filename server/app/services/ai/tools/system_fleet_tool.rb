@@ -233,6 +233,11 @@ module Ai
         # IMP-a41ceb3cdd64 — clear ONE instance's recorded SSH host key; the same
         # family and level as the two lifecycle verbs above.
         "system_clear_ssh_host_key"     => "system.instances.control",
+        # IMP-5c6a03c3b335 — operator enrolment keys. Same grant as the REST
+        # surface (BootstrapTokensController): system.instances.control.
+        "system_list_bootstrap_tokens"  => "system.instances.control",
+        "system_revoke_bootstrap_token" => "system.instances.control",
+        "system_reveal_bootstrap_token" => "system.instances.control",
         "system_reap_instance"          => "system.instances.control",
         # F4-08 — lifecycle control (start/stop/reboot): same level as
         # terminate, wraps InstanceControlService.
@@ -516,6 +521,13 @@ module Ai
       # gives; that the two agree is pinned by
       # spec/services/ai/tools/system_fleet_volume_snapshot_gating_spec.rb.
       VOLUME_SNAPSHOT_DELETE_CATEGORY = "system.volume_snapshot_delete"
+      # IMP-5c6a03c3b335 (D4) — the categories the operator enrolment-key verbs
+      # gate on. Declared in PolicyDeclarations::BOOTSTRAP_TOKEN_POLICIES in the
+      # same change (agent-less, global, require_approval); restated here for
+      # the class-body-evaluation reason POOL_CREATE_CATEGORY gives. Agreement is
+      # pinned by spec/services/ai/tools/system_fleet_bootstrap_token_spec.rb.
+      BOOTSTRAP_TOKEN_REVEAL_CATEGORY = "system.bootstrap_token.reveal"
+      BOOTSTRAP_TOKEN_REVOKE_CATEGORY = "system.bootstrap_token.revoke"
       # IMP-0467eee9fc57 — the category system_cordon_instance AND
       # system_uncordon_instance gate on: ONE operator control over the
       # unschedulable mode, both directions. Declared in
@@ -1191,6 +1203,53 @@ module Ai
                      on_proceed: :deferred_tool_call_result,
                      returns: "cleared, the instance, how many fingerprints were recorded, and what the node's next SSH connection and out-of-band exec will do under the current system.ssh.require_host_key setting",
                      refuses: "the reason is blank or too long, the instance is not in this account, or it has no recorded host key"
+      # IMP-5c6a03c3b335 (D4) — operator-issued enrolment keys. Keys are MINTED
+      # only through the REST surface (server-side generation, plaintext returned
+      # once); these three verbs cover the rest of the lifecycle.
+      #
+      # list: metadata only (System::BootstrapTokenSerializer), never a secret.
+      #
+      # revoke: kills an unconsumed key, irreversibly. Approval-gated under its
+      # own require_approval category; the replay is the generic
+      # DeferredToolCall, so #revoke_bootstrap_token stays the single author.
+      #
+      # reveal: returns the plaintext of an UNCONSUMED, UNREVOKED, UNEXPIRED
+      # operator key from its sealed copy. human_only: a tool call is never a
+      # person's consent, and no policy row can auto-approve a secret out to an
+      # agent. It parks an approval and runs only as the replay of a person's
+      # own-session approval, AS that person, who is the audited actor. The
+      # plaintext reaches that person once (Ai::DeferredOperation reveal-once
+      # slot, keyed on the result's `token` key being a SensitiveParams
+      # pattern) and is redacted from every stored copy.
+      #
+      # destructive on both: the overlay entries (core, *system_revoke_bootstrap_token*
+      # and *system_reveal_bootstrap_token*) are required regardless — a node's
+      # mTLS identity must never reach another instance's key — and
+      # destructive_declaration_matches_deny_overlay_spec holds the two in step.
+      declare_action "system_list_bootstrap_tokens", mutating: false, family: "devops", paginated: true,
+                     returns: "bootstrap_tokens: id, purpose, expiry, consumed/revoked state and issuer; never a secret",
+                     refuses: "the instance is not in this account"
+      declare_action "system_revoke_bootstrap_token",
+                     mutating: true,
+                     destructive: true,
+                     family: "devops",
+                     action_category: BOOTSTRAP_TOKEN_REVOKE_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :revoke_bootstrap_token_gate_context,
+                     on_proceed: :deferred_tool_call_result,
+                     returns: "bootstrap_token, the revoked key's metadata",
+                     refuses: "the key is not in this account or has already been consumed"
+      declare_action "system_reveal_bootstrap_token",
+                     mutating: true,
+                     destructive: true,
+                     human_only: true,
+                     family: "devops",
+                     action_category: BOOTSTRAP_TOKEN_REVEAL_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :reveal_bootstrap_token_gate_context,
+                     on_proceed: :deferred_tool_call_result,
+                     returns: "token, the key's plaintext, shown once to the approving person",
+                     refuses: "the key is not in this account, is not an operator key, or is consumed, revoked or expired"
       declare_action "system_replenish_instance_pool", mutating: true, returns: "pool summary and the replenish result"
       declare_action "system_report_storage_migration_progress", mutating: true, family: "storage", returns: "storage_migration, full record", refuses: "the status change is not a legal transition"
       declare_action "system_return_pooled_instance", mutating: true
@@ -1724,6 +1783,26 @@ module Ai
             parameters: {
               instance_id: { type: "string", required: true, description: "UUID of the NodeInstance whose recorded host key is cleared (account-scoped; must have one recorded)" },
               reason: { type: "string", required: true, description: "Why the recorded key is stale, 1 to #{CLEAR_SSH_HOST_KEY_REASON_MAX} characters; shown to the approver and written to the audit row" }
+            }
+          },
+          # IMP-5c6a03c3b335 (D4) — operator enrolment keys; see the declare_actions.
+          "system_list_bootstrap_tokens" => {
+            description: "List the operator enrolment keys (purpose operator_key) issued for ONE instance: id, expiry, consumed and revoked state, and who issued each. Metadata only — it never returns a key, its digest or its sealed copy. Keys are minted through the operator UI/REST (server-side generation); there is no mint verb here.",
+            parameters: {
+              instance_id: { type: "string", required: true, description: "UUID of the NodeInstance (account-scoped)" },
+              **PAGINATION_PARAMETERS
+            }
+          },
+          "system_revoke_bootstrap_token" => {
+            description: "Revoke an UNCONSUMED operator enrolment key so it can never enrol a device; its sealed recoverable copy is purged in the same transaction. Irreversible. APPROVAL-GATED (system.bootstrap_token.revoke): this returns {pending: true} with an approval_request_id and NOTHING is revoked until it is approved; do not report a change on that response. Audited (system.bootstrap_token.revoked). Refused for a key that is already consumed.",
+            parameters: {
+              token_id: { type: "string", required: true, description: "UUID of the bootstrap token (account-scoped; see system_list_bootstrap_tokens)" }
+            }
+          },
+          "system_reveal_bootstrap_token" => {
+            description: "Recover the plaintext of an UNCONSUMED, UNREVOKED, UNEXPIRED operator enrolment key from its sealed copy. HUMAN-ONLY and APPROVAL-GATED (system.bootstrap_token.reveal): this returns {pending: true, requires_human_session: true} with an approval_request_id and NOTHING is revealed to the requester; the plaintext is shown once, to the person who approves in their own session, who is the audited actor (system.bootstrap_token.revealed — never the key). A consumed, revoked or expired key, or one with no sealed copy, is refused. Refused for an instance principal.",
+            parameters: {
+              token_id: { type: "string", required: true, description: "UUID of the bootstrap token (account-scoped; see system_list_bootstrap_tokens)" }
             }
           },
           # IMP-4e49eb79c5e0 — the disaster-recovery lane, on demand.
@@ -2996,6 +3075,9 @@ module Ai
         # an approval no person made.
         when "system_apply_unit_dropin"        then human_confirmed_replay? ? apply_unit_dropin(params) : gate_routed_only("system_apply_unit_dropin")
         when "system_clear_ssh_host_key"       then human_confirmed_replay? ? clear_ssh_host_key(params) : gate_routed_only("system_clear_ssh_host_key")
+        when "system_list_bootstrap_tokens"    then list_bootstrap_tokens(params)
+        when "system_revoke_bootstrap_token"   then approved_replay? ? revoke_bootstrap_token(params) : gate_routed_only("system_revoke_bootstrap_token")
+        when "system_reveal_bootstrap_token"   then human_confirmed_replay? ? reveal_bootstrap_token(params) : gate_routed_only("system_reveal_bootstrap_token")
         when "system_reap_instance"            then gate_routed_only("system_reap_instance")
         when "system_start_instance"           then control_instance(params, "start")
         when "system_stop_instance"            then control_instance(params, "stop")
@@ -5572,6 +5654,104 @@ module Ai
         return gate_result.result if gate_result.result.is_a?(::Hash)
 
         success_result(replayed: true)
+      end
+
+      # === Operator enrolment keys (IMP-5c6a03c3b335, D4) ===
+
+      def list_bootstrap_tokens(params)
+        bootstrap_token_refuse_instance_principal!("system_list_bootstrap_tokens")
+        instance = account_instances.find_by(id: params[:instance_id].to_s)
+        return error_result("Instance not found") unless instance
+
+        rows = ::System::BootstrapToken.where(node_id: instance.node_id, node_instance_id: instance.id)
+                                       .includes(:created_by)
+        paginated_result(:bootstrap_tokens, rows, params) { |t| ::System::BootstrapTokenSerializer.new(t).as_json }
+      rescue CallerFacingError => e
+        error_result(e.message)
+      end
+
+      # Validated BEFORE parking so a key that could only ever be refused on
+      # replay keeps its inline error instead of becoming an approval a person
+      # must dispose of. The description names the instance and expiry, never
+      # key material.
+      def revoke_bootstrap_token_gate_context(params)
+        bootstrap_token_refuse_instance_principal!("system_revoke_bootstrap_token")
+        bootstrap_token = bootstrap_token_in_account!(params[:token_id])
+        raise CallerFacingError, "token already consumed" if bootstrap_token.consumed?
+
+        deferred_tool_call_context(params).merge(
+          source_type: "System::NodeInstance",
+          source_id: bootstrap_token.node_instance_id,
+          description: "Revoke operator enrolment key #{bootstrap_token.id} for '#{bootstrap_token_instance_name(bootstrap_token)}' " \
+                       "(expires #{bootstrap_token.expires_at.iso8601}) - it can never enrol a device afterwards"
+        )
+      end
+
+      def revoke_bootstrap_token(params)
+        bootstrap_token_refuse_instance_principal!("system_revoke_bootstrap_token")
+        bootstrap_token = bootstrap_token_in_account!(params[:token_id])
+        bootstrap_token.revoke!(by: user)
+        success_result(bootstrap_token: ::System::BootstrapTokenSerializer.new(bootstrap_token.reload).as_json)
+      rescue ::System::BootstrapToken::InvalidConsumption, CallerFacingError => e
+        error_result(e.message)
+      rescue ::System::BootstrapToken::AuditFailure
+        error_result("Bootstrap key was not revoked: the audit record could not be written")
+      end
+
+      def reveal_bootstrap_token_gate_context(params)
+        bootstrap_token_refuse_instance_principal!("system_reveal_bootstrap_token")
+        bootstrap_token = bootstrap_token_in_account!(params[:token_id])
+        bootstrap_token_revealable!(bootstrap_token)
+
+        deferred_tool_call_context(params).merge(
+          source_type: "System::NodeInstance",
+          source_id: bootstrap_token.node_instance_id,
+          description: "Reveal operator enrolment key #{bootstrap_token.id} for '#{bootstrap_token_instance_name(bootstrap_token)}' " \
+                       "(expires #{bootstrap_token.expires_at.iso8601}) - shown once to the approving person"
+        )
+      end
+
+      # Reached only on a person's own-session approved replay, where `user` IS
+      # the approving person and so the audited actor. The result's `token` key
+      # is a Ai::SensitiveParams pattern: redacted from the stored result and
+      # handed to the approver once through the reveal-once slot.
+      def reveal_bootstrap_token(params)
+        bootstrap_token_refuse_instance_principal!("system_reveal_bootstrap_token")
+        bootstrap_token = bootstrap_token_in_account!(params[:token_id])
+        plaintext = bootstrap_token.reveal!(by: user)
+        success_result(token: plaintext,
+                       bootstrap_token: ::System::BootstrapTokenSerializer.new(bootstrap_token.reload).as_json,
+                       note: "Shown once. The key stays valid until it enrols a device, is revoked or expires.")
+      rescue ::System::BootstrapToken::NotRevealable, CallerFacingError => e
+        error_result(e.message)
+      rescue ::System::BootstrapToken::AuditFailure
+        error_result("Bootstrap key was not revealed: the audit record could not be written")
+      end
+
+      def bootstrap_token_in_account!(token_id)
+        ::System::BootstrapToken.where(node_id: ::System::Node.where(account_id: account.id).select(:id))
+                                .find_by(id: token_id.to_s) ||
+          raise(CallerFacingError, "Bootstrap token not found")
+      end
+
+      def bootstrap_token_revealable!(bootstrap_token)
+        raise CallerFacingError, "token revoked"          if bootstrap_token.revoked?
+        raise CallerFacingError, "token already consumed" if bootstrap_token.consumed?
+        raise CallerFacingError, "token expired"          if bootstrap_token.expired?
+        raise CallerFacingError, "no recoverable copy of this key" if bootstrap_token.sealed_plaintext.blank?
+      end
+
+      def bootstrap_token_instance_name(bootstrap_token)
+        bootstrap_token.node_instance&.name || bootstrap_token.node&.name || "unbound"
+      end
+
+      # Defense in depth beyond the deny overlay (core, *system_reveal_bootstrap_token*
+      # and *system_revoke_bootstrap_token*): a node's mTLS identity must never
+      # reach, let alone recover, another instance's enrolment key.
+      def bootstrap_token_refuse_instance_principal!(action)
+        return unless instance_authorized?
+
+        raise CallerFacingError, "#{action} is refused for an instance principal"
       end
 
       # Tripwire, not a reachable MCP path. #execute gates this action before
