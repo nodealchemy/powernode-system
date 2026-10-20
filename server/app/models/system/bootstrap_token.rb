@@ -25,6 +25,7 @@ module System
       system.bootstrap_token.issued
       system.bootstrap_token.consumed
       system.bootstrap_token.revoked
+      system.bootstrap_token.revealed
     ].freeze
 
     # Operator direction (IMP-cde9ee63c977 / memory:image-distribution-model):
@@ -49,6 +50,15 @@ module System
     # Multi-use is never permitted for new tokens; operator keys additionally
     # have an explicit single-use guarantee.
     SINGLE_USE_PURPOSES = %w[operator_key].freeze
+
+    # Purposes whose plaintext is kept SEALED so a gated reveal can recover it
+    # (IMP-5c6a03c3b335). Every other purpose is returned once at mint and never
+    # recoverable.
+    SEALED_PURPOSES = %w[operator_key].freeze
+
+    # ActiveRecord::Encryption (the house keys): ciphertext at rest, filtered out
+    # of #inspect and the logs. Purged (nil) on consume! and revoke!.
+    encrypts :sealed_plaintext
 
     # === Associations ===
     belongs_to :node, class_name: "System::Node"
@@ -99,7 +109,8 @@ module System
           expires_at: ttl.from_now,
           single_use: single_use,
           purpose: purpose,
-          created_by: created_by
+          created_by: created_by,
+          sealed_plaintext: (plaintext if SEALED_PURPOSES.include?(purpose.to_s))
         )
         token.send(:write_audit!, :issued)
       end
@@ -135,7 +146,7 @@ module System
         raise InvalidConsumption, "token already consumed" if consumed?
         raise InvalidConsumption, "token expired"          if expired?
 
-        update!(consumed_at: Time.current, consumed_from_ip: from_ip)
+        update!(consumed_at: Time.current, consumed_from_ip: from_ip, sealed_plaintext: nil)
         write_audit!(:consumed)
       end
       self
@@ -149,10 +160,30 @@ module System
         next if revoked?
         raise InvalidConsumption, "token already consumed" if consumed?
 
-        update!(revoked_at: Time.current, revoked_by: by)
+        update!(revoked_at: Time.current, revoked_by: by, sealed_plaintext: nil)
         write_audit!(:revoked)
       end
       self
+    end
+
+    # Returns the plaintext of an UNCONSUMED, UNREVOKED, UNEXPIRED operator key
+    # from its sealed copy. The `revealed` audit row is written INSIDE the lock
+    # and FAILS CLOSED: if it cannot be written nothing is returned. The row
+    # names the actor and the token, never the plaintext. `by` is the user whose
+    # approval released it (nil when the gate was auto-approved for an agent).
+    def reveal!(by: nil)
+      plaintext = nil
+      with_lock do
+        raise NotRevealable, "token revoked"          if revoked?
+        raise NotRevealable, "token already consumed" if consumed?
+        raise NotRevealable, "token expired"          if expired?
+
+        plaintext = sealed_plaintext.presence
+        raise NotRevealable, "no recoverable copy of this key" if plaintext.nil?
+
+        write_audit!(:revealed, actor: by)
+      end
+      plaintext
     end
 
     def revoked?
@@ -172,6 +203,9 @@ module System
     end
 
     class InvalidConsumption < StandardError; end
+    # The key cannot be revealed: not an operator key, no sealed copy, or no
+    # longer usable. The message is static and carries no token material.
+    class NotRevealable < StandardError; end
     # The audit row for a key operation could not be written. Key operations
     # FAIL CLOSED: the surrounding transaction rolls back. The message is static
     # (no token material, no underlying error text).
@@ -185,8 +219,8 @@ module System
     # write raises AuditFailure, rolling the issue/consume/revoke (and any
     # enclosing enrolment) back. A rollback therefore also leaves no audit row.
     # The row NEVER includes the plaintext or token_hash.
-    def write_audit!(event)
-      actor = { revoked: revoked_by, issued: created_by }[event]
+    def write_audit!(event, actor: nil)
+      actor ||= { revoked: revoked_by, issued: created_by }[event]
       ::AuditLog.transaction(requires_new: true) do
         ::AuditLog.log_action(
           action: "system.bootstrap_token.#{event}",

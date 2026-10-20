@@ -396,6 +396,106 @@ RSpec.describe System::BootstrapToken, type: :model do
     end
   end
 
+  # IMP-5c6a03c3b335 (D4) - a recoverable, SEALED copy of an operator key so a
+  # gated reveal can hand it back. The copy exists only for purpose
+  # operator_key and dies with the key's usability.
+  describe "sealed operator-key copy" do
+    let(:user) { create(:user, account: account) }
+
+    def issue_operator_key(**opts)
+      described_class.issue!(node: node, intended_subject: "instance-x", purpose: "operator_key",
+                             created_by: user, **opts)
+    end
+
+    it "seals the plaintext at mint for operator_key, encrypted at rest" do
+      token, plaintext = issue_operator_key
+      raw = described_class.connection.select_value(
+        "SELECT sealed_plaintext FROM system_bootstrap_tokens WHERE id = '#{token.id}'"
+      )
+      expect(raw).to be_present
+      expect(raw).not_to include(plaintext)
+      expect(token.reload.sealed_plaintext).to eq(plaintext)
+    end
+
+    it "does not seal any other purpose" do
+      token, _ = described_class.issue!(node: node, intended_subject: "x", purpose: "cloud_seed")
+      expect(token.reload.sealed_plaintext).to be_nil
+      legacy, _ = described_class.issue!(node: node, intended_subject: "x")
+      expect(legacy.reload.sealed_plaintext).to be_nil
+    end
+
+    it "purges the sealed copy on consume! in the same transaction" do
+      token, _ = issue_operator_key
+      token.consume!(from_ip: "203.0.113.5")
+      expect(token.reload.sealed_plaintext).to be_nil
+    end
+
+    it "purges the sealed copy on revoke!" do
+      token, _ = issue_operator_key
+      token.revoke!(by: user)
+      expect(token.reload.sealed_plaintext).to be_nil
+    end
+
+    it "keeps the sealed copy when the consume audit write fails (rolled back with the consume)" do
+      token, _ = issue_operator_key
+      allow(AuditLog).to receive(:log_action).and_raise(StandardError, "audit down")
+      expect { token.consume! }.to raise_error(described_class::AuditFailure)
+      expect(token.reload.sealed_plaintext).to be_present
+      expect(token).not_to be_consumed
+    end
+
+    it "never lists the sealed attribute in inspect output" do
+      token, plaintext = issue_operator_key
+      expect(token.reload.inspect).not_to include(plaintext)
+    end
+
+    describe "#reveal!" do
+      it "returns the plaintext of a usable operator key and writes a revealed audit row" do
+        token, plaintext = issue_operator_key
+        expect(token.reveal!(by: user)).to eq(plaintext)
+
+        row = AuditLog.where(action: "system.bootstrap_token.revealed", resource_id: token.id).sole
+        expect(row.user_id).to eq(user.id)
+        expect(row.metadata.to_json).not_to include(plaintext)
+        expect(row.metadata.to_json).not_to include(token.token_hash)
+      end
+
+      it "registers the revealed action with the audit allowlist" do
+        expect(described_class::AUDITED_ACTIONS).to include("system.bootstrap_token.revealed")
+      end
+
+      it "refuses after consume" do
+        token, _ = issue_operator_key
+        token.consume!
+        expect { token.reveal!(by: user) }.to raise_error(described_class::NotRevealable)
+      end
+
+      it "refuses after revoke" do
+        token, _ = issue_operator_key
+        token.revoke!(by: user)
+        expect { token.reveal!(by: user) }.to raise_error(described_class::NotRevealable)
+      end
+
+      it "refuses after expiry" do
+        token, _ = issue_operator_key(ttl: 2.hours)
+        travel 3.hours do
+          expect { token.reveal!(by: user) }.to raise_error(described_class::NotRevealable)
+        end
+      end
+
+      it "refuses a token with no sealed copy (other purpose)" do
+        token, _ = described_class.issue!(node: node, intended_subject: "x", purpose: "cloud_seed")
+        expect { token.reveal!(by: user) }.to raise_error(described_class::NotRevealable)
+      end
+
+      it "fails closed: no plaintext is returned when the audit write fails" do
+        token, _ = issue_operator_key
+        allow(AuditLog).to receive(:log_action).and_raise(StandardError, "audit down")
+        expect { token.reveal!(by: user) }.to raise_error(described_class::AuditFailure)
+      end
+    end
+  end
+
   describe "scopes" do
     it "categorizes tokens by lifecycle state" do
       fresh, _    = described_class.issue!(node: node, intended_subject: "fresh")
