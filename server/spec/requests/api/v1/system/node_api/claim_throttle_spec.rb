@@ -69,6 +69,16 @@ RSpec.describe "Rack::Attack throttling for POST /api/v1/system/node_api/claim",
     expect(response).to have_http_status(:too_many_requests)
   end
 
+  it "counts exotic format suffixes (.a-b, %xx, ;x) against the same cap" do
+    hdr = { "Content-Type" => "application/json" }
+    %w[claim.a-b claim.j%73on claim.json;x].each_with_index do |tail, i|
+      post "/api/v1/system/node_api/#{tail}", params: { mac: "de:ad:00:00:03:0#{i}" }.to_json, headers: hdr
+    end
+    claim("de:ad:00:00:03:09")
+
+    expect(response).to have_http_status(:too_many_requests)
+  end
+
   it "keeps the claim path out of the node_api safelist while agent paths stay safelisted" do
     safelist = Rack::Attack.safelists.fetch("powernode_node_api")
 

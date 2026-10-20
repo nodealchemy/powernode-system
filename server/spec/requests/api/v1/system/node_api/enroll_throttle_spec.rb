@@ -74,6 +74,17 @@ RSpec.describe "Rack::Attack throttling for POST /api/v1/system/node_api/enroll"
     expect(response).to have_http_status(:too_many_requests)
   end
 
+  it "counts exotic format suffixes (.a-b, %xx, ;x) against the same cap" do
+    hdr = { "Content-Type" => "application/json" }
+    body = { bootstrap_token: "k", csr_pem: "x" }.to_json
+    %w[enroll.json-x enroll.j%73on enroll.json;x].each do |tail|
+      post "/api/v1/system/node_api/#{tail}", params: body, headers: hdr
+    end
+    expect(response).not_to have_http_status(:too_many_requests)
+    enroll
+    expect(response).to have_http_status(:too_many_requests)
+  end
+
   it "does not count another IP against the cap" do
     3.times { enroll }
     post "/api/v1/system/node_api/enroll",
@@ -93,6 +104,9 @@ RSpec.describe "Rack::Attack throttling for POST /api/v1/system/node_api/enroll"
     expect(safelist.matched_by?(req.call("/api/v1/system/node_api/claim.json", "POST"))).to be(false)
     expect(safelist.matched_by?(req.call("/api/v1/system/node_api/claim/", "POST"))).to be(false)
     %w[//enroll enroll.xml enroll.txt enroll.json/ ].each do |tail|
+      expect(safelist.matched_by?(req.call("/api/v1/system/node_api/#{tail}", "POST"))).to be(false), tail
+    end
+    %w[enroll.json-x enroll.j%73on enroll.json;x enroll.%C3%A9 claim.a-b claim.j%73on claim.json;x].each do |tail|
       expect(safelist.matched_by?(req.call("/api/v1/system/node_api/#{tail}", "POST"))).to be(false), tail
     end
     %w[//claim claim.xml claim.txt].each do |tail|
