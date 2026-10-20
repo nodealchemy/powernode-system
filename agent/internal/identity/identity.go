@@ -172,6 +172,11 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 		defer cancel()
 	}
 
+	for _, s := range r.Strategies {
+		if bk, ok := s.(*BootKeyStrategy); ok {
+			ctx = withBootSnapshot(ctx, bk) // one read of the BOOT file per Resolve
+		}
+	}
 	var (
 		lastErr error
 		first   *Identity // first usable identity, by strategy precedence
@@ -195,18 +200,21 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 		localPins = append(localPins, p)
 	}
 	var gate *bootGate // BOOT file state, read once, only if a gated source is reached
-	bootGateOf := func() bootGate {
+	bootGateOf := func() (bootGate, error) {
 		if gate == nil {
 			g := bootGate{}
 			for _, s := range r.Strategies {
 				if bk, ok := s.(*BootKeyStrategy); ok {
-					g = bk.gate(ctx)
+					var err error
+					if g, err = bk.gate(ctx); err != nil {
+						return g, fmt.Errorf("strategy %s: %w", bk.Name(), err)
+					}
 					break
 				}
 			}
 			gate = &g
 		}
-		return *gate
+		return *gate, nil
 	}
 	for _, s := range r.Strategies {
 		_, isCloud := s.(*CloudStrategy)
@@ -216,7 +224,10 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 			// makes metadata and the media scan ineligible (no probes, no
 			// mount), and a keyless claim BOOT keeps metadata eligible only
 			// when it carries a pin to enforce on it.
-			g := bootGateOf()
+			g, gerr := bootGateOf()
+			if gerr != nil {
+				return nil, gerr // fail closed before any probe or mount
+			}
 			if g.hasKey || (isCloud && g.exists && g.pin == "") {
 				continue
 			}

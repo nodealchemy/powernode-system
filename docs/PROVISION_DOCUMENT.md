@@ -88,7 +88,7 @@ BOOT key, console, claim, `/etc`.
 `identity.cfg` with `SERVER` (and optionally `ID`) but no `KEY` is not a key; it
 only drives the claim poll (8) and may carry a pin.
 
-**Network sources never veto, and never pin.** Provider metadata (169.254.169.254
+**Network and removable sources never veto and are never authoritative on a pin.** Provider metadata (169.254.169.254
 over HTTP) is unauthenticated and spoofable on L2, so it is consulted only while
 no key has been found, never after one, and:
 
@@ -101,7 +101,7 @@ no key has been found, never after one, and:
   file, `/etc/identity.cfg`, console). A pin asserted by metadata or by a
   removable stick is not: when either wins over BOOT, the local pin is still
   collected, and if it differs from the winner's pin the resolver refuses
-  (fail closed). Two local sources asserting different pins also refuse; the
+  (fail closed); with no local pin at all, the winner's own pin stands. Two local sources asserting different pins also refuse; the
   agent never picks one silently.
 - A v1 refusal from provider metadata is deferred past ALL local sources (media
   scan, BOOT key, console prompt, claim poll, `/etc/identity.cfg`) and returned

@@ -119,7 +119,7 @@ func TestBootKeyBeatsConsoleAndClaim(t *testing.T) {
 	bs := &spyStrategy{err: ErrNotFound}
 	r := &Resolver{Interactive: true, Strategies: []Strategy{
 		bootCfg(t, "SERVER=https://boot\nID=boot-uuid\nKEY=boot-key\n"),
-		&ConsolePromptStrategy{Open: func() (ConsoleTTY, error) { atomic.AddInt32(&prompted, 1); return nil, errors.New("x") }},
+		&ConsolePromptStrategy{BootStrategy: &spyStrategy{err: ErrNotFound}, Open: func() (ConsoleTTY, error) { atomic.AddInt32(&prompted, 1); return nil, errors.New("x") }},
 		&ClaimStrategy{BootStrategy: bs},
 	}}
 	id, err := r.Resolve(context.Background())
@@ -289,12 +289,16 @@ func TestMetadataRefusalDoesNotVetoLegacyEtc(t *testing.T) {
 
 func TestMetadataWinnerSkipsMediaScan(t *testing.T) {
 	// media never runs once metadata has a key: nothing for a stick to veto or pin
+	m := newFakeMachine(t)
+	m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
+	m.media["sdb1"] = vfatWith(docFor(newTestPKI(t), idA, "2026-10-20T10:00:00Z"))
 	r := &Resolver{Strategies: []Strategy{
 		&CloudStrategy{Client: &fakeMeta{data: metaKV}},
-		&MediaScanStrategy{SysBlock: filepath.Join(t.TempDir(), "none")}, // never reached
+		m.strategy(),
 	}}
-	if id, err := r.Resolve(context.Background()); err != nil || id.InstanceUUID != "meta-uuid" {
-		t.Fatalf("%v %v", id, err)
+	id, err := r.Resolve(context.Background())
+	if err != nil || id.InstanceUUID != "meta-uuid" || len(m.calls) != 0 || len(m.devOrder()) != 0 {
+		t.Fatalf("%v %v mounts=%v sniffs=%v", id, err, m.calls, m.devOrder())
 	}
 }
 
@@ -379,5 +383,93 @@ func TestClaimBootStillScansStick(t *testing.T) {
 	}}
 	if id, err := r.Resolve(context.Background()); err != nil || id.InstanceUUID != idA {
 		t.Fatalf("a keyless BOOT does not block the stick: %v %v", id, err)
+	}
+}
+
+// M1/L1/L5/L2 (round 4): the BOOT file gates metadata and the stick, so any
+// trouble reading it fails closed BEFORE either is consulted.
+
+func unreadableBoot(t *testing.T) *BootKeyStrategy {
+	t.Helper()
+	// a directory opens but cannot be read (EISDIR), even as root
+	return &BootKeyStrategy{Path: t.TempDir()}
+}
+
+func TestUnreadableBootRefusesBeforeMetadata(t *testing.T) {
+	m := &fakeMeta{data: metaKV}
+	r := &Resolver{Strategies: []Strategy{&CloudStrategy{Client: m}, unreadableBoot(t)}}
+	_, err := r.Resolve(context.Background())
+	if !errors.Is(err, ErrProvisionRefused) || m.probed() {
+		t.Fatalf("err=%v probed=%v", err, m.probed())
+	}
+}
+
+func TestUnreadableBootRefusesBeforeStick(t *testing.T) {
+	m := newFakeMachine(t)
+	m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
+	m.media["sdb1"] = vfatWith(docFor(newTestPKI(t), idA, "2026-10-20T10:00:00Z"))
+	r := &Resolver{Strategies: []Strategy{m.strategy(), unreadableBoot(t)}}
+	_, err := r.Resolve(context.Background())
+	if !errors.Is(err, ErrProvisionRefused) || len(m.calls) != 0 {
+		t.Fatalf("err=%v mounts=%v", err, m.calls)
+	}
+}
+
+func TestUnreadableBootAfterLocalHitStillRefuses(t *testing.T) {
+	// the pin path (DiscoverPin) must not swallow a read error either
+	r := &Resolver{Strategies: []Strategy{
+		consoleStubStrategy{id: &Identity{InstanceUUID: "u", BootstrapToken: "k"}},
+		unreadableBoot(t),
+	}}
+	if _, err := r.Resolve(context.Background()); !errors.Is(err, ErrProvisionRefused) {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestRefusedBootRefusesBeforeMetadataAndStick(t *testing.T) {
+	bad := "SERVER=https://boot\nCA_FINGERPRINT=not-a-fingerprint\n"
+	m := &fakeMeta{data: metaKV}
+	r := &Resolver{Strategies: []Strategy{&CloudStrategy{Client: m}, bootCfg(t, bad)}}
+	if _, err := r.Resolve(context.Background()); !errors.Is(err, ErrProvisionRefused) || m.probed() {
+		t.Fatalf("metadata probed before the BOOT refusal: %v probed=%v", err, m.probed())
+	}
+	fm := newFakeMachine(t)
+	fm.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
+	fm.media["sdb1"] = vfatWith(docFor(newTestPKI(t), idA, "2026-10-20T10:00:00Z"))
+	r = &Resolver{Strategies: []Strategy{fm.strategy(), bootCfg(t, bad)}}
+	if _, err := r.Resolve(context.Background()); !errors.Is(err, ErrProvisionRefused) || len(fm.calls) != 0 {
+		t.Fatalf("stick mounted before the BOOT refusal: %v %v", err, fm.calls)
+	}
+}
+
+func TestBootFileReadOncePerResolve(t *testing.T) {
+	b := bootCfg(t, "SERVER=https://boot\nCA_FINGERPRINT="+pinA+"\n")
+	r := &Resolver{Strategies: []Strategy{&CloudStrategy{Client: &fakeMeta{data: metaKV}}, b}}
+	if _, err := r.Resolve(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := atomic.LoadInt32(&b.reads); n != 1 {
+		t.Fatalf("BOOT file read %d times in one Resolve", n)
+	}
+}
+
+func TestBootKeyWithoutIDIsADeadEndRefusal(t *testing.T) {
+	m := &fakeMeta{data: metaKV}
+	r := &Resolver{Strategies: []Strategy{&CloudStrategy{Client: m}, bootCfg(t, "SERVER=https://boot\nKEY=k\n")}}
+	_, err := r.Resolve(context.Background())
+	if !errors.Is(err, ErrProvisionRefused) || !strings.Contains(err.Error(), "no ID") || m.probed() {
+		t.Fatalf("err=%v probed=%v", err, m.probed())
+	}
+}
+
+func TestStickPinStandsWithoutLocalPin(t *testing.T) {
+	pki := newTestPKI(t)
+	r := &Resolver{Strategies: []Strategy{
+		mediaWinner(t, pki),
+		&BootKeyStrategy{Path: filepath.Join(t.TempDir(), "absent.cfg")},
+	}}
+	id, err := r.Resolve(context.Background())
+	if err != nil || id.CAFingerprint != pki.caFP {
+		t.Fatalf("%v %v", id, err)
 	}
 }

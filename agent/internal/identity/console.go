@@ -249,7 +249,7 @@ func (s *ConsolePromptStrategy) Discover(ctx context.Context) (*Identity, error)
 	}
 	// Same activation as the claim poll: only a generic-image node (boot
 	// identity.cfg with SERVER) is prompted. A cloud VM or any node without a
-	// boot config is never blocked here; its cloud sources come next. A key
+	// boot config is never blocked here; the claim poll follows it. A key
 	// already baked on BOOT (KEY=) is an earlier source: no prompt.
 	bootStrat := s.BootStrategy
 	if bootStrat == nil {
