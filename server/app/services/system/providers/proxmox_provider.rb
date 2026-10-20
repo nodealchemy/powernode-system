@@ -378,11 +378,13 @@ module System
         return unless record&.pivot_boot?
         return unless ::System::EnrollmentSeed.ever_seeded?(record)
         return if record.config.is_a?(Hash) && record.config["federation_spawn"].present?
-        # D13 cleanup already detached and removed the spent seed: do not re-create it.
-        sc = record.config.is_a?(Hash) ? record.config["seed_cleanup"] : nil
-        return if sc.is_a?(Hash) && sc["state"] == "done" && sc["outcome"] != "abandoned"
-
         if ::System::EnrollmentSeed.enrolled?(record)
+          # D13: the cleanup already detached and removed the spent seed, or has its
+          # detach queued so it applies at THIS start: nothing to neutralise or
+          # re-create. (Only here: a not-enrolled VM below still gets a fresh key.)
+          sc = record.config.is_a?(Hash) ? record.config["seed_cleanup"] : nil
+          return if sc.is_a?(Hash) && (sc["state"] == "awaiting_stop" || (sc["state"] == "done" && sc["outcome"] == "cleared"))
+
           # Neutralise the seed in place (the VM's cicustom/ISO still points at it,
           # so it is overwritten, not deleted). Never writes a key.
           params = { instance: record, user_data: ::System::EnrollmentSeed::NEUTRAL_USER_DATA, meta_data: nil }
@@ -412,6 +414,10 @@ module System
       #     restart) and only then remove the snippets -> :cleared. A failed regenerate
       #     keeps :awaiting_stop.
       # A later D12 start finds seed_cleanup done and writes nothing. Never logs the seed.
+      CLEANUP_CONNECT_TIMEOUT = 5
+      CLEANUP_READ_TIMEOUT = 8
+      CLEANUP_TASK_WAIT_CAP = 20
+
       def clear_enrollment_seed!(instance_id, instance: nil)
         with_known_instance(instance) do
           node, kind, vmid = parse_instance_id!(instance_id)
@@ -419,7 +425,8 @@ module System
           skip = proxmox_cleanup_skip_reason(record, kind)
           return { outcome: :noop, note: "proxmox: #{skip}" } if skip
 
-          c = require_client!
+          # Short per-call timeouts: one item must stay far below the sweep lease.
+          c = require_client!(connect_timeout: CLEANUP_CONNECT_TIMEOUT, read_timeout: CLEANUP_READ_TIMEOUT)
           config_path = "/api2/json/nodes/#{node}/qemu/#{vmid}/config"
           cfg = c.get(config_path, { "current" => 1 })
           cfg = {} unless cfg.is_a?(Hash)
@@ -486,12 +493,12 @@ module System
       private def delete_cidata_iso(c, node, filename)
         storage = connection&.config&.dig("cidata_iso_storage").presence ||
                   pve_credential("default_storage", "default_storage").presence
-        return if storage.blank?
+        raise ProviderError, "no ISO storage configured to delete the spent seed from" if storage.blank?
 
         # The volid ("<storage>:iso/<file>") contains ":" and "/", so it is sent as ONE
         # percent-encoded path segment, and the resulting task is awaited.
         upid = c.delete("/api2/json/nodes/#{node}/storage/#{storage}/content/#{encode_volid("#{storage}:iso/#{filename}")}")
-        c.wait_task(node: node, upid: upid) if upid_like?(upid)
+        c.wait_task(node: node, upid: upid, timeout: CLEANUP_TASK_WAIT_CAP) if upid_like?(upid)
       rescue Proxmox::Client::NotFoundError
         nil # already gone
       end
@@ -2569,13 +2576,13 @@ module System
       # Credential resolution + client construction
       # ============================================================
 
-      def require_client!
-        c = build_client
+      def require_client!(**client_opts)
+        c = build_client(**client_opts)
         raise AuthenticationError, "Proxmox credentials missing or invalid" unless c
         c
       end
 
-      def build_client
+      def build_client(**client_opts)
         endpoint = pve_credential("endpoint_url", "endpoint")
         token_id = pve_credential("access_key", "token_id")
         token_secret = pve_credential("secret_key", "token_secret")
@@ -2588,7 +2595,8 @@ module System
           endpoint: endpoint,
           token_id: token_id,
           token_secret: token_secret,
-          verify_ssl: verify_ssl
+          verify_ssl: verify_ssl,
+          **client_opts
         )
       end
 

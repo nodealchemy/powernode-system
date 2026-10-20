@@ -603,6 +603,13 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
         expect(Dir[File.join(tmp, "*.yml")]).to be_empty
       end
 
+      it "builds the client with short per-call timeouts (one item must stay far below the lease)" do
+        stub_config(attached_config({}))
+        provider.clear_enrollment_seed!(cloud_id, instance: instance)
+        expect(System::Providers::Proxmox::Client).to have_received(:new)
+          .with(hash_including(read_timeout: satisfy { |t| t <= 15 }, connect_timeout: satisfy { |t| t <= 10 })).at_least(:once)
+      end
+
       it "never restarts the VM: no status endpoint is ever called" do
         stub_config(attached_config("cicustom" => cicustom_ref), attached_config({}))
         expect(client).not_to receive(:post)
@@ -669,6 +676,21 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
           expect(second).to include(outcome: :cleared)
         end
 
+        it "caps the awaited delete task well below the lease" do
+          allow(client).to receive(:get).with(config_path, { "current" => 1 }).and_return(attached_config({}))
+          provider.clear_enrollment_seed!(cloud_id, instance: instance)
+          expect(client).to have_received(:wait_task).with(hash_including(timeout: satisfy { |t| t <= 20 }))
+        end
+
+        it "reports a failure (not cleared) when no ISO storage can be resolved" do
+          connection.config.delete("cidata_iso_storage")
+          allow(provider).to receive(:pve_credential).and_call_original
+          allow(provider).to receive(:pve_credential).with("default_storage", "default_storage").and_return(nil)
+          allow(client).to receive(:get).with(config_path, { "current" => 1 }).and_return(attached_config({}))
+          expect { provider.clear_enrollment_seed!(cloud_id, instance: instance) }.to raise_error(StandardError, /storage/i)
+          expect(client).not_to have_received(:delete)
+        end
+
         it "treats an already-gone ISO as cleared" do
           allow(client).to receive(:get).with(config_path, { "current" => 1 }).and_return(attached_config({}))
           allow(client).to receive(:delete).and_raise(System::Providers::Proxmox::Client::NotFoundError, "gone")
@@ -701,15 +723,49 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
       end
     end
 
-    it "does not re-write the neutral seed on start once the cleanup detached it (seed_cleanup done)" do
-      provider.start_instance(cloud_id)
-      enroll!
-      path = seed_file
-      File.delete(path)
-      instance.merge_config!("seed_cleanup" => { "state" => "done" })
+    context "D12 start vs the D13 cleanup state" do
+      before do
+        provider.start_instance(cloud_id)
+        @path = seed_file
+        File.delete(@path)
+      end
 
-      provider.start_instance(cloud_id)
-      expect(seed_file).to be_nil
+      it "writes nothing for an enrolled VM whose seed was CLEARED" do
+        enroll!
+        instance.merge_config!("seed_cleanup" => { "state" => "done", "outcome" => "cleared" })
+        provider.start_instance(cloud_id)
+        expect(seed_file).to be_nil
+      end
+
+      it "still neutralises an enrolled VM when cleanup ended noop or abandoned" do
+        enroll!
+        %w[noop abandoned].each do |outcome|
+          instance.merge_config!("seed_cleanup" => { "state" => "done", "outcome" => outcome })
+          provider.start_instance(cloud_id)
+          expect(File.read(seed_file)).to eq(System::EnrollmentSeed::NEUTRAL_USER_DATA)
+          File.delete(seed_file)
+        end
+      end
+
+      it "still mints for a NOT-enrolled VM even though an earlier cleanup finished (identity revoked, re-enrol)" do
+        instance.merge_config!("seed_cleanup" => { "state" => "done", "outcome" => "cleared" })
+        expect { provider.start_instance(cloud_id) }.to change { issued_rows.count }.by(1)
+        expect(doc_of(File.read(seed_file))).to include("version" => 1)
+      end
+
+      it "skips the neutral re-write while the detach is queued for this very start (awaiting_stop)" do
+        enroll!
+        instance.merge_config!("seed_cleanup" => { "state" => "awaiting_stop" })
+        provider.start_instance(cloud_id)
+        expect(seed_file).to be_nil
+      end
+
+      it "still neutralises while cleanup has not detached anything yet (pending)" do
+        enroll!
+        instance.merge_config!("seed_cleanup" => { "state" => "pending" })
+        provider.start_instance(cloud_id)
+        expect(File.read(seed_file)).to eq(System::EnrollmentSeed::NEUTRAL_USER_DATA)
+      end
     end
 
     it "keeps the key out of the logs" do
