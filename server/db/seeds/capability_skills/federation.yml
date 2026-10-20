@@ -1,0 +1,80 @@
+- slug: sdwan-federation
+  name: SD-WAN Federation
+  category: devops
+  description: "Use when federating with a partner organisation or another account: propose, accept, update or revoke federation peers, compose federated links and scan them."
+  tags: [federation, sdwan, partner, peering, cross-account, residency]
+  domain: federation
+  capability: sdwan-federation
+  triggers:
+    applies_to: [infrastructure]
+    stages: [network, operate]
+    use_when:
+      - "federate with a partner organisation or another account"
+      - "propose, accept, update or revoke a federation peer"
+      - "compose federated network links between accounts"
+      - "scan federation links for findings or set data residency"
+    not_for:
+      - "peers, keys, VIPs or site joins inside one account — use sdwan-operations"
+      - "bridges, OVN or telemetry composition — use topology-composition"
+    keywords: [federation, federate, partner, peering, cross-account, multi-account, multi-region, accept peer, revoke peer, residency, trust, federated, contract]
+  manifest:
+    verbs:
+      - system_sdwan_list_federation_peers
+      - system_sdwan_get_federation_peer
+      - system_sdwan_propose_federation_peer
+      - system_sdwan_accept_federation_peer
+      - system_sdwan_update_federation_peer
+      - system_sdwan_revoke_federation_peer
+      - system_sdwan_federation_compose
+      - system_sdwan_federation_scan
+      - system_sdwan_set_data_residency
+      - system_sdwan_list_subnet_advertisements
+      - system_sdwan_get_audit_log
+      - federation_list_partners
+      - list_deferred_operations
+    knowledge_tags: [sdwan, system-extension, operator-runbooks]
+    gate_category: destructive
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "Federate with a partner"
+      expect_selected: true
+    - task: "Accept the federation peer proposal from the partner account and scan the link"
+      expect_selected: true
+    - task: "Rotate the WireGuard key for an SD-WAN peer"
+      expect_selected: false
+  system_prompt: |
+    Procedure: federation links are contracts between parties. Propose; never silently override.
+
+    1. Read the current state
+       - system_sdwan_list_federation_peers and federation_list_partners: existing links, their state and what each side advertises.
+       - system_sdwan_federation_scan for findings on existing links before adding another.
+    2. Propose
+       - system_sdwan_propose_federation_peer with the partner, the subnets offered and the services or access intended. Offer the minimum the operator asked for.
+       - Check for subnet overlap with local networks (system_sdwan_list_subnet_advertisements) before proposing.
+    3. Accept
+       - Accept only a proposal the operator confirmed. Read the partner's advertised subnets and grants as authoritative; if they conflict with local routing, report the conflict instead of rewriting it.
+       - system_sdwan_federation_compose wires the accepted link; run its plan first and present it.
+    4. Data residency
+       - system_sdwan_set_data_residency only on explicit instruction; state which regions and traffic it constrains.
+    5. Update and revoke
+       - Updating a link changes what a partner can reach: name before and after.
+       - Revoking cuts the partner off. Destructive and gated: name the partner, what stops working on both sides, and confirm with the operator.
+    6. Troubleshoot
+       - A link that is up but not passing traffic: compare advertised subnets, grants and the audit log (system_sdwan_get_audit_log) on the local side; ask the partner for theirs rather than guessing.
+    7. Gates
+       - Propose, accept, compose, update and revoke are approval-gated: report each parked approval; never bypass.
+
+    Checklist:
+    - [ ] No subnet overlap.
+    - [ ] Partner advertisements respected, not overridden.
+    - [ ] Intra-account networking handed to sdwan-operations; local composition to topology-composition.

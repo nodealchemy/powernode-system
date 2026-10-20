@@ -1,0 +1,198 @@
+- slug: sdwan-operations
+  name: SD-WAN Operations
+  category: devops
+  description: "Use when operating the SD-WAN overlay: networks, peers, WireGuard keys, site-to-site joins, firewall rules, access grants, virtual IPs, BGP and route policies."
+  tags: [sdwan, wireguard, overlay, peers, vip, bgp]
+  domain: network
+  capability: sdwan-operations
+  triggers:
+    applies_to: [infrastructure]
+    stages: [network, operate]
+    use_when:
+      - "rotate the WireGuard key for an SD-WAN peer"
+      - "join two SD-WAN sites or advertise a site's LAN subnets"
+      - "create or change an overlay network, peer, firewall rule or access grant"
+      - "create, move or fail over a virtual IP"
+      - "diagnose BGP sessions or change a route policy"
+    not_for:
+      - "composing host bridges, OVN logical networks or flow telemetry — use topology-composition"
+      - "peering with another organisation or account — use sdwan-federation"
+      - "publishing a service on a VIP — use service-exposure"
+    keywords: [sdwan, sd-wan, wireguard, key, rotate, peer, site, join sites, overlay, vpn, network, subnet, firewall, vip, virtual ip, failover, bgp, route policy]
+  manifest:
+    verbs:
+      - system_sdwan_list_networks
+      - system_sdwan_get_network
+      - system_sdwan_create_network
+      - system_sdwan_update_network
+      - system_sdwan_delete_network
+      - system_sdwan_list_peers
+      - system_sdwan_get_peer
+      - system_sdwan_attach_peer
+      - system_sdwan_update_peer
+      - system_sdwan_detach_peer
+      - system_sdwan_set_peer_tags
+      - system_sdwan_rotate_peer_key
+      - system_sdwan_update_peer_lan_subnets
+      - system_sdwan_list_subnet_advertisements
+      - system_sdwan_update_network_routing_mode
+      - system_sdwan_get_routing_summary
+      - system_sdwan_get_topology
+      - system_sdwan_list_firewall_rules
+      - system_sdwan_create_firewall_rule
+      - system_sdwan_update_firewall_rule
+      - system_sdwan_delete_firewall_rule
+      - system_sdwan_list_access_grants
+      - system_sdwan_create_access_grant
+      - system_sdwan_revoke_access_grant
+      - system_sdwan_issue_user_device
+      - system_sdwan_revoke_user_device
+      - system_sdwan_list_virtual_ips
+      - system_sdwan_create_virtual_ip
+      - system_sdwan_failover_virtual_ip
+      - system_sdwan_get_bgp_sessions
+      - system_sdwan_list_route_policies
+      - system_sdwan_compile_route_policy
+      - system_sdwan_create_route_policy
+      - system_sdwan_update_route_policy
+      - system_sdwan_get_audit_log
+      - list_deferred_operations
+    knowledge_tags: [sdwan, system-extension, operator-runbooks]
+    gate_category: destructive
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "Rotate the WireGuard key for an SD-WAN peer"
+      expect_selected: true
+    - task: "Join two SD-WAN sites"
+      expect_selected: true
+    - task: "Compose an OVN logical network with IPFIX flow telemetry on the heavyweight hosts"
+      expect_selected: false
+  system_prompt: |
+    Procedure: keep the live overlay consistent with intent without cutting working tunnels.
+
+    1. Read state first
+       - system_sdwan_get_topology, system_sdwan_get_network, system_sdwan_list_peers / system_sdwan_get_peer, system_sdwan_get_routing_summary.
+       - Reason about the compiled result (routes, firewall, BGP config), not only the raw intent. system_sdwan_compile_route_policy before applying a route policy.
+    2. Key rotation is destructive
+       - system_sdwan_rotate_peer_key replaces the peer's keypair and revokes the old one. A peer that has not pulled its new config loses its tunnel.
+       - An expiring membership credential is NOT a reason to rotate the key; that is a credential refresh handled by its own remediation lane. Do not rotate to fix expiry.
+       - Rotate only on compromise or explicit operator request; confirm the peer is online and pulling config, and report the parked approval.
+    3. Joining sites
+       - Each site needs a peer on the same overlay network (system_sdwan_attach_peer) and its LAN subnets advertised (system_sdwan_update_peer_lan_subnets).
+       - Check the network's routing mode and BGP sessions; confirm subnets appear in system_sdwan_list_subnet_advertisements and no overlap exists.
+       - Add firewall rules or access grants for the traffic the operator asked for, nothing wider.
+    4. Virtual IPs and failover
+       - A VIP must be held by a live endpoint. Failover is visible and gated: name the VIP, current and target holder, and what moves with it.
+    5. BGP
+       - A stale observation is not a down session. Confirm with system_sdwan_get_bgp_sessions before proposing a restart or change.
+    6. Access
+       - A revoked grant or device stays revoked; never re-create one to undo a revocation without the operator saying so.
+    7. Gates
+       - Network delete, peer detach, key rotation, VIP failover and firewall changes are gated: plan, report the parked approval, wait. Never bypass with another verb.
+    8. Report
+       - Network, peer or VIP; observed vs desired; compiled change; verb and gate; audit entry (system_sdwan_get_audit_log) after apply.
+
+    Checklist:
+    - [ ] No working tunnel cut without an approved reason.
+    - [ ] Subnets do not overlap.
+    - [ ] Composition (bridges, OVN, telemetry) handed to topology-composition; cross-organisation peering to sdwan-federation.
+
+- slug: topology-composition
+  name: Topology Composition
+  category: devops
+  description: "Use when composing network topology on fleet hosts: host bridges, OVN logical switches and ACLs, IPFIX flow telemetry, tenant isolation or service discovery."
+  tags: [topology, ovn, host-bridge, ipfix, isolation, composition]
+  domain: network
+  capability: topology-composition
+  triggers:
+    applies_to: [infrastructure]
+    stages: [network]
+    use_when:
+      - "tenants that share the same hosts must be isolated from each other on the network"
+      - "compose host bridges or OVN logical switches and ports"
+      - "add IPFIX flow telemetry collectors"
+      - "isolate tenants on shared hosts"
+      - "compose service discovery across a topology"
+      - "plan a full network topology with a dry run before applying"
+    not_for:
+      - "day-to-day peers, keys, VIPs, BGP or joining sites — use sdwan-operations"
+      - "peering with another organisation — use sdwan-federation"
+    keywords: [topology, compose, bridge, host bridge, ovn, logical switch, acl, ipfix, flow telemetry, isolation, multi-tenant, service discovery, network profile, dry run]
+  manifest:
+    verbs:
+      - system_sdwan_get_topology
+      - system_sdwan_list_host_bridges
+      - system_sdwan_create_host_bridge
+      - system_sdwan_activate_host_bridge
+      - system_sdwan_release_host_bridge
+      - system_sdwan_list_ovn_deployments
+      - system_sdwan_create_ovn_deployment
+      - system_sdwan_create_ovn_logical_switch
+      - system_sdwan_create_ovn_logical_switch_port
+      - system_sdwan_compile_ovn_plan
+      - system_sdwan_create_ovn_acl
+      - system_sdwan_list_ovn_acls
+      - system_sdwan_list_ipfix_collectors
+      - system_sdwan_create_ipfix_collector
+      - system_multi_tenant_isolation
+      - system_service_discovery_compose
+      - system_inspect_node
+      - kubernetes_list_clusters
+      - docker_list_networks
+      - list_deferred_operations
+    knowledge_tags: [sdwan, system-extension]
+    gate_category: mutate
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: true
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "Compose an OVN logical network with IPFIX flow telemetry on the heavyweight hosts"
+      expect_selected: true
+    - task: "Isolate two tenants that share the same hosts"
+      expect_selected: true
+    - task: "Rotate the WireGuard key for an SD-WAN peer"
+      expect_selected: false
+  system_prompt: |
+    Procedure: design, dry-run, then apply topology additively. Query state; never assume it.
+
+    1. Inspect
+       - system_sdwan_get_topology for the current shape; system_inspect_node for each host's network profile; kubernetes_list_clusters and docker_list_networks for container networking that already exists.
+    2. Check the profile
+       - Heavyweight hosts (OVS with OVN) support OVN logical networks and native flow export. Lightweight hosts (Linux bridge) do not.
+       - OVN or IPFIX on a lightweight host is a mismatch: stop and propose a profile change. Composing anyway creates rows that never wire up.
+    3. Plan with a dry run
+       - Run the composition in plan mode first (system_sdwan_compile_ovn_plan for OVN; dry-run inputs on the compose verbs). Present what will be created per host.
+    4. Apply additively
+       - Composition is find-by-name on the primary entity: re-running with the same inputs is safe and is how you recover from a partial failure.
+       - Order: bridges, then OVN deployment, switches and ports, then ACLs, then telemetry collectors.
+       - Rollback removes only rows this run created, in reverse order. Never tear down pre-existing rows; other state depends on them.
+    5. Isolation and discovery
+       - Tenant isolation is a gated composition; name the tenants, hosts and what traffic becomes blocked.
+       - Service discovery composition publishes names across the topology; confirm the services exist first.
+    6. Gates
+       - Composition writes are approval-gated: report the parked approval and wait.
+    7. Report
+       - Hosts and profiles, entities created or reused, plan vs applied, anything skipped and why.
+
+    Checklist:
+    - [ ] Profile checked on every host.
+    - [ ] Dry run shown before apply.
+    - [ ] Peers, keys, VIPs and site joins handed to sdwan-operations; cross-organisation links to sdwan-federation.

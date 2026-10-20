@@ -1,0 +1,86 @@
+- slug: package-catalog-operations
+  name: Package Catalog Operations
+  category: devops
+  description: "Use when managing package repositories, turning packages into node modules, refreshing package-derived modules or changing the shared architecture catalog."
+  tags: [packages, repositories, modules, supply-chain, architectures, apt]
+  domain: packages
+  capability: package-catalog-operations
+  triggers:
+    applies_to: [infrastructure]
+    stages: [build, release]
+    use_when:
+      - "add or sync an apt or rpm package repository"
+      - "find a package and materialise it as a node module"
+      - "refresh a package-derived module to a newer upstream version"
+      - "propose or change an entry in the architecture catalog"
+    not_for:
+      - "responding to a vulnerability in running modules — use cve-response"
+      - "promoting or rolling back module versions on the fleet — use disk-image-release"
+    keywords: [package, packages, repository, apt, rpm, mirror, sync, module from package, dependencies, upstream, version, architecture, catalog, supply chain]
+  manifest:
+    verbs:
+      - system_list_package_repositories
+      - system_get_package_repository
+      - system_create_package_repository
+      - system_update_package_repository
+      - system_sync_package_repository
+      - system_link_repository_platform
+      - system_search_packages
+      - system_discover_packages
+      - system_get_package
+      - system_resolve_package_dependencies
+      - system_create_module_from_package
+      - system_list_package_module_links
+      - system_refresh_package_module
+      - system_list_architectures
+      - system_get_architecture
+      - system_suggest_architectures_for_fleet
+      - system_propose_architecture
+      - list_deferred_operations
+    knowledge_tags: [system-extension, operator-runbooks]
+    gate_category: mutate
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "Sync the Ubuntu package repository and create a node module from the nginx package"
+      expect_selected: true
+    - task: "Propose a new architecture for the catalog based on what the fleet runs"
+      expect_selected: true
+    - task: "Patch a CVE in a running customer service"
+      expect_selected: false
+  system_prompt: |
+    Procedure: every package entering the fleet is a provenance decision. Sync is routine; materialising is audited.
+
+    1. Repositories
+       - system_list_package_repositories / system_get_package_repository before creating one; a duplicate repository is a bug.
+       - system_sync_package_repository refreshes cached metadata only and may proceed. A stale sync window is a sync, not drift.
+       - Link a repository to a platform (system_link_repository_platform) only for the platforms the operator names.
+    2. Find the package
+       - system_search_packages or system_discover_packages by intent; system_get_package for versions.
+       - system_resolve_package_dependencies: show the full transitive closure and target architectures before materialising anything.
+    3. Materialise
+       - system_create_module_from_package is approval-gated. The plan names repository, upstream version, closure and architectures. Never materialise unattended.
+       - A package name match without version evidence is a suspicion, not a fact; say so.
+    4. Refresh
+       - system_refresh_package_module when a module's manifest diverges from its package or a newer upstream exists. Outside a vulnerability response it is approval-gated; inside one, cve-response drives it.
+       - system_list_package_module_links to see which modules a refresh touches.
+    5. Architecture catalog
+       - The catalog is shared by every account. Prefer system_propose_architecture: the proposal is the review.
+       - Ground proposals in actual coverage with system_suggest_architectures_for_fleet.
+       - Direct create, update or delete of an architecture is a separate, gated operator decision; recommend, do not perform.
+    6. Report
+       - Repository, package, version, closure, architectures, verb, gate status, modules affected.
+
+    Checklist:
+    - [ ] Closure and architectures shown before any create.
+    - [ ] No unattended materialisation.
+    - [ ] Fleet rollout of the new version handed to disk-image-release; vulnerabilities to cve-response.

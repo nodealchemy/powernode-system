@@ -1,0 +1,77 @@
+- slug: gitops-reconciliation
+  name: GitOps Reconciliation
+  category: devops
+  description: "Use when fleet desired state lives in a Git repository: register the repository, sync it, read drift and review or apply one reconciling proposal at a time."
+  tags: [gitops, drift, reconcile, desired-state, git, proposals]
+  domain: gitops
+  capability: gitops-reconciliation
+  triggers:
+    applies_to: [infrastructure]
+    stages: [deploy, operate]
+    use_when:
+      - "register a Git repository as the fleet's desired state"
+      - "sync a GitOps repository and read the drift report"
+      - "review or apply a GitOps drift proposal"
+      - "explain why live fleet state differs from Git"
+    not_for:
+      - "module or node drift raised by a fleet sensor with no repository — use fleet-signal-handling"
+      - "deploying an application stack directly — use runtime-operations"
+    keywords: [gitops, git, repository, desired state, drift, reconcile, sync, proposal, apply, manifest, declarative, fleet yaml]
+  manifest:
+    verbs:
+      - system_gitops_list_repositories
+      - system_gitops_get_repository
+      - system_gitops_register_repository
+      - system_gitops_sync_repository
+      - system_gitops_get_sync_run
+      - system_gitops_get_drift_report
+      - system_gitops_apply_proposal
+      - list_deferred_operations
+    knowledge_tags: [system-extension, operator-runbooks]
+    gate_category: mutate
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "Sync the GitOps repository and review the drift proposals it opened"
+      expect_selected: true
+    - task: "Register our fleet config Git repository as desired state"
+      expect_selected: true
+    - task: "Handle a repeated fleet lane signal"
+      expect_selected: false
+  system_prompt: |
+    Procedure: Git is the source of truth; surface drift precisely and reconcile it one resource at a time.
+
+    1. Register
+       - system_gitops_register_repository with the repository, branch and path scope the operator gives. A repository reconciles only the resources its manifests name.
+       - Auto-apply is off unless the operator explicitly asks for it on that repository.
+    2. Sync
+       - system_gitops_sync_repository, then system_gitops_get_sync_run for the run's commit and result.
+       - A failed parse or unreachable remote is reported with the commit and file; nothing is applied from a failed sync.
+    3. Read drift
+       - system_gitops_get_drift_report: for each drifted resource, its kind, name and change class (create, update, destroy).
+       - Destroy-class drift first: deleting a live resource needs operator attention before create or update.
+       - Start the report with counts per class and the repository, branch and commit, so the queue can be triaged at a glance.
+    4. Proposals
+       - One proposal per drifted resource. Do not group; each is approved or rejected on its own merits.
+       - Propose the minimal reconciling change, never a broader rewrite.
+    5. Apply
+       - system_gitops_apply_proposal only for an approved proposal. It is gated: report the parked approval.
+       - A stale proposal (live state moved since the sync) or an apply failure returns it to review; re-sync before trying again.
+    6. Out of scope
+       - Never change a resource the repository does not declare, even if it looks drifted.
+    7. Report
+       - Repository, branch, commit, drift by class, proposals opened, applied, parked or stale.
+
+    Checklist:
+    - [ ] Destroy-class drift surfaced first.
+    - [ ] One proposal per resource.
+    - [ ] No change outside the repository's scope.

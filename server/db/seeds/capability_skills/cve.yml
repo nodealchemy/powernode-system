@@ -1,0 +1,83 @@
+- slug: cve-response
+  name: CVE Response Operations
+  category: security
+  description: "Use when a vulnerability (CVE) affects running modules or services: measure real exposure, triage, plan the patch rollout and verify it landed."
+  tags: [cve, vulnerability, security, patch, exposure, sbom]
+  domain: cve
+  capability: cve-response
+  triggers:
+    applies_to: [infrastructure]
+    stages: [operate]
+    use_when:
+      - "patch a CVE in a running customer service"
+      - "find which instances and modules are exposed to a vulnerability"
+      - "triage newly published critical or high CVEs"
+      - "generate a remediation runbook for a vulnerability"
+    not_for:
+      - "routine package repository sync or module creation — use package-catalog-operations"
+      - "promoting an unrelated module or image version — use disk-image-release"
+    keywords: [cve, vulnerability, vulnerable, security, patch, exposure, exposed, sbom, triage, critical, severity, advisory, remediation, fix, upgrade]
+  manifest:
+    verbs:
+      - system_get_cve
+      - system_create_cve
+      - system_get_cve_exposure
+      - system_cve_triage
+      - system_cve_runbook_generate
+      - system_compliance_snapshot
+      - system_list_module_versions
+      - system_module_diff
+      - system_refresh_package_module
+      - system_drift_report
+      - system_recent_signals
+      - list_deferred_operations
+      - search_knowledge
+    knowledge_tags: [system-extension, operator-runbooks]
+    gate_category: mutate
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "Patch a CVE in a running customer service"
+      expect_selected: true
+    - task: "Which instances are exposed to the new critical OpenSSL vulnerability?"
+      expect_selected: true
+    - task: "Sync the Ubuntu package repository and create a node module from the nginx package"
+      expect_selected: false
+  system_prompt: |
+    Procedure: respond to real exposure, not to the raw feed. Plan the fix; policy decides the rollout.
+
+    1. Exposure
+       - system_get_cve for the advisory; system_get_cve_exposure for which live modules carry an affected package version, and on how many instances.
+       - A vulnerability matters only where a running module's SBOM intersects it. No intersection: record and close.
+       - Version evidence decides. A name match without version evidence is a suspicion; say which.
+    2. Triage
+       - system_cve_triage; rank by severity times blast radius (instances running the module, internet exposure, data held).
+       - State whether a patched upstream version exists.
+    3. Plan the fix
+       - Prefer the patch that already exists: refresh the package-derived module to the fixed version (system_refresh_package_module), then roll it out through the release ladder.
+       - Show the change with system_module_diff and the affected versions with system_list_module_versions.
+       - system_cve_runbook_generate for the step list and the verification steps.
+       - No fix available: propose mitigations (disable the feature, restrict exposure) and say the residual risk.
+    4. Gates and timing
+       - Unattended auto-remediation is off unless the operator enabled it. Plan, notify, and let the policy decide.
+       - Approvals may wait across business days; do not force urgency the operator has not granted. Report each parked approval.
+    5. Verify
+       - After rollout: re-read exposure; the count for the fixed module must reach zero. Check system_drift_report so no instance stayed on the old version.
+       - system_compliance_snapshot for the record.
+    6. Report
+       - CVE id, severity, affected packages and versions, fixed version, instances exposed before and after, rollout strategy, parked approvals, residual risk.
+
+    Checklist:
+    - [ ] Exposure measured from SBOM evidence.
+    - [ ] Fixed version identified or mitigation proposed.
+    - [ ] Exposure re-checked after rollout.
+    - [ ] Module promotion mechanics handed to disk-image-release; repository work to package-catalog-operations.

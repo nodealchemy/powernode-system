@@ -1,0 +1,97 @@
+- slug: runtime-operations
+  name: Runtime Operations
+  category: devops
+  description: "Use when deploying, updating, rolling back or operating workloads on managed container runtimes (Docker hosts, Swarm stacks, K3s clusters), or provisioning a runtime."
+  tags: [runtime, docker, k3s, kubernetes, deploy, rollback]
+  domain: runtime
+  capability: runtime-operations
+  triggers:
+    applies_to: [infrastructure]
+    stages: [deploy, operate]
+    use_when:
+      - "a customer's deployment must be rolled back to the previous version"
+      - "a new image of a service must be deployed as a stack on a managed Docker host"
+      - "deploy an application image or stack onto a managed Docker host or cluster"
+      - "roll back the customer's last deploy"
+      - "update, scale or inspect a running container service"
+      - "provision or decommission a Docker runtime or K3s cluster on an instance"
+      - "read service logs and tasks for a deployed workload"
+    not_for:
+      - "building, promoting or rolling back a disk image or module version — use disk-image-release"
+      - "adding instances or replicas to the fleet — use fleet-capacity-operations"
+      - "making the deployed service reachable — use service-exposure"
+    keywords: [deploy, deployment, rollback, roll back, release, container, docker, swarm, stack, service, image, k3s, kubernetes, cluster, runtime, logs, update]
+  manifest:
+    verbs:
+      - system_list_managed_docker_hosts
+      - system_provision_docker_runtime
+      - system_mark_docker_ready
+      - system_decommission_docker_runtime
+      - kubernetes_list_clusters
+      - kubernetes_get_cluster
+      - kubernetes_list_nodes
+      - kubernetes_decommission_cluster
+      - docker_list_stacks
+      - docker_get_stack
+      - docker_deploy_stack
+      - docker_list_services
+      - docker_get_service
+      - docker_update_service
+      - docker_scale_service
+      - docker_rollback_service
+      - docker_service_logs
+      - docker_service_tasks
+      - docker_pull_image
+      - docker_container_logs
+      - list_deferred_operations
+    knowledge_tags: [system-extension, operator-runbooks]
+    gate_category: destructive
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "Roll back the customer's last deploy"
+      expect_selected: true
+    - task: "Deploy the new image of the customer's API as a stack on the managed Docker host"
+      expect_selected: true
+    - task: "The freshly built OS image passed its checks; make it what new machines boot from"
+      expect_selected: false
+  system_prompt: |
+    Procedure: deploy and operate workloads on managed runtimes with a rollback path for every change. The fleet operator deploys; engineering hands over a release artifact, never deploys itself.
+
+    1. Inputs
+       - A deploy starts from a hand-off: image reference pinned by digest (not a moving tag), target host or cluster, environment config by reference, and the rollback target (the currently running digest).
+       - Refuse a deploy without a pinned artifact or without a known previous version; ask for the missing piece.
+    2. Read the target
+       - system_list_managed_docker_hosts or kubernetes_get_cluster / kubernetes_list_nodes: runtime ready, capacity, what already runs.
+       - docker_get_stack / docker_get_service: record the current image digest and replica count before changing anything.
+    3. Deploy
+       - docker_pull_image on the target first, so a pull failure does not leave the service half-updated.
+       - docker_deploy_stack for a new stack; docker_update_service for an image or config change on an existing service.
+       - Watch docker_service_tasks until tasks are running; read docker_service_logs for startup errors.
+    4. Verify
+       - Tasks running at the desired replica count, no crash loop, the application's health endpoint answers.
+       - Only then report success, with old and new digest.
+    5. Roll back
+       - docker_rollback_service returns a service to its previous spec. Use it on failed verification or on request.
+       - For a stack, redeploy the recorded previous digest. Confirm tasks and health after rollback exactly as for a deploy.
+    6. Runtime lifecycle
+       - Provisioning a runtime the operator assigned is the expected follow-through.
+       - Decommissioning destroys the host record and its credentials; cluster decommission removes its nodes. Both gated: name what runs there first.
+       - Runtime upgrades and node drains affect running workloads; name them before proposing.
+       - Never output kubeconfigs or runtime credentials.
+    7. Gates
+       - Report every parked approval and wait.
+
+    Checklist:
+    - [ ] Artifact pinned by digest; previous digest recorded.
+    - [ ] Verification passed or rollback done.
+    - [ ] Reachability handed to service-exposure; capacity to fleet-capacity-operations.

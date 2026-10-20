@@ -1,0 +1,79 @@
+- slug: project-production-delivery
+  name: Project Production Delivery
+  category: devops
+  description: "Use when shipping a customer project to production on platform infrastructure: hand a release over, then provision, deploy, expose with TLS and verify it."
+  tags: [delivery, production, deploy, customer-project, handoff, go-live]
+  domain: project-delivery
+  capability: project-production-delivery
+  triggers:
+    applies_to: [software, website, web-app, infrastructure]
+    stages: [release, provision, deploy, expose, operate]
+    use_when:
+      - "ship a customer project to production on our infrastructure"
+      - "deploy the customer's app to production with a public HTTPS endpoint"
+      - "take a released build from hand-off to a live, monitored service"
+      - "plan the stages and owners for a production go-live"
+    not_for:
+      - "only deploying or rolling back on an existing runtime — use runtime-operations"
+      - "only exposing an already running service — use service-exposure"
+      - "only provisioning infrastructure — use fleet-provisioning-entry"
+    keywords: [ship, production, go live, launch, deliver, deploy, customer project, website, web app, node app, public https, endpoint, hosting, end to end, release to production]
+  manifest:
+    verbs:
+      - platform_provisioning_capture_brief
+      - platform_provisioning_status
+      - system_list_managed_docker_hosts
+      - docker_deploy_stack
+      - docker_service_tasks
+      - docker_rollback_service
+      - system_expose_service_publicly
+      - system_acme_get_certificate
+      - system_platform_health_check
+      - list_deferred_operations
+      - route_task
+    knowledge_tags: [system-extension, operator-runbooks]
+    gate_category: mutate
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: true
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: [ci-pipeline-setup, release-promotion, deployment-handoff, fleet-provisioning-entry, runtime-operations, service-exposure, platform-health-probe]
+    refines: []
+  evals:
+    - task: "Deploy the customer's Node app to production with a public HTTPS endpoint"
+      expect_selected: true
+    - task: "Take this customer's finished web project live on servers we run, reachable over HTTPS"
+      expect_selected: true
+    - task: "Rotate the WireGuard key for an SD-WAN peer"
+      expect_selected: false
+  system_prompt: |
+    Procedure: the hand-off protocol for taking a customer project to production. You coordinate stages and owners; each stage's own skill carries its detail.
+
+    Boundary: engineering builds, tests and releases, and never deploys. The engineer side ends at the deployment hand-off brief. The fleet operator side starts at provision and deploy, and owns deploy, expose and operate.
+
+    Stage order and owner:
+    1. Build and test: ci-pipeline-setup. Exit: a green pipeline on the release commit.
+    2. Release: release-promotion. Exit: a released artifact identified by immutable digest, with release notes.
+    3. Hand-off: deployment-handoff. Exit: a hand-off brief with artifact digest, target environment, configuration and secrets by reference only (never values), health endpoint, expected traffic, data stores, rollback target (previous digest or none for first launch) and acceptance checks.
+    4. Provision: fleet-provisioning-entry. Exit: instances, storage and network in place; runtime ready (system_list_managed_docker_hosts). Skip when the target already exists, and say so.
+    5. Deploy: runtime-operations. Exit: workload running the hand-off digest (docker_deploy_stack, then docker_service_tasks), health endpoint answering.
+    6. Expose: service-exposure for the route, acme-certificate-lifecycle (composed by service-exposure) for the certificate (system_acme_get_certificate first). Exit: public HTTPS endpoint answering with a valid certificate.
+    7. Operate: platform-health-probe. Exit: health report with no down or degraded component for the service; monitoring in place.
+
+    Rules at every stage:
+    - Do not start a stage until the previous stage's exit evidence is in hand. Missing evidence goes back to its owner; do not fill it in yourself.
+    - Each gated step parks an approval: list it (list_deferred_operations) with what it does, and wait. Never bypass a gate.
+    - Track provisioning with platform_provisioning_status; report each stage's result as it completes.
+    - Route a stage outside your grant to its owner with route_task, including the hand-off brief.
+
+    Rollback path:
+    - Deploy fails verification: roll back the service (docker_rollback_service) to the recorded previous digest; first launch with no previous version: stop the stage and keep the service unexposed.
+    - Expose fails: unexpose, keep the deployment, fix the route or certificate, retry.
+    - Never roll back infrastructure to undo an application fault.
+
+    Final report: per stage, owner, evidence, gate status; the live URL; the deployed digest; the rollback target; open follow-ups.

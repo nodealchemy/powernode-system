@@ -1,0 +1,98 @@
+- slug: storage-operations
+  name: Storage Operations
+  category: devops
+  description: "Use when working on volumes, storage assignments, snapshots, restores, storage migrations, mount ownership or NFS exports for fleet instances."
+  tags: [storage, volume, snapshot, restore, migration, nfs]
+  domain: storage
+  capability: storage-operations
+  triggers:
+    applies_to: [infrastructure]
+    stages: [provision, operate]
+    use_when:
+      - "a volume must be restored from a snapshot without losing data written since"
+      - "create, attach, detach or delete a volume on an instance"
+      - "take, list, restore or delete a volume snapshot"
+      - "migrate data from one volume to another and cut over"
+      - "fix mount ownership or a stale storage assignment"
+      - "probe an NFS export before binding it"
+    not_for:
+      - "sizing, scaling or replacing instances — use fleet-capacity-operations"
+      - "provisioning a new project with storage from a request — use fleet-provisioning-entry"
+    keywords: [storage, volume, disk, attach, detach, mount, snapshot, restore, backup, migration, cutover, nfs, export, chown, ownership, assignment]
+  manifest:
+    verbs:
+      - system_list_volumes
+      - system_get_volume
+      - system_create_volume
+      - system_update_volume
+      - system_attach_volume
+      - system_detach_volume
+      - system_delete_volume
+      - system_snapshot_volume
+      - system_list_volume_snapshots
+      - system_restore_volume_snapshot
+      - system_delete_volume_snapshot
+      - system_test_nfs_export
+      - system_migrate_storage_component
+      - system_list_storage_migrations
+      - system_get_storage_migration
+      - system_approve_storage_migration
+      - system_cancel_storage_migration
+      - system_revert_storage_migration_binding
+      - system_cleanup_storage_migration
+      - system_assign_storage_owner
+      - system_list_storage_assignments_by_owner
+      - system_storage_chown_status
+      - system_storage_chown_retry
+      - system_get_storage_recommendations
+      - request_approval
+      - list_deferred_operations
+    knowledge_tags: [system-extension, operator-runbooks]
+    gate_category: destructive
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "Restore the volume from last night's snapshot without losing today's writes"
+      expect_selected: true
+    - task: "Migrate the database volume to a new NFS-backed volume and cut over"
+      expect_selected: true
+    - task: "Scale the project's deployment out by two replicas"
+      expect_selected: false
+  system_prompt: |
+    Procedure: protect data first. Every action either keeps a way back or waits for an operator.
+
+    1. Know which verbs are gated
+       - Restore and snapshot delete are policy-gated: plan, then let the gate decide.
+       - Several mutating storage verbs have NO gate and execute immediately: volume delete, detach, migration start and approve, ownership assignment. Park these yourself: write the exact verb and arguments into the plan, call request_approval, and wait. Never treat silence as approval.
+    2. Before any change
+       - system_get_volume and system_list_volume_snapshots: state the volume, its attachment and the restore points that exist.
+       - Never delete an attached volume. Detach first, and only after the assignment shows the mount is gone.
+    3. Restore
+       - Keep take-a-snapshot-first on unless an operator says current contents are expendable; if that snapshot fails, stop.
+       - Read the result, not the request: restored in place means writes since the snapshot are gone; a copy restore means the data sits in a new volume until it is swapped in. Always name the restored volume.
+       - Swap-into-place detaches a live disk; opt in only on explicit request. A failed swap is reported with the copy's location.
+       - A provider without snapshot or restore support refuses; report that no restore happened. Never report a partial restore as success.
+    4. Snapshot delete
+       - It destroys a restore point. List what remains after the delete. One snapshot per request; never batch-delete.
+    5. Migration
+       - system_test_nfs_export before binding an NFS target. Approve only after the target is registered and reachable.
+       - Before cutover: cancel is safe. After a half cutover: revert the binding to the source; target data stays.
+       - Cleanup is only for failed or cancelled migrations and never touches the source.
+    6. Ownership
+       - system_assign_storage_owner is a recursive change of ownership over the whole mount. An unresolved owner is a stop: read system_storage_chown_status, name the cause, then retry once.
+    7. Report
+       - Volume, snapshot, assignment or migration id; observed vs desired state; exact verb; gated or self-parked; restore points remaining.
+
+    Checklist:
+    - [ ] A way back exists, or an operator approved the step that removes it.
+    - [ ] Ungated mutating verbs were parked, not run.
+    - [ ] Instance placement or replacement handed to fleet-capacity-operations.

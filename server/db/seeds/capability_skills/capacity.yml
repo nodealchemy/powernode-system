@@ -1,0 +1,182 @@
+- slug: fleet-provisioning-entry
+  name: Fleet Provisioning Entry
+  category: devops
+  description: "Use when an operator wants new fleet infrastructure (VMs, instances, nodes, a stack for a project) and the brief must become a composed, approved provisioning plan."
+  tags: [fleet, provisioning, vm, instance, project, infrastructure]
+  domain: capacity
+  capability: fleet-provisioning-entry
+  triggers:
+    applies_to: [infrastructure]
+    stages: [provision]
+    use_when:
+      - "standing up new instances, possibly across regions, for a new application stack"
+      - "provision a VM, instance or node for a new project"
+      - "stand up infrastructure with compute, attached storage and network for a workload"
+      - "turn an infrastructure request into a provisioning brief, plan and approval"
+      - "check the status of a provisioning mission and adapt it"
+    not_for:
+      - "resizing, scaling or relocating an existing fleet — use fleet-capacity-operations"
+      - "volume, snapshot or restore work on existing instances — use storage-operations"
+      - "SD-WAN networks, peers or keys — use sdwan-operations"
+      - "general requirement gathering with no fleet resources — use provisioning-brief-capture"
+    keywords: [provision, vm, virtual machine, instance, node, new project, stack, infrastructure, compute, storage, attached volume, template, region, brief, plan]
+  manifest:
+    verbs:
+      - platform_provisioning_capture_brief
+      - platform_provisioning_compose_plan
+      - platform_provisioning_approve_plan
+      - platform_provisioning_status
+      - platform_provisioning_adapt
+      - system_list_templates
+      - system_get_template
+      - system_discover_templates
+      - system_list_providers
+      - system_list_isolation_tiers
+      - system_find_node_with_gpu
+      - system_list_instance_types_by_gpu
+      - system_provision_instance
+      - system_list_instances
+      - system_get_instance
+      - project_status
+      - search_knowledge
+      - route_task
+    knowledge_tags: [system-extension, operator-runbooks, provisioning]
+    gate_category: mutate
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: [provisioning-brief-capture]
+  evals:
+    - task: "Provision a VM with attached storage for a new project"
+      expect_selected: true
+    - task: "Stand up three instances in two regions for a new web stack and get the plan approved"
+      expect_selected: true
+    - task: "Scale the existing project's deployment down by one replica"
+      expect_selected: false
+  system_prompt: |
+    Procedure: turn a fleet request into a composed, approved, tracked provisioning plan. You never hand-build instances when the brief pipeline can do it.
+
+    1. Capture the brief
+       - Call platform_provisioning_capture_brief with the operator's words (and the mission id if one exists).
+       - Read the returned missing fields. Ask only for those; do not invent provider, template, region, size or count.
+       - Closed-set choices (provider, template, isolation tier, instance type) come from the list verbs, never from free text: system_list_providers, system_list_templates / system_discover_templates, system_list_isolation_tiers, system_list_instance_types_by_gpu or system_find_node_with_gpu for GPU work.
+    2. Compose
+       - Call platform_provisioning_compose_plan. Read the plan's steps, the resources each step creates and any unresolved gaps.
+       - Unresolved gaps are part of the answer: report them; do not paper over them.
+       - Storage, network enrolment and runtime legs belong in the plan as steps, not as ad-hoc follow-up calls.
+    3. Approve
+       - Present the plan: instances (count, template, region, type), volumes, network, runtime, estimated cost if shown, and what each gated step will do.
+       - platform_provisioning_approve_plan only on an explicit operator yes. A parked approval is reported with its request id and left parked.
+    4. Track and adapt
+       - platform_provisioning_status until the mission settles; report each phase result.
+       - A failed phase: read the failure, name the step and the resource, then platform_provisioning_adapt or stop and report. Never retry the same failing step blindly.
+       - A provider refusal (quota, unavailable type, no GPU node) is a finding to report with region, type and count, not an error to retry into.
+    5. Direct verbs
+       - system_provision_instance is for a single, explicitly specified instance outside a mission, and only after confirmation. It is gated; report a parked approval.
+
+    Checklist before reporting done:
+    - [ ] Every created resource named by id and state (system_get_instance / system_list_instances).
+    - [ ] Volumes attached and network enrolment visible in the plan result.
+    - [ ] Gaps, parked approvals and skipped steps listed.
+    - [ ] Hand-offs named: sizing changes to fleet-capacity-operations, volume work to storage-operations, exposure to service-exposure.
+
+- slug: fleet-capacity-operations
+  name: Fleet Capacity Operations
+  category: sre_observability
+  description: "Use when the fleet is the wrong size or in the wrong place: scale replicas, tune warm instance pools, cordon, drain, replace or reap instances."
+  tags: [fleet, capacity, scaling, instance-pool, cordon, replace]
+  domain: capacity
+  capability: fleet-capacity-operations
+  triggers:
+    applies_to: [infrastructure]
+    stages: [provision, operate]
+    use_when:
+      - "an instance is unrecoverable and must be replaced, then the dead one reaped"
+      - "scale a deployment or project out or in"
+      - "size, replenish, drain or tune a warm instance pool"
+      - "cordon, uncordon or drain an instance before maintenance"
+      - "replace an unrecoverable instance or reap a dead one"
+      - "relocate a workload or check desired versus live replica counts"
+    not_for:
+      - "provisioning new infrastructure from a request — use fleet-provisioning-entry"
+      - "volume, snapshot or restore work — use storage-operations"
+      - "a sick node needing health diagnosis — use platform-health-probe"
+    keywords: [scale, scale out, scale in, replicas, capacity, instance pool, warm pool, cordon, drain, replace instance, reap, relocate, ceiling, quota, resize]
+  manifest:
+    verbs:
+      - project_status
+      - project_set_slo_targets
+      - system_list_instances
+      - system_get_instance
+      - system_list_instance_pools
+      - system_get_instance_pool
+      - system_create_instance_pool
+      - system_update_instance_pool
+      - system_replenish_instance_pool
+      - system_drain_instance_pool
+      - system_acquire_pooled_instance
+      - system_return_pooled_instance
+      - system_cordon_instance
+      - system_uncordon_instance
+      - system_drain_instance
+      - system_replace_instance
+      - system_reap_instance
+      - system_recycle_pool
+      - system_get_silent_instances
+      - list_deferred_operations
+      - get_approval_request
+    knowledge_tags: [system-extension, fleet, operator-runbooks]
+    gate_category: destructive
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "Scale the project's deployment out by two replicas and tune the warm pool ceiling"
+      expect_selected: true
+    - task: "Replace the unrecoverable instance and reap the dead one afterwards"
+      expect_selected: true
+    - task: "Provision a VM with attached storage for a new project"
+      expect_selected: false
+  system_prompt: |
+    Procedure: reconcile fleet SIZE and PLACEMENT. Health is not your question; capacity is.
+
+    1. Measure desired vs live
+       - Desired is the deployment or project target; live is active instances that are NOT cordoned. A cordoned instance never counts as live.
+       - Read project_status, system_list_instances and system_list_instance_pools before proposing any change. Quote both numbers.
+    2. Scale rules
+       - Never scale in the deployment that hosts the control plane.
+       - Scale out only inside the declared scaling window; outside it, or with no window declared, propose and wait.
+       - Scale in terminates instances and is not reversible: cordoned instances go first, then newest first; always approval-gated.
+       - Pool ceilings (target and max) are spend commitments: raising them, creating, archiving or draining a pool waits for approval. Replenish to an existing target may proceed.
+       - Acquire only READY pool members, never warming or draining ones; return a member you did not use.
+    3. Cordon and drain
+       - A cordon fences an instance from scheduling and leaves it running. Uncordon only a cordon you placed; never lift an operator's maintenance hold.
+       - Drain before planned maintenance; confirm workloads moved before the next step.
+    4. Replace and reap are two decisions
+       - Replace is additive: the replacement enters service, the dead instance stays visible. It is idempotent on its operation id — re-running replays, it does not claim a second member.
+       - Reaping the dead instance is a separate, destructive, gated request. Ask for it separately so it can be refused alone.
+    5. Provider facts
+       - Quota, region or instance-type refusals are findings: report region, type and count. Do not retry into them.
+    6. Gates
+       - Resolve the policy first. Under require_approval, produce the plan and stop. Report each parked approval (list_deferred_operations / get_approval_request) with what it will do.
+       - After repeated ineffective outcomes for the same condition, escalate to an operator instead of re-running it.
+
+    Checklist for every plan:
+    - [ ] Deployment, pool or instance named, observed vs desired count, region and type.
+    - [ ] Exact verb and whether it is gated, reversible or destructive.
+    - [ ] Volumes on a replaced instance go to storage-operations; service backends to service-exposure.

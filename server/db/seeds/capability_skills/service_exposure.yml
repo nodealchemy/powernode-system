@@ -1,0 +1,163 @@
+- slug: service-exposure
+  name: Service Exposure
+  category: devops
+  description: "Use when a service must become reachable: publish locally or publicly over HTTPS or TCP behind the reverse proxy, change its backend set, or unexpose it."
+  tags: [ingress, expose, reverse-proxy, https, backends, service]
+  domain: service-exposure
+  capability: service-exposure
+  triggers:
+    applies_to: [infrastructure]
+    stages: [expose]
+    use_when:
+      - "a failed backend must be drained or replaced behind a published service without downtime"
+      - "expose a service publicly over HTTPS behind the reverse proxy"
+      - "publish a service locally to authenticated users"
+      - "expose raw TLS TCP for a service"
+      - "add, drain or replace backends of a published service"
+      - "unexpose a service or repair a stale reverse proxy configuration"
+    not_for:
+      - "issuing, renewing or revoking a TLS certificate on its own — use acme-certificate-lifecycle"
+      - "creating or failing over a virtual IP or SD-WAN peer — use sdwan-operations"
+      - "adding replicas behind a service — use fleet-capacity-operations"
+    keywords: [expose, publish, public, https, endpoint, url, reverse proxy, traefik, route, ingress, backend, load balancer, tcp, unexpose, domain]
+  manifest:
+    verbs:
+      - system_list_services
+      - system_get_service
+      - system_create_service
+      - system_expose_service_publicly
+      - system_expose_service_local
+      - system_expose_service_public_tcp
+      - system_unexpose_service_local
+      - system_unexpose_service_public_tcp
+      - system_set_service_backends
+      - system_reverse_proxy_compose
+      - system_acme_get_certificate
+      - system_sdwan_list_virtual_ips
+      - system_sdwan_get_virtual_ip
+      - list_deferred_operations
+    knowledge_tags: [system-extension, operator-runbooks]
+    gate_category: mutate
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: [acme-certificate-lifecycle]
+    refines: []
+  evals:
+    - task: "Expose service X publicly with a Let's Encrypt cert behind the reverse proxy"
+      expect_selected: true
+    - task: "Drain the failed backend from the published service without taking it out of rotation"
+      expect_selected: true
+    - task: "Our site's HTTPS cert expires next week; get a fresh one before browsers start warning"
+      expect_selected: false
+  system_prompt: |
+    Procedure: make a backend reachable safely. Every expose is a new door; every backend write can blackhole a service.
+
+    1. Check before creating
+       - system_list_services / system_get_service: an exposure with the same slug updates in place. A duplicate is a bug, not a retry.
+       - Confirm the backend exists: a virtual IP (system_sdwan_get_virtual_ip) or a static host serving the port. A missing or unassigned VIP goes to sdwan-operations; do not create one here.
+       - Use system_create_service first when the operator wants to review the record before it is reachable.
+    2. Choose the facet
+       - Local: published under the platform's own host behind authentication (public, authenticated or scoped by permission or group). Hot-reloads; no restart.
+       - Public HTTPS: VIP, port mapping, certificate, router. Check system_acme_get_certificate first; a valid certificate for the host often exists. Issuance itself is acme-certificate-lifecycle.
+       - Public TCP: needs the tls protocol and, when the edge terminates TLS, a valid certificate whose name matches the host.
+    3. Backend sets
+       - The list you pass IS the set: members matched by address and port are updated, absent members are removed, an empty list clears it. Never send a partial list to add one member.
+       - A draining member leaves rotation but keeps its history. Draining every member takes the service out of rotation; keep a healthy member listed while you rebuild.
+       - An empty set falls back to the service's legacy single backend. That is a different state from all-draining.
+       - Fleet scale and replace flows maintain backends by address; only repoint a set they wrote when the operator asks.
+       - Carry forward per-service load-balancer overrides. Enable health checks only where the correct path is known; a wrong path takes the whole service dark.
+    4. Gates
+       - Expose and backend writes are approval-gated: present the plan (service, facet, host, what callers see) and report the parked approval.
+       - Unexpose is the fail-safe direction and is not gated. Never route around a gate with a different verb.
+       - system_reverse_proxy_compose repairs a stale proxy file after a failed regeneration; it does not change intent.
+    5. Verify and report
+       - Re-read the service; report the URL or port, the facet, the backend set and its rotation state, and the certificate it uses.
+
+    Checklist:
+    - [ ] No duplicate service created.
+    - [ ] Backend list complete, not partial.
+    - [ ] Certificate and VIP ownership handed to their skills when missing.
+
+- slug: acme-certificate-lifecycle
+  name: ACME Certificate Lifecycle
+  category: security
+  description: "Use when an HTTPS/TLS certificate must be issued, renewed before it expires, or revoked through ACME (Let's Encrypt DNS-01), including the DNS credential issuance needs."
+  tags: [acme, tls, certificate, letsencrypt, dns-01, https]
+  domain: service-exposure
+  capability: acme-certificate-lifecycle
+  triggers:
+    applies_to: [infrastructure]
+    stages: [expose]
+    use_when:
+      - "an HTTPS certificate is close to expiring and must be renewed before browsers warn"
+      - "issue a Let's Encrypt certificate for a public domain"
+      - "renew an expiring TLS certificate"
+      - "revoke a mis-issued or compromised certificate"
+      - "add a DNS provider credential for DNS-01 challenges"
+    not_for:
+      - "publishing a service or changing its backends — use service-exposure"
+      - "node-level certificate rotation raised by a fleet signal — use fleet-signal-handling"
+    keywords: [certificate, cert, tls, ssl, acme, lets encrypt, letsencrypt, dns-01, renew, revoke, expiry, issue, domain, dns credential]
+  manifest:
+    verbs:
+      - system_acme_get_certificate
+      - system_acme_provision_certificate
+      - system_acme_renew_certificate
+      - system_acme_revoke_certificate
+      - system_acme_create_dns_credential
+      - system_get_service
+      - request_approval
+      - list_deferred_operations
+    knowledge_tags: [system-extension, operator-runbooks]
+    gate_category: mutate
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "Our site's HTTPS cert expires next week; get a fresh one before browsers start warning"
+      expect_selected: true
+    - task: "Issue a TLS certificate via ACME DNS-01 for a new hostname"
+      expect_selected: true
+    - task: "Publish the internal dashboard at /svc/dashboard for our own signed-in users only"
+      expect_selected: false
+  system_prompt: |
+    Procedure: keep certificates valid without issuing duplicates or leaking credentials.
+
+    1. Read first
+       - system_acme_get_certificate for the hostname: state, issuer, expiry, which service uses it (system_get_service).
+       - A valid certificate covering the host already exists more often than not; reuse it instead of issuing.
+    2. Issue
+       - DNS-01 needs a stored DNS credential for the zone. If none exists, guide the operator to add one through system_acme_create_dns_credential via the UI or API. Never echo, log or put the credential secret in a plan, prompt or report; reference it by name only.
+       - Use the staging issuer first when testing a new zone or credential, then production. Rate limits on the production issuer are real.
+       - system_acme_provision_certificate is approval-gated: present hostname, issuer, credential name, and which exposure will mount it; report the parked approval.
+    3. Renew
+       - Routine renewal of held certificates runs as a fleet maintenance lane. Renew by hand only when that lane failed or the operator asks; state the expiry and the reason.
+       - These verbs have no policy gate of their own: park the call with request_approval and wait.
+       - After renewal, confirm the new expiry and that the serving route picked it up.
+    4. Revoke
+       - Revocation breaks every client using the certificate. Only for mis-issuance or key compromise, only on explicit operator instruction; name hostname, reason and replacement plan first.
+       - Issue the replacement before revoking whenever the service must stay up.
+    5. Failures
+       - DNS propagation, wrong zone, credential scope and split-horizon DNS are the usual causes. Report the challenge error verbatim with the zone; do not retry in a loop.
+    6. Report
+       - Hostname, certificate state and expiry, issuer, credential by name, gate status, and the service that serves it.
+
+    Checklist:
+    - [ ] No duplicate certificate issued.
+    - [ ] No secret material in any output.
+    - [ ] Exposure changes handed to service-exposure.

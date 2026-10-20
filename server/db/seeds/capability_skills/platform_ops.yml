@@ -1,0 +1,177 @@
+- slug: platform-health-probe
+  name: Platform Health Probe
+  category: sre_observability
+  description: "Use when the platform feels slow or broken, or someone asks if it or a fleet component is up, degraded or down: probe each service, correlate signals, report what was not measured."
+  tags: [health, probe, platform, observability, degraded, outage]
+  domain: platform-ops
+  capability: platform-health-probe
+  triggers:
+    applies_to: [infrastructure]
+    stages: [operate]
+    use_when:
+      - "things feel slow or broken and you must find which core services are struggling"
+      - "probe platform health and report what is down or degraded"
+      - "check whether the API, worker, database, cache, proxy or MCP endpoint is healthy"
+      - "find silent instances or nodes that stopped reporting heartbeats"
+      - "correlate a failure with recent module changes or signals before acting"
+    not_for:
+      - "acting on a fleet lane signal or remediation decision — use fleet-signal-handling"
+      - "resizing or replacing instances — use fleet-capacity-operations"
+      - "patching a vulnerability — use cve-response"
+    keywords: [health, healthy, status, down, degraded, outage, probe, heartbeat, silent, uptime, not measured, diagnose, check platform, correlate, failure]
+  manifest:
+    verbs:
+      - system_platform_health_check
+      - get_system_health
+      - integration_health
+      - list_component_status
+      - get_component_status
+      - get_component_impact
+      - system_get_silent_instances
+      - system_inspect_node
+      - system_get_instance
+      - system_recent_signals
+      - system_inspect_correlation
+      - system_attribute_failure
+      - migration_status
+      - kill_switch_status
+      - search_knowledge
+    knowledge_tags: [system-extension, operator-runbooks, fleet]
+    gate_category: read
+    read_only: true
+  hints:
+    min_tier: standard
+    effort: medium
+    long_context: false
+    tool_heavy: true
+    safety_critical: false
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "Probe platform health and report what is down or degraded"
+      expect_selected: true
+    - task: "Something feels slow; are any of our core services struggling right now?"
+      expect_selected: true
+    - task: "Handle a repeated fleet lane signal"
+      expect_selected: false
+  system_prompt: |
+    Procedure: produce an honest, per-subsystem health report. Read-only; you change nothing.
+
+    1. Probe
+       - Run system_platform_health_check for the composite snapshot, then get_system_health and integration_health for core services and external integrations.
+       - list_component_status / get_component_status for named components; get_component_impact when something is degraded, to state who is affected.
+    2. Classify every subsystem into exactly one state
+       - ok: observed and within bounds.
+       - degraded: observed, working, outside bounds (latency, error rate, backlog, partial capacity).
+       - down: observed failing or refusing.
+       - not measured: the probe could not observe it. Never report not measured as ok. Say what could not be seen and why.
+    3. Fleet liveness
+       - system_get_silent_instances for instances that stopped reporting; system_get_instance / system_inspect_node for each one you name.
+       - A silent instance is a liveness finding, not proof the workload is down. Say which.
+    4. Correlate before concluding
+       - system_recent_signals and system_inspect_correlation over the same window; system_attribute_failure for a failed instance to rank recent module changes.
+       - Treat one stale observation as stale, not broken. Look for a second independent signal before calling something down.
+    5. Service units
+       - Never guess a service or systemd unit name. Discover units first (for example by listing units that match the platform prefix on the host) and confirm active state on the discovered unit.
+       - A restart window (a just-restarted API returning errors for a few minutes, longer when migrations run) is not an outage; check restart counters before reporting failure.
+    6. Report
+       - Table: subsystem, state, evidence (verb + field), since when, impact.
+       - Then: suspected cause with confidence, what was not measured, and the owner for follow-up (fleet-signal-handling for remediation, fleet-capacity-operations for replacement, cve-response for vulnerabilities).
+       - Recommend; do not act. A kill switch or halt state (kill_switch_status) is reported first because it explains everything else.
+
+    Checklist:
+    - [ ] Every subsystem has one state and one piece of evidence.
+    - [ ] not measured entries are listed explicitly.
+    - [ ] No unit or host name was assumed.
+
+- slug: fleet-signal-handling
+  name: Fleet Signal Handling
+  category: sre_observability
+  description: "Use when a fleet sensor lane signal fires or repeats and needs a decision: dedup, resolve the policy, pick the reversible remediation, or escalate."
+  tags: [fleet, signals, sensors, remediation, autonomy, escalation]
+  domain: platform-ops
+  capability: fleet-signal-handling
+  triggers:
+    applies_to: [infrastructure]
+    stages: [operate]
+    use_when:
+      - "handle a repeated fleet lane signal"
+      - "decide how to remediate a sensor signal such as drift, expiry or an unreachable hub"
+      - "review parked remediation approvals raised by the fleet tick"
+      - "tune a sensor's configuration or stop a futile remediation loop"
+    not_for:
+      - "a general health check of the platform — use platform-health-probe"
+      - "vulnerability exposure signals — use cve-response"
+      - "SD-WAN key or peer changes themselves — use sdwan-operations"
+    keywords: [signal, sensor, lane, fleet tick, remediation, repeated, dedup, fingerprint, escalate, intervention policy, approval, drift, autonomy, alert]
+  manifest:
+    verbs:
+      - system_recent_signals
+      - system_inspect_correlation
+      - system_drift_report
+      - system_get_sensor_config
+      - system_update_sensor_config
+      - system_list_tasks
+      - system_get_task
+      - system_cancel_task
+      - system_runbook_generate
+      - list_intervention_policies
+      - list_deferred_operations
+      - get_approval_request
+      - get_remediation_route
+      - get_runbook
+      - perceive_signals
+      - escalate
+      - query_learnings
+      - search_knowledge
+    knowledge_tags: [fleet, autonomy, system-extension]
+    gate_category: mutate
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "Handle a repeated fleet lane signal"
+      expect_selected: true
+    - task: "The drift sensor keeps firing for the same instance every tick; decide whether to remediate or escalate"
+      expect_selected: true
+    - task: "Probe platform health and report what is down or degraded"
+      expect_selected: false
+  system_prompt: |
+    Procedure: turn a fleet signal into one auditable decision. Policy decides; you prepare and explain.
+
+    1. Identify the signal
+       - system_recent_signals filtered to the exact kind; note the fingerprint (resource + kind), first seen, last seen and repeat count.
+       - system_inspect_correlation to see what else fired in the same window. A cluster of signals usually has one cause; handle the cause.
+    2. Dedup
+       - A standing condition re-emits every tick. Same fingerprint inside its window = one condition, notified once. Do not open a second task, approval or remediation for it.
+       - Check system_list_tasks / system_get_task for a remediation already in flight before proposing one.
+    3. Resolve the policy before acting
+       - list_intervention_policies for the action category; get_remediation_route for the bound remediation.
+       - auto or notify-and-proceed: the tick runs it; you verify the outcome.
+       - require-approval: produce the plan and stop. The approval appears in list_deferred_operations; report its id and what it will do. Never bypass or re-route around a gate.
+       - An observation-only signal has no remediation; record it, do not create one.
+    4. Choose the smallest reversible action
+       - Prefer re-sync, re-reconcile or refresh over rotate, reprovision, terminate or failover.
+       - Check the bound remediation actually fits the signal. A remediation that is side-effectful in a way the signal does not need (for example rotating a key when only a credential is expiring) is wrong: stop and escalate rather than run it.
+    5. Escalate after repeats
+       - After repeated ineffective outcomes for the same fingerprint, stop. escalate with the signal, the attempts and their outcomes, and the hypothesis. Do not try the same action again.
+       - query_learnings for the signal kind first; a known failure mode changes the recommendation.
+    6. Sensor tuning
+       - system_get_sensor_config before system_update_sensor_config. Widening a threshold to silence a real problem is not a fix; say what changes and why.
+    7. Report
+       - Signal, fingerprint, repeat count, policy and gate, action taken or parked, outcome, next owner (platform-health-probe for diagnosis, the domain skill for the fix).
+
+    Checklist:
+    - [ ] One decision per fingerprint.
+    - [ ] Gate respected and parked approvals listed.
+    - [ ] Reversible option considered first.

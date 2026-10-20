@@ -1,0 +1,94 @@
+- slug: disk-image-release
+  name: Disk Image Release
+  category: release_management
+  description: "Use when building, verifying, promoting, rolling back or retaining fleet disk images and node module versions, including canaries and module build batches."
+  tags: [disk-image, module-version, release, promote, canary, rollback]
+  domain: disk-image
+  capability: disk-image-release
+  triggers:
+    applies_to: [infrastructure]
+    stages: [release, operate]
+    use_when:
+      - "a newly built OS image has passed its checks and should become what new machines boot from"
+      - "promote the new disk image publication to the fleet default"
+      - "roll back a disk image or node module version"
+      - "trigger or follow a disk image or module build"
+      - "mark a module version as canary before fleet-wide promotion"
+      - "change disk image retention"
+    not_for:
+      - "deploying or rolling back an application on a container runtime — use runtime-operations"
+      - "patching packages for a vulnerability — use cve-response"
+      - "syncing package repositories or creating package modules — use package-catalog-operations"
+    keywords: [disk image, image, publication, promote, rollback, revert, retention, build, ci, module version, canary, oci, digest, signature, boot image, release]
+  manifest:
+    verbs:
+      - system_list_disk_image_publications
+      - system_set_default_disk_image_publication
+      - system_revert_disk_image
+      - system_set_disk_image_retention
+      - system_list_disk_image_webhooks
+      - dispatch_gitea_workflow
+      - list_gitea_workflow_runs
+      - get_gitea_workflow_run
+      - get_gitea_job_logs
+      - system_list_module_versions
+      - system_module_diff
+      - system_module_publication_integrity
+      - system_module_mark_canary
+      - system_unmark_module_canary
+      - system_promote_module_version
+      - system_rollback_module_version
+      - system_dispatch_module_build_batch
+      - system_get_module_build_batch
+      - system_recent_signals
+      - list_deferred_operations
+    knowledge_tags: [system-extension, operator-runbooks]
+    gate_category: mutate
+    read_only: false
+  hints:
+    min_tier: reasoning
+    effort: high
+    long_context: false
+    tool_heavy: true
+    safety_critical: true
+  relations:
+    requires: []
+    composes: []
+    refines: []
+  evals:
+    - task: "The freshly built OS image passed its checks; make it what new machines boot from"
+      expect_selected: true
+    - task: "Canary the new module version on one instance, then promote it fleet-wide"
+      expect_selected: true
+    - task: "Roll back the customer's last deploy"
+      expect_selected: false
+  system_prompt: |
+    Procedure: move fleet images and module versions up the release ladder one verified rung at a time.
+
+    The ladder: built, verified (signature and integrity), canary, promoted default, retained, retired.
+
+    1. Build
+       - Builds run in CI: dispatch_gitea_workflow, then follow list_gitea_workflow_runs / get_gitea_workflow_run and get_gitea_job_logs.
+       - A successful build that never produced a publication usually failed signature verification or the publish webhook; look for publish-failure signals in system_recent_signals, not for a retry.
+    2. Verify
+       - A publication or module version is a promotion candidate only after verification passed. Check system_module_publication_integrity for modules. A failed verification is a blocker, not a warning.
+       - Identify the candidate by digest, never by tag. Read system_module_diff against what runs now.
+    3. Canary
+       - system_module_mark_canary on a small, named set; observe health before going further. Unmark when the canary ends either way.
+    4. Promote
+       - system_set_default_disk_image_publication changes what new instances boot; system_promote_module_version changes what the fleet converges to. Both touch the active fleet and are approval-gated: present candidate digest, current default, canary evidence and provenance (commit, builder).
+       - One lineage at a time: do not promote a second candidate while one is in flight or under canary.
+       - Hold a promotion when platform components would run mismatched versions; promote the dependency first.
+    5. Roll back
+       - system_revert_disk_image selects the previous publication; system_rollback_module_version restores the previous module version. Both gated; name what returns and why.
+    6. Retention
+       - system_set_disk_image_retention keeps a count of publications per platform; never reduce it below what a rollback needs.
+    7. Batches
+       - system_dispatch_module_build_batch for many modules; follow system_get_module_build_batch and report each member's result.
+    8. Report
+       - Candidate and current digest, ladder rung reached, gate status, parked approvals, rollback target.
+
+    Checklist:
+    - [ ] Verified before canary, canary before promote.
+    - [ ] Rollback target exists and is retained.
+    - [ ] Application deploys handed to runtime-operations.
