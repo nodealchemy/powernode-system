@@ -270,3 +270,32 @@ malformed document on removable media is skipped (the node falls through to
 other sources); a WELL-FORMED but DIFFERENT document next to the seed disk, or
 a malformed document on fixed media, still refuses and blocks media enrolment
 of an UNENROLLED node until it is removed. An enrolled node is unaffected.
+
+## Console prompt (last resort before the claim poll)
+
+Every image carries a masked prompt on `/dev/console` (`ConsolePromptStrategy`,
+`agent/internal/identity/console.go`). It runs only when no earlier source
+supplied a key, only on a node with a boot `identity.cfg` carrying `SERVER`
+(the same condition that starts the claim poll; cloud VMs are never blocked),
+and never on an already-enrolled node. There is no per-platform flag.
+
+- Input is **masked**: the terminal is put in no-echo, non-canonical mode
+  before the first read and restored afterwards (no characters, not even `*`,
+  are echoed). If no-echo cannot be established the prompt is not shown.
+- Timeout 60 s, then the boot continues to the claim poll. Override with the
+  kernel cmdline `powernode.console_prompt_timeout=<seconds>`; `0` disables.
+- Accepts either a **bare key** (combined with `SERVER`, the CA pin and CA from
+  the boot `identity.cfg`; a bare key without a pin there is refused, because
+  v1 requires one) or a **pasted v1 document** (strict parser).
+- Anything the operator typed that is refused is **terminal** (D5 rule); the
+  agent unit restarts and prompts again.
+- The accepted identity is staged as a v1 document at
+  `/run/powernode/identity.cfg` (0600, tmpfs) and the identity is the re-parse
+  of those bytes. Staging means later `DefaultResolver` calls (runtime service,
+  CLI) find it through the local-file source instead of prompting again. A
+  staged bare key uses the nil UUID as `instance_id` (the server derives the
+  instance from the token) and `purpose` `console-prompt`.
+- Input is never logged or echoed in an error, and the buffers are zeroed.
+
+No new systemd unit is needed: the strategy opens `/dev/console` itself from
+the existing `powernode-agent.service`.

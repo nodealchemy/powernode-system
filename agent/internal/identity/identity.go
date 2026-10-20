@@ -76,9 +76,11 @@ type Resolver struct {
 //  4. MediaScanStrategy         — powernode-provision.cfg on attached drives
 //     (USB, cidata/CD-ROM, extra disks; media.go). D10 formalises its place
 //     relative to provider metadata and the BOOT identity.cfg.
-//  5. ClaimStrategy             — physical disk-image flow (boot partition)
-//  6. AWS / GCP / Azure / DO    — cloud metadata (~1-1.5s timeout each)
-//  7. LocalIdentityStrategy     — /etc/identity.cfg (legacy fallback)
+//  5. ConsolePromptStrategy     — masked /dev/console prompt, last resort
+//     before the claim poll (console.go)
+//  6. ClaimStrategy             — physical disk-image flow (boot partition)
+//  7. AWS / GCP / Azure / DO    — cloud metadata (~1-1.5s timeout each)
+//  8. LocalIdentityStrategy     — /etc/identity.cfg (legacy fallback)
 //
 // Cloud strategies are deliberately ordered after the no-network paths so
 // a QEMU node booting locally doesn't waste seconds probing cloud
@@ -112,6 +114,7 @@ func DefaultResolver() *Resolver {
 			&FwCfgStrategy{},
 			&LocalIdentityStrategy{Path: "/run/powernode/identity.cfg"},
 			&MediaScanStrategy{},
+			&ConsolePromptStrategy{Timeout: consolePromptTimeout(DefaultCmdlinePath)},
 			&ClaimStrategy{},
 			&CloudStrategy{Client: &AwsMetadataClient{}},
 			&CloudStrategy{Client: &GcpMetadataClient{}},
@@ -153,7 +156,7 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 			// legitimate identity nor attach an attacker-chosen pin to it. A later source never
 			// replaces the identity that supplied the key.
 			switch s.(type) {
-			case *ClaimStrategy, *CloudStrategy, *MediaScanStrategy:
+			case *ClaimStrategy, *CloudStrategy, *MediaScanStrategy, *ConsolePromptStrategy:
 				continue
 			}
 		}
