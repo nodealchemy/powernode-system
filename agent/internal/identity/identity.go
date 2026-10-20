@@ -85,64 +85,69 @@ func InteractiveResolver() *Resolver {
 	return r
 }
 
-// DefaultResolver returns a resolver pre-loaded with the standard strategies
-// in the recommended priority order:
-//  1. CmdlineStrategy           — fastest, no network
-//  2. FwCfgStrategy             — virtio-fw-cfg (libvirt/QEMU)
-//  3. LocalIdentityStrategy     — /run/powernode/identity.cfg (Option 3:
-//     NoCloud cicustom-staged enrollment identity, uefi_disk builders)
-//  4. MediaScanStrategy         — powernode-provision.cfg on attached drives
-//     (USB, cidata/CD-ROM, extra disks; media.go). D10 formalises its place
-//     relative to provider metadata and the BOOT identity.cfg.
-//  5. ConsolePromptStrategy     — masked /dev/console prompt, last resort
-//     before the claim poll (console.go)
-//  6. ClaimStrategy             — physical disk-image flow (boot partition)
-//  7. AWS / GCP / Azure / DO    — cloud metadata (~1-1.5s timeout each)
-//  8. LocalIdentityStrategy     — /etc/identity.cfg (legacy fallback)
+// DefaultResolver returns a resolver pre-loaded with the standard strategies in
+// the operator's fixed precedence order (design memory:image-distribution-model;
+// documented for operators in extensions/system/docs/PROVISION_DOCUMENT.md):
 //
-// Cloud strategies are deliberately ordered after the no-network paths so
-// a QEMU node booting locally doesn't waste seconds probing cloud
-// metadata services that aren't there. ClaimStrategy sits between fw-cfg
-// and the cloud probes so a Pi 4 booted from a generic disk image doesn't
-// pay 4×1.5s for cloud metadata that isn't there — its BootIdentityStrategy
-// helper reads /boot/identity.cfg in <1ms; if absent (cloud VM, no boot
-// partition), ClaimStrategy returns ErrNotFound and the chain falls
-// through to cloud strategies naturally.
+//  1. CmdlineStrategy        - kernel cmdline / PXE single-fetch pickup
+//  2. FwCfgStrategy          - virtio fw-cfg (libvirt/QEMU)
+//  3. LocalIdentityStrategy  - /run/powernode/identity.cfg, the NoCloud /
+//     config-drive document staged pre-pivot by powernode-cidata-payload.service
+//  4. CloudStrategy x4       - provider metadata user-data: AWS, GCP, Azure,
+//     OpenStack/DigitalOcean (~1-1.5s probe timeout each)
+//  5. MediaScanStrategy      - powernode-provision.cfg on attached drives
+//  6. BootKeyStrategy        - the KEY of /boot/identity.cfg
+//  7. ConsolePromptStrategy  - masked /dev/console prompt (InteractiveResolver
+//     only; initramfs)
+//  8. ClaimStrategy          - claim poll with the BOOT SERVER/ID (blocks)
+//     then, outside the eight, the legacy /etc/identity.cfg fallback.
 //
-// The /run/powernode/identity.cfg strategy sits between fw-cfg and
-// ClaimStrategy for the same reason: a pool-provisioned Proxmox uefi_disk
-// builder's baked image carries a claim-by-ID /boot/identity.cfg (SERVER=
-// set to the CI/claim endpoint), so ClaimStrategy would otherwise win
-// first and poll /node_api/claim forever instead of ever reaching the
-// real enrollment identity. powernode-cidata-payload.service stages the
-// provider's cicustom (NoCloud) identity payload to /run/powernode/
-// identity.cfg pre-pivot, Before=powernode-agent.service, whenever the
-// PVE connection is API-token-only (fw-cfg's `args` field is root@pam-only
-// — see System::Providers::Proxmox::EnrollmentSeed#render_cicustom). If
-// that file is absent (no cicustom identity staged — the steady state for
-// every other boot path), this instance returns ErrNotFound and the chain
-// falls through unchanged, so physical/boot-identity devices see zero
-// behavior change.
+// The first non-empty key wins and a later source never overrides it. A
+// ca_fingerprint from ANY source is enforced on whichever source wins; the
+// resolver collects it from the LOCAL sources (see Resolve).
 //
-// Plan: docs/plans/wondrous-yawning-anchor.md §4.
+// Why the order is safe despite metadata ranking above media and BOOT:
+//
+//   - Metadata is unauthenticated (169.254.169.254 over HTTP, spoofable on
+//     L2). It is only ever consulted while no key has been found, so it never
+//     overrides cmdline / fw-cfg / the staged document. When it does win over
+//     media or BOOT, the BOOT pin is still collected and REPLACES any pin the
+//     metadata document carries, so a spoofed server cannot attach its own CA
+//     to a pinned device (the enrolment then fails closed).
+//   - A v1 refusal from metadata stays terminal, with one exception: the BOOT
+//     key (the only local source that used to run before the cloud probes)
+//     is still tried, so a spoofed refusal cannot veto a local identity.
+//   - Media sits behind metadata and is never run once a key exists, so a
+//     stick cannot veto an identity or attach a pin to it.
+//   - The console prompt is interactive-resolver only and runs after every
+//     non-blocking source; the claim poll blocks, so it is last.
+//
+// Cost: bare-metal nodes with no earlier key now pay the cloud probes (up to
+// ~6s on a non-cloud network) before the media scan, BOOT key and prompt.
 func DefaultResolver() *Resolver {
 	return &Resolver{
 		Strategies: []Strategy{
 			&CmdlineStrategy{},
 			&FwCfgStrategy{},
 			&LocalIdentityStrategy{Path: "/run/powernode/identity.cfg"},
-			&MediaScanStrategy{},
-			&ConsolePromptStrategy{Timeout: consolePromptTimeout(DefaultCmdlinePath)},
-			&ClaimStrategy{},
 			&CloudStrategy{Client: &AwsMetadataClient{}},
 			&CloudStrategy{Client: &GcpMetadataClient{}},
 			&CloudStrategy{Client: &AzureMetadataClient{}},
 			&CloudStrategy{Client: &DigitalOceanMetadataClient{}},
-			// Cloud strategies are added by package init in cloud_*.go files.
+			&MediaScanStrategy{},
+			&BootKeyStrategy{},
+			&ConsolePromptStrategy{Timeout: consolePromptTimeout(DefaultCmdlinePath)},
+			&ClaimStrategy{},
 			&LocalIdentityStrategy{Path: "/etc/identity.cfg"},
 		},
 		Timeout: 30 * time.Second,
 	}
+}
+
+// pinSource is implemented by a LOCAL strategy that can report a
+// ca_fingerprint without supplying the key (BootKeyStrategy).
+type pinSource interface {
+	DiscoverPin(ctx context.Context) (string, error)
 }
 
 // Resolve runs strategies in order; returns the first non-error Identity.
@@ -158,15 +163,25 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 	}
 
 	var (
-		lastErr error
-		first   *Identity // first usable identity, by strategy precedence
-		pin     string    // first pin seen from ANY source
+		lastErr  error
+		first    *Identity // first usable identity, by strategy precedence
+		firstNet bool      // first came from provider metadata (self-asserted pin)
+		pin      string    // first pin seen from a LOCAL source
+		refused  error     // a cloud v1 refusal: terminal unless BOOT supplies a key
 	)
 	for _, s := range r.Strategies {
+		_, isCloud := s.(*CloudStrategy)
+		_, isBootKey := s.(*BootKeyStrategy)
+		if refused != nil && !isBootKey {
+			// Terminal refusal: only the BOOT key may still rescue it (it ran
+			// before the cloud probes in the old order, and a spoofed
+			// metadata server must not veto a local identity). Nothing weaker.
+			continue
+		}
 		if first != nil {
-			// A pinless hit was already found: keep scanning ONLY LOCAL sources
-			// (files, fw-cfg, cmdline) to collect a pin and let a refused local
-			// v1 document stop us. Never run a strategy that blocks or polls
+			// A hit was already found: keep scanning ONLY LOCAL sources (files,
+			// fw-cfg, cmdline) to collect a pin and let a refused local v1
+			// document stop us. Never run a strategy that blocks or polls
 			// (claim) or that goes over the network: unauthenticated cloud
 			// metadata (169.254.169.254 over HTTP) is spoofable on L2, so it can
 			// neither supply a pin nor veto a local identity (and skipping it
@@ -176,6 +191,19 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 			// replaces the identity that supplied the key.
 			switch s.(type) {
 			case *ClaimStrategy, *CloudStrategy, *MediaScanStrategy, *ConsolePromptStrategy:
+				continue
+			}
+			if ps, ok := s.(pinSource); ok {
+				p, err := ps.DiscoverPin(ctx)
+				if err != nil {
+					if errors.Is(err, ErrProvisionRefused) {
+						return nil, fmt.Errorf("strategy %s: %w", s.Name(), err)
+					}
+					continue
+				}
+				if pin == "" {
+					pin = p
+				}
 				continue
 			}
 		}
@@ -194,7 +222,14 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 			if errors.Is(err, ErrProvisionRefused) {
 				// TERMINAL: a v1 document / pin was present but invalid. Do
 				// not fall through to a weaker source.
-				return nil, fmt.Errorf("strategy %s: %w", s.Name(), err)
+				werr := fmt.Errorf("strategy %s: %w", s.Name(), err)
+				if isCloud && first == nil {
+					// Unauthenticated metadata must not veto a local BOOT key:
+					// remember the refusal; it is returned if no BOOT key shows.
+					refused = werr
+					continue
+				}
+				return nil, werr
 			}
 			if errors.Is(err, ErrNotFound) {
 				continue
@@ -206,19 +241,26 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 		if id == nil || id.InstanceUUID == "" {
 			continue
 		}
-		if pin == "" {
+		if !isCloud && pin == "" {
 			pin = id.CAFingerprint
 		}
 		if first == nil {
 			first = id
-			if pin != "" {
-				break // pinned hit: nothing more to learn
+			firstNet = isCloud
+			refused = nil
+			if pin != "" && !firstNet {
+				break // pinned local hit: nothing more to learn
 			}
 		}
 	}
+	if first == nil && refused != nil {
+		return nil, refused
+	}
 	if first != nil {
-		if first.CAFingerprint == "" {
-			first.CAFingerprint = pin // a pinless source never overrides a pin
+		// A local pin is authoritative: it replaces a pin the (spoofable)
+		// metadata document carries; a pinless source never overrides a pin.
+		if pin != "" && (first.CAFingerprint == "" || firstNet) {
+			first.CAFingerprint = pin
 		}
 		if first.Architecture == "" {
 			first.Architecture = runtime.GOARCH
