@@ -198,18 +198,46 @@ layout) as the identity file and lets the agent's strict parser decide.
 
 ## Drive scan (`powernode-provision.cfg`)
 
-A booting node scans attached drives for a v1 document (agent
+A booting, UNENROLLED node scans attached drives for a v1 document (agent
 `identity.MediaScanStrategy`, `agent/internal/identity/media.go`). The file is
 `/powernode-provision.cfg` at the filesystem root, or `/powernode/provision.cfg`.
 
+- **Never on an enrolled node.** The scan returns not-found before touching any
+  device when a usable `node.crt` + `node.key` exists in the PKI dir, and the
+  Resolver never runs it after an earlier source already supplied an identity
+  (so media cannot veto it or attach a pin). This holds for every call site
+  that resolves identity (runtime bootstrap, CLI, soft_recompose, prepare-root).
 - Probe order: removable non-optical block devices; `LABEL=cidata`/`CIDATA`
   then `/dev/sr*`; remaining disks. Disks backing any current mount (root,
-  `/boot`, ...) and the image's `LABEL=BOOT` partition are skipped.
-- Filesystems vfat, exfat, iso9660, ext4, always `-o ro,nosuid,nodev,noexec`;
-  nothing on the media is executed and symlinks on it are never followed.
-- Several files: the one whose `instance_id` is already known (cmdline, fw-cfg,
-  BOOT identity.cfg) wins; else the newest `issued_at`; else the scan REFUSES.
-- A file that fails the strict parse is a terminal refusal (no fall-through).
-  Only device names are logged, never contents or the key.
+  `/boot`, dm slaves, `/dev/root`) and the image's `LABEL=BOOT` partition are skipped.
+- Per device: filesystem signature sniffed first (vfat, exfat, iso9660,
+  ext2/3/4) and mounted ONCE with that type, never with a guess loop. The block
+  device is made read-only (BLKROSET) before the mount, ext4 gets `noload`, and
+  every mount is `-o ro,nosuid,nodev,noexec`. A device that cannot be set
+  read-only is not mounted.
+- The file is opened component by component with `O_NOFOLLOW` (symlinks on the
+  media are never followed), must be a regular file, and is refused if larger
+  than the parser cap even if the excess is whitespace. Nothing is executed.
+- **Selection.** All candidates are read within the budget, then: documents
+  that disagree on `server` or `ca_fingerprint` are never arbitrated by
+  `issued_at` or a known id. Non-removable sources (cidata, optical, extra
+  disks) win over removable USB; any conflict left after that REFUSES. Among
+  agreeing documents the one whose `instance_id` is already known (cmdline,
+  fw-cfg, BOOT identity.cfg) wins, else the newest `issued_at`, else REFUSE.
+- A file that fails the strict parse is a terminal refusal. Only device names
+  are logged, never contents or the key.
 - The accepted document is staged to `/run/powernode/identity.cfg` (0600).
-- Budget about 10 s; nothing found falls through to the next source.
+- **Budget (~10 s)** covers udev settle, the enumeration wait and the probe of
+  every candidate as seen by the caller. Per-device I/O runs in a goroutine that
+  is abandoned at the budget; work the kernel cannot interrupt (a mount or read
+  stuck in D-state) finishes in the background and is then unmounted with
+  `MNT_DETACH`. It is not a bound on that kernel work itself.
+
+### Threat model
+
+The scan is trust-on-first-use of physical media: whoever can attach a drive
+to an unenrolled node can offer it an enrolment document. The rules above bound
+this (pin required, conflicts refused, internal/seed media preferred, no effect
+once enrolled) but do not remove it. **Physical-access DoS:** a malformed or
+conflicting stick makes the scan refuse, which blocks enrolment of an
+UNENROLLED node until the stick is removed. An enrolled node is unaffected.

@@ -148,10 +148,12 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 			// (claim) or that goes over the network: unauthenticated cloud
 			// metadata (169.254.169.254 over HTTP) is spoofable on L2, so it can
 			// neither supply a pin nor veto a local identity (and skipping it
-			// avoids seconds of probing on bare metal). A later source never
+			// avoids seconds of probing on bare metal). The removable-media
+			// scan is skipped for the same reason: a stick must never veto a
+			// legitimate identity nor attach an attacker-chosen pin to it. A later source never
 			// replaces the identity that supplied the key.
 			switch s.(type) {
-			case *ClaimStrategy, *CloudStrategy:
+			case *ClaimStrategy, *CloudStrategy, *MediaScanStrategy:
 				continue
 			}
 		}

@@ -29,17 +29,22 @@ type fakeMedia struct {
 	links map[string]string // relative path -> symlink target
 }
 
-type mountCall struct{ dev, fstype, opts string }
+type mountCall struct{ dev, fstype, opts, data string }
 
 type fakeMachine struct {
-	t        *testing.T
-	root     string
-	mu       sync.Mutex
-	media    map[string]fakeMedia // device name -> content
-	calls    []mountCall
-	unmounts []string
-	logs     []string
-	block    chan struct{} // when set, Mount blocks until closed
+	t               *testing.T
+	root            string
+	mu              sync.Mutex
+	media           map[string]fakeMedia // device name -> content
+	calls           []mountCall
+	unmounts        []string
+	detaches        []bool
+	sniffs          []string
+	events          []string // "ro:<dev>" / "mount:<dev>" in call order
+	logs            []string
+	unmountErrFirst bool          // first non-detach unmount fails
+	gate            chan struct{} // when set, Mount blocks until closed and IGNORES ctx (a wedged syscall)
+	roErr           error
 }
 
 func newFakeMachine(t *testing.T) *fakeMachine {
@@ -102,17 +107,14 @@ func (m *fakeMachine) writeMountInfo(mounts ...string) {
 	m.write(m.path("proc-mountinfo"), b.String())
 }
 
-func (m *fakeMachine) mount(ctx context.Context, src, target, fstype, opts string) error {
-	if m.block != nil {
-		select {
-		case <-m.block:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+func (m *fakeMachine) mount(ctx context.Context, src, target, fstype, opts, data string) error {
+	if m.gate != nil {
+		<-m.gate
 	}
 	dev := filepath.Base(src)
 	m.mu.Lock()
-	m.calls = append(m.calls, mountCall{dev, fstype, opts})
+	m.calls = append(m.calls, mountCall{dev, fstype, opts, data})
+	m.events = append(m.events, "mount:"+dev)
 	med, ok := m.media[dev]
 	m.mu.Unlock()
 	if !ok || med.fs != fstype {
@@ -139,26 +141,49 @@ func (m *fakeMachine) mount(ctx context.Context, src, target, fstype, opts strin
 	return nil
 }
 
-func (m *fakeMachine) unmount(target string) error {
+func (m *fakeMachine) unmount(target string, detach bool) error {
 	m.mu.Lock()
 	m.unmounts = append(m.unmounts, target)
+	m.detaches = append(m.detaches, detach)
+	fail := m.unmountErrFirst && !detach
 	m.mu.Unlock()
+	if fail {
+		return errors.New("busy")
+	}
 	return os.RemoveAll(target) // the fake "media" lives in the dir
+}
+
+func (m *fakeMachine) sniff(dev string) string {
+	name := filepath.Base(dev)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sniffs = append(m.sniffs, name)
+	return m.media[name].fs
+}
+
+func (m *fakeMachine) setRO(dev string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.events = append(m.events, "ro:"+filepath.Base(dev))
+	return m.roErr
 }
 
 func (m *fakeMachine) strategy(known ...string) *MediaScanStrategy {
 	return &MediaScanStrategy{
-		SysBlock:  m.path("sys/block"),
-		DevRoot:   m.path("dev"),
-		MountInfo: m.path("proc-mountinfo"),
-		MountRoot: m.path("run/media"),
-		StagePath: m.path("run/powernode/identity.cfg"),
-		Budget:    5 * time.Second,
-		EnumWait:  -1,
-		KnownIDs:  func(context.Context) []string { return known },
-		Settle:    func(context.Context, time.Duration) {},
-		Mount:     m.mount,
-		Unmount:   m.unmount,
+		SysBlock:    m.path("sys/block"),
+		DevRoot:     m.path("dev"),
+		MountInfo:   m.path("proc-mountinfo"),
+		MountRoot:   m.path("run/media"),
+		StagePath:   m.path("run/powernode/identity.cfg"),
+		Budget:      5 * time.Second,
+		EnumWait:    -1,
+		KnownIDs:    func(context.Context) []string { return known },
+		Settle:      func(context.Context, time.Duration) {},
+		Mount:       m.mount,
+		Unmount:     m.unmount,
+		Sniff:       m.sniff,
+		SetReadOnly: m.setRO,
+		Enrolled:    func() bool { return false },
 		Logf: func(f string, a ...any) {
 			m.mu.Lock()
 			m.logs = append(m.logs, strings.TrimSpace(fmt.Sprintf(f, a...)))
@@ -167,17 +192,7 @@ func (m *fakeMachine) strategy(known ...string) *MediaScanStrategy {
 	}
 }
 
-func (m *fakeMachine) devOrder() []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, c := range m.calls {
-		if !seen[c.dev] {
-			seen[c.dev] = true
-			out = append(out, c.dev)
-		}
-	}
-	return out
-}
+func (m *fakeMachine) devOrder() []string { return append([]string(nil), m.sniffs...) }
 
 const (
 	idA = "0198f3a2-7b1c-7d2e-9a4f-1234567890ab"
@@ -219,21 +234,21 @@ func TestMediaScanProbeOrderAndRootExclusion(t *testing.T) {
 	}
 }
 
-func TestMediaScanMountFlagsAndFilesystemOrder(t *testing.T) {
-	m := newFakeMachine(t)
-	m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
-	if _, err := m.strategy().Discover(context.Background()); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("got %v", err)
-	}
-	var types []string
-	for _, c := range m.calls {
-		if c.opts != "ro,nosuid,nodev,noexec" {
-			t.Fatalf("mount opts = %q", c.opts)
+func TestMediaScanMountsOnceWithTheSniffedTypeAndFlags(t *testing.T) {
+	for fs, wantData := range map[string]string{"vfat": "", "exfat": "", "iso9660": "", "ext4": "noload"} {
+		m := newFakeMachine(t)
+		m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
+		m.media["sdb1"] = fakeMedia{fs: fs}
+		if _, err := m.strategy().Discover(context.Background()); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s: got %v", fs, err)
 		}
-		types = append(types, c.fstype)
-	}
-	if want := []string{"vfat", "exfat", "iso9660", "ext4"}; !reflect.DeepEqual(types, want) {
-		t.Fatalf("fs order = %v, want %v", types, want)
+		if len(m.calls) != 1 {
+			t.Fatalf("%s: want exactly one mount, got %v", fs, m.calls)
+		}
+		c := m.calls[0]
+		if c.fstype != fs || c.opts != "ro,nosuid,nodev,noexec" || c.data != wantData {
+			t.Fatalf("%s: mount = %+v", fs, c)
+		}
 	}
 }
 
@@ -430,8 +445,9 @@ func TestMediaScanWaitsForLateEnumerationWithinBudget(t *testing.T) {
 func TestMediaScanTotalBudgetBoundsAHungMount(t *testing.T) {
 	m := newFakeMachine(t)
 	m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
-	m.block = make(chan struct{})
-	defer close(m.block)
+	m.media["sdb1"] = fakeMedia{fs: "vfat"}
+	m.gate = make(chan struct{})
+	defer close(m.gate)
 	s := m.strategy()
 	s.Budget = 150 * time.Millisecond
 	start := time.Now()
