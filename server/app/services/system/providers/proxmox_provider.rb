@@ -378,6 +378,9 @@ module System
         return unless record&.pivot_boot?
         return unless ::System::EnrollmentSeed.ever_seeded?(record)
         return if record.config.is_a?(Hash) && record.config["federation_spawn"].present?
+        # D13 cleanup already detached and removed the spent seed: do not re-create it.
+        sc = record.config.is_a?(Hash) ? record.config["seed_cleanup"] : nil
+        return if sc.is_a?(Hash) && sc["state"] == "done" && sc["outcome"] != "abandoned"
 
         if ::System::EnrollmentSeed.enrolled?(record)
           # Neutralise the seed in place (the VM's cicustom/ISO still points at it,
@@ -399,16 +402,16 @@ module System
       end
 
       # D13 (best-effort, NEVER restarts the VM): detach the spent seed from an
-      # ENROLLED, platform-seeded pivot-boot VM, then delete its files. On a running
-      # VM PVE queues the config delete as a pending change that applies at the
-      # next stop/start, so this is two-phase and idempotent:
-      #   1. seed still attached (current config): queue `delete` of ide2 (ISO
-      #      transport) or cicustom (snippet transport) -> :awaiting_stop. The files
-      #      stay (the running VM and the pending config may still reference them).
-      #   2. seed no longer attached (the stop applied it): remove the ISO /
-      #      snippets -> :cleared.
-      # A later D12 start only rewrites the neutral placeholder file in place.
-      # Never logs the seed.
+      # ENROLLED, platform-seeded pivot-boot VM, then delete its files. Idempotent,
+      # so each sweep just re-derives where it is from the LIVE config:
+      #   ISO transport: seed ISO still on ide2 -> queue `delete=ide2` (:awaiting_stop,
+      #     applied at the next natural stop); once detached, delete the ISO volume.
+      #   Snippet transport: cicustom still referenced -> `delete=cicustom`; if PVE only
+      #     queued it, wait. Once gone, regenerate the attached cloud-init drive (it
+      #     keeps the spent key until rewritten; on a running VM a CD media swap, not a
+      #     restart) and only then remove the snippets -> :cleared. A failed regenerate
+      #     keeps :awaiting_stop.
+      # A later D12 start finds seed_cleanup done and writes nothing. Never logs the seed.
       def clear_enrollment_seed!(instance_id, instance: nil)
         with_known_instance(instance) do
           node, kind, vmid = parse_instance_id!(instance_id)
@@ -417,7 +420,8 @@ module System
           return { outcome: :noop, note: "proxmox: #{skip}" } if skip
 
           c = require_client!
-          cfg = c.get("/api2/json/nodes/#{node}/qemu/#{vmid}/config", { "current" => 1 })
+          config_path = "/api2/json/nodes/#{node}/qemu/#{vmid}/config"
+          cfg = c.get(config_path, { "current" => 1 })
           cfg = {} unless cfg.is_a?(Hash)
           key = seed_discriminator(instance: record)
           if cidata_iso_transport?
@@ -427,8 +431,26 @@ module System
             delete_cidata_iso(c, node, filename)
           else
             seed_key = "#{vmid}-#{key}"
-            return queue_seed_detach(c, node, vmid, "cicustom") if cfg["cicustom"].to_s.include?(seed_key)
+            if cfg["cicustom"].to_s.include?(seed_key)
+              c.put(config_path, { "delete" => "cicustom" })
+              cfg = c.get(config_path, { "current" => 1 })
+              cfg = {} unless cfg.is_a?(Hash)
+              # Older PVE only queues the delete for the next stop: the snippets are
+              # still referenced, so keep them and wait.
+              return awaiting_stop("cicustom removal queued, applied at the next natural stop (no restart)") if cfg["cicustom"].to_s.include?(seed_key)
+            end
 
+            # The attached cloud-init drive keeps the spent key until regenerated.
+            # On a running VM this is a CD media swap, not a restart. Only report
+            # `cleared` once it succeeded; otherwise keep waiting.
+            if cloudinit_drive?(cfg)
+              begin
+                c.put("/api2/json/nodes/#{node}/qemu/#{vmid}/cloudinit")
+              rescue Proxmox::Client::Error => e
+                logger.warn("[#{self.class.name}] cloud-init drive regenerate failed: #{e.class}")
+                return awaiting_stop("cloud-init drive regenerate failed, will retry")
+              end
+            end
             delete_cicustom_snippets(seed_key)
           end
           { outcome: :cleared, note: "proxmox: seed detached and removed" }
@@ -450,7 +472,15 @@ module System
 
       private def queue_seed_detach(c, node, vmid, field)
         c.put("/api2/json/nodes/#{node}/qemu/#{vmid}/config", { "delete" => field })
-        { outcome: :awaiting_stop, note: "proxmox: #{field} removal queued, applied at the next natural stop (no restart)" }
+        awaiting_stop("#{field} removal queued, applied at the next natural stop (no restart)")
+      end
+
+      private def awaiting_stop(note)
+        { outcome: :awaiting_stop, note: "proxmox: #{note}" }
+      end
+
+      private def cloudinit_drive?(cfg)
+        cfg.values.any? { |v| v.is_a?(String) && v.include?("cloudinit") }
       end
 
       private def delete_cidata_iso(c, node, filename)
@@ -458,7 +488,10 @@ module System
                   pve_credential("default_storage", "default_storage").presence
         return if storage.blank?
 
-        c.delete("/api2/json/nodes/#{node}/storage/#{storage}/content/#{storage}:iso/#{filename}")
+        # The volid ("<storage>:iso/<file>") contains ":" and "/", so it is sent as ONE
+        # percent-encoded path segment, and the resulting task is awaited.
+        upid = c.delete("/api2/json/nodes/#{node}/storage/#{storage}/content/#{encode_volid("#{storage}:iso/#{filename}")}")
+        c.wait_task(node: node, upid: upid) if upid_like?(upid)
       rescue Proxmox::Client::NotFoundError
         nil # already gone
       end

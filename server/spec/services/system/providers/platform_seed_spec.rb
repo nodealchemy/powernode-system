@@ -584,40 +584,73 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
         %w[user meta net].each { |k| File.write(File.join(tmp, "100-#{disc}-#{k}.yml"), "seed") }
       end
 
-      it "snippet transport: queues the cicustom removal for the next stop and KEEPS the files meanwhile" do
-        allow(client).to receive(:get).with(config_path, { "current" => 1 })
-          .and_return(attached_config("cicustom" => "snip:snippets/100-#{disc}-user.yml"))
+      def stub_config(*configs)
+        allow(client).to receive(:get).with(config_path, { "current" => 1 }).and_return(*configs)
+      end
+
+      let(:cicustom_ref) { "snip:snippets/100-#{disc}-user.yml" }
+
+      it "snippet transport: deletes cicustom, REGENERATES the cloudinit drive, then removes the snippets" do
+        stub_config(attached_config("cicustom" => cicustom_ref), attached_config({}))
+        order = []
+        allow(client).to receive(:put) { |path, body = nil| order << [ path, body ]; nil }
 
         result = provider.clear_enrollment_seed!(cloud_id, instance: instance)
 
-        expect(client).to have_received(:put).with(config_path, { "delete" => "cicustom" })
-        expect(result).to include(outcome: :awaiting_stop)
-        expect(Dir[File.join(tmp, "*.yml")].size).to eq(3)
+        expect(order).to eq([ [ config_path, { "delete" => "cicustom" } ],
+                              [ "/api2/json/nodes/pve1/qemu/100/cloudinit", nil ] ])
+        expect(result).to include(outcome: :cleared)
+        expect(Dir[File.join(tmp, "*.yml")]).to be_empty
       end
 
       it "never restarts the VM: no status endpoint is ever called" do
-        allow(client).to receive(:get).with(config_path, { "current" => 1 })
-          .and_return(attached_config("cicustom" => "snip:snippets/100-#{disc}-user.yml"))
+        stub_config(attached_config("cicustom" => cicustom_ref), attached_config({}))
         expect(client).not_to receive(:post)
         provider.clear_enrollment_seed!(cloud_id, instance: instance)
       end
 
-      it "snippet transport: removes the snippets once the stop has applied the change" do
-        allow(client).to receive(:get).with(config_path, { "current" => 1 }).and_return(attached_config({}))
-
+      it "stays awaiting_stop (files kept) when the cloudinit regenerate fails" do
+        stub_config(attached_config("cicustom" => cicustom_ref), attached_config({}))
+        allow(client).to receive(:put).with("/api2/json/nodes/pve1/qemu/100/cloudinit")
+                                      .and_raise(System::Providers::Proxmox::Client::Error, "boom")
         result = provider.clear_enrollment_seed!(cloud_id, instance: instance)
 
+        expect(result).to include(outcome: :awaiting_stop)
+        expect(Dir[File.join(tmp, "*.yml")].size).to eq(3)
+      end
+
+      it "stays awaiting_stop when PVE only queued the cicustom delete (still referenced), without regenerating" do
+        stub_config(attached_config("cicustom" => cicustom_ref), attached_config("cicustom" => cicustom_ref))
+        result = provider.clear_enrollment_seed!(cloud_id, instance: instance)
+
+        expect(client).not_to have_received(:put).with("/api2/json/nodes/pve1/qemu/100/cloudinit")
+        expect(result).to include(outcome: :awaiting_stop)
+        expect(Dir[File.join(tmp, "*.yml")].size).to eq(3)
+      end
+
+      it "a later sweep (cicustom already gone) regenerates and removes the snippets" do
+        stub_config(attached_config({}))
+        result = provider.clear_enrollment_seed!(cloud_id, instance: instance)
+
+        expect(client).to have_received(:put).with("/api2/json/nodes/pve1/qemu/100/cloudinit")
+        expect(client).not_to have_received(:put).with(config_path, anything)
         expect(result).to include(outcome: :cleared)
-        expect(Dir[File.join(tmp, "*.yml")]).to be_empty
+      end
+
+      it "skips the regenerate when the VM has no cloudinit drive" do
+        stub_config({ "name" => "vm" })
+        expect(provider.clear_enrollment_seed!(cloud_id, instance: instance)).to include(outcome: :cleared)
         expect(client).not_to have_received(:put)
       end
 
       context "ISO transport" do
         let(:iso) { "cidata-100-#{disc}.iso" }
+        let(:upid) { "UPID:pve1:0000ABCD:00001234:5F000000:imgdel:100:root@pam!powernode:" }
 
         before do
           connection.config["cidata_transport"] = "iso"
           connection.config["cidata_iso_storage"] = "isos"
+          allow(client).to receive(:delete).and_return(upid)
         end
 
         it "queues the ide2 removal, then deletes the uploaded ISO after the stop" do
@@ -630,7 +663,9 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
           expect(client).not_to have_received(:delete)
 
           second = provider.clear_enrollment_seed!(cloud_id, instance: instance)
-          expect(client).to have_received(:delete).with("/api2/json/nodes/pve1/storage/isos/content/isos:iso/#{iso}")
+          expect(client).to have_received(:delete)
+            .with("/api2/json/nodes/pve1/storage/isos/content/isos%3Aiso%2F#{iso}")
+          expect(client).to have_received(:wait_task).with(hash_including(node: "pve1", upid: upid))
           expect(second).to include(outcome: :cleared)
         end
 
@@ -664,6 +699,17 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
         expect(client).not_to receive(:put)
         expect(provider.clear_enrollment_seed!("pve1/lxc/100", instance: instance)).to include(outcome: :noop)
       end
+    end
+
+    it "does not re-write the neutral seed on start once the cleanup detached it (seed_cleanup done)" do
+      provider.start_instance(cloud_id)
+      enroll!
+      path = seed_file
+      File.delete(path)
+      instance.merge_config!("seed_cleanup" => { "state" => "done" })
+
+      provider.start_instance(cloud_id)
+      expect(seed_file).to be_nil
     end
 
     it "keeps the key out of the logs" do
