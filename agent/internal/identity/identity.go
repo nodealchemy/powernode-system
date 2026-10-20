@@ -73,9 +73,12 @@ type Resolver struct {
 //  2. FwCfgStrategy             — virtio-fw-cfg (libvirt/QEMU)
 //  3. LocalIdentityStrategy     — /run/powernode/identity.cfg (Option 3:
 //     NoCloud cicustom-staged enrollment identity, uefi_disk builders)
-//  4. ClaimStrategy             — physical disk-image flow (boot partition)
-//  5. AWS / GCP / Azure / DO    — cloud metadata (~1-1.5s timeout each)
-//  6. LocalIdentityStrategy     — /etc/identity.cfg (legacy fallback)
+//  4. MediaScanStrategy         — powernode-provision.cfg on attached drives
+//     (USB, cidata/CD-ROM, extra disks; media.go). D10 formalises its place
+//     relative to provider metadata and the BOOT identity.cfg.
+//  5. ClaimStrategy             — physical disk-image flow (boot partition)
+//  6. AWS / GCP / Azure / DO    — cloud metadata (~1-1.5s timeout each)
+//  7. LocalIdentityStrategy     — /etc/identity.cfg (legacy fallback)
 //
 // Cloud strategies are deliberately ordered after the no-network paths so
 // a QEMU node booting locally doesn't waste seconds probing cloud
@@ -108,6 +111,7 @@ func DefaultResolver() *Resolver {
 			&CmdlineStrategy{},
 			&FwCfgStrategy{},
 			&LocalIdentityStrategy{Path: "/run/powernode/identity.cfg"},
+			&MediaScanStrategy{},
 			&ClaimStrategy{},
 			&CloudStrategy{Client: &AwsMetadataClient{}},
 			&CloudStrategy{Client: &GcpMetadataClient{}},

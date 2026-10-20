@@ -195,3 +195,21 @@ The agent requires the provision part of a multipart to parse as strict v1 and
 refuses more than one such part or a legacy shape inside it. The initramfs
 stager stages any JSON user-data that has a `"version"` key (any case, any
 layout) as the identity file and lets the agent's strict parser decide.
+
+## Drive scan (`powernode-provision.cfg`)
+
+A booting node scans attached drives for a v1 document (agent
+`identity.MediaScanStrategy`, `agent/internal/identity/media.go`). The file is
+`/powernode-provision.cfg` at the filesystem root, or `/powernode/provision.cfg`.
+
+- Probe order: removable non-optical block devices; `LABEL=cidata`/`CIDATA`
+  then `/dev/sr*`; remaining disks. Disks backing any current mount (root,
+  `/boot`, ...) and the image's `LABEL=BOOT` partition are skipped.
+- Filesystems vfat, exfat, iso9660, ext4, always `-o ro,nosuid,nodev,noexec`;
+  nothing on the media is executed and symlinks on it are never followed.
+- Several files: the one whose `instance_id` is already known (cmdline, fw-cfg,
+  BOOT identity.cfg) wins; else the newest `issued_at`; else the scan REFUSES.
+- A file that fails the strict parse is a terminal refusal (no fall-through).
+  Only device names are logged, never contents or the key.
+- The accepted document is staged to `/run/powernode/identity.cfg` (0600).
+- Budget about 10 s; nothing found falls through to the next source.
