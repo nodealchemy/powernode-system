@@ -77,17 +77,27 @@ RSpec.describe "Api::V1::System::NodeInstanceBootstrapTokens", type: :request do
       expect(row.metadata.to_json).not_to include(data["token"])
     end
 
-    it "does not log the plaintext" do
+    it "does not log the plaintext to any logger (Rails, ActionController, ActiveRecord)" do
       io = StringIO.new
-      logger = ActiveSupport::Logger.new(io)
-      original = Rails.logger
-      Rails.logger = logger
+      capture = ActiveSupport::Logger.new(io)
+      originals = [ Rails, ActionController::Base, ActiveRecord::Base ].map { |k| [ k, k.logger ] }
+      originals.each { |k, orig| k.logger = ActiveSupport::BroadcastLogger.new(*[ orig, capture ].compact) }
       begin
         post_create
       ensure
-        Rails.logger = original
+        originals.each { |k, orig| k.logger = orig }
       end
+      expect(io.string).to be_present
       expect(io.string).not_to include(data["token"])
+    end
+
+    it "revokes the instance's earlier operator key when minting a new one (one usable key per instance)" do
+      post_create
+      first_id = data["bootstrap_token"]["id"]
+      post_create
+      expect(System::BootstrapToken.find(first_id)).to be_revoked
+      expect(System::BootstrapToken.find(first_id).sealed_plaintext).to be_nil
+      expect(System::BootstrapToken.find(data["bootstrap_token"]["id"])).to be_usable
     end
 
     it "refuses with 409 when the instance has been claimed" do
@@ -97,8 +107,16 @@ RSpec.describe "Api::V1::System::NodeInstanceBootstrapTokens", type: :request do
       expect(response.body).not_to include("token\":\"")
     end
 
-    it "refuses with 409 when the instance is running" do
-      instance.update_columns(status: "running")
+    %w[running terminated error].each do |status|
+      it "refuses with 409 when the instance is #{status}" do
+        instance.update_columns(status: status)
+        expect { post_create }.not_to change { System::BootstrapToken.count }
+        expect(response).to have_http_status(:conflict)
+      end
+    end
+
+    it "refuses with 409 when the instance has already enrolled (mtls identity present)" do
+      instance.update_columns(mtls_subject: "CN=enrolled")
       expect { post_create }.not_to change { System::BootstrapToken.count }
       expect(response).to have_http_status(:conflict)
     end
@@ -108,9 +126,9 @@ RSpec.describe "Api::V1::System::NodeInstanceBootstrapTokens", type: :request do
       expect(response).to have_http_status(:forbidden)
     end
 
-    it "denies on permission, not on role" do
-      admin_role_only = create(:user, account: account, permissions: [])
-      post_create({}, user: admin_role_only)
+    it "denies a caller holding no permissions at all" do
+      no_permissions = create(:user, account: account, permissions: [])
+      post_create({}, user: no_permissions)
       expect(response).to have_http_status(:forbidden)
     end
 
@@ -144,6 +162,14 @@ RSpec.describe "Api::V1::System::NodeInstanceBootstrapTokens", type: :request do
       expect(response.body).not_to include(plaintext)
       expect(response.body).not_to include(minted.first.token_hash)
       expect(response.body).not_to include("sealed")
+    end
+
+    it "lists only operator keys, not platform-injected seeds for the same instance" do
+      System::BootstrapToken.issue!(node: node, node_instance: instance, intended_subject: instance.id,
+                                    purpose: "cloud_seed")
+      get base_path, headers: auth_headers_for(manager)
+      listed = JSON.parse(response.body)["data"]["bootstrap_tokens"]
+      expect(listed.map { |t| t["purpose"] }.uniq).to eq([ "operator_key" ])
     end
 
     it "does not list another instance's tokens" do
@@ -187,6 +213,14 @@ RSpec.describe "Api::V1::System::NodeInstanceBootstrapTokens", type: :request do
       token.consume!
       delete "#{base_path}/#{token.id}", headers: auth_headers_for(manager)
       expect(response).to have_http_status(:conflict)
+    end
+
+    it "404s for a platform-injected seed: REST revokes operator keys only" do
+      seed, _ = System::BootstrapToken.issue!(node: node, node_instance: instance, intended_subject: instance.id,
+                                              purpose: "cloud_seed")
+      delete "#{base_path}/#{seed.id}", headers: auth_headers_for(manager)
+      expect(response).to have_http_status(:not_found)
+      expect(seed.reload.revoked_at).to be_nil
     end
 
     it "404s for a token on another instance" do

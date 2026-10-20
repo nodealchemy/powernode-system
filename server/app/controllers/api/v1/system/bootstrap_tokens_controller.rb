@@ -37,14 +37,11 @@ module Api
         end
 
         def create
-          # Same guard as NodeInstancesController#boot_config: once a device has
-          # claimed (or is running as) this instance, a fresh key would only
-          # invite a second device to try to bind it.
-          if @instance.claimed? || @instance.status == "running"
-            return render_error(
-              "A bootstrap key cannot be issued: this instance has already been claimed by a device or is running.",
-              status: :conflict
-            )
+          # Same spirit as NodeInstancesController#boot_config: once a device has
+          # claimed, enrolled as, or is running (or finished as) this instance, a
+          # fresh key would only invite a second device to try to bind it.
+          if (why = ::System::BootstrapToken.instance_refusal(@instance))
+            return render_error("A bootstrap key cannot be issued: #{why}.", status: :conflict)
           end
 
           ttl = requested_ttl
@@ -92,7 +89,7 @@ module Api
         end
 
         def instance_tokens
-          ::System::BootstrapToken.where(node_id: @node.id, node_instance_id: @instance.id)
+          ::System::BootstrapToken.where(node_id: @node.id, node_instance_id: @instance.id, purpose: "operator_key")
         end
 
         def set_token
