@@ -29,9 +29,17 @@ end
 # the account's environments, instead of discovering it mid-cascade when the
 # environment's own restrict_with_error fires. Only this extension's own
 # associations: core's (projects) are destroyed first by the teardown itself.
-Account.register_teardown_guard(:system_environment_fleet) do |account|
-  Ai::Environment.reflect_on_all_associations
-                 .select { |r| r.options[:dependent] == :restrict_with_error && r.options[:class_name].to_s.start_with?("System::") }
-                 .select { |r| r.klass.where(r.foreign_key => Ai::Environment.where(account_id: account.id).select(:id)).exists? }
-                 .map { |r| "Cannot delete account with existing #{r.name.to_s.humanize.downcase} in its environments" }
+# `covers:` tells the FK coverage spec that every column of these tables is
+# safe because the teardown refuses while such rows exist.
+system_fleet_reflections = lambda do
+  Ai::Environment.reflect_on_all_associations.select do |r|
+    r.options[:dependent] == :restrict_with_error && r.options[:class_name].to_s.start_with?("System::")
+  end
+end
+
+Account.register_teardown_guard(:system_environment_fleet,
+                                covers: system_fleet_reflections.call.map { |r| [ r.klass.table_name, "*" ] }) do |account|
+  system_fleet_reflections.call
+                          .select { |r| r.klass.where(r.foreign_key => Ai::Environment.where(account_id: account.id).select(:id)).exists? }
+                          .map { |r| "Cannot delete account with existing #{r.name.to_s.humanize.downcase} in its environments" }
 end

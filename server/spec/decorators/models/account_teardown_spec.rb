@@ -23,6 +23,16 @@ RSpec.describe "System extension account teardown" do
     expect(System::NodeModuleVersion.find(version.id).created_by_id).to be_nil if version
   end
 
+  it "removes a disk image webhook owned by the account together with the account" do
+    account = create(:account)
+    create(:user, account: account)
+    webhook = create(:system_disk_image_webhook, account: account)
+
+    expect { account.destroy! }.not_to raise_error
+
+    expect(System::DiskImageWebhook.exists?(webhook.id)).to be false
+  end
+
   it "refuses to destroy an account whose environment still holds fleet rows, changing nothing" do
     account = create(:account)
     agent_user = create(:user, account: account)
