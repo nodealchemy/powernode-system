@@ -499,6 +499,13 @@ bundle exec rails runner '
 - Production deployments must mount `pki_int` and the `node` role **before**
   agent enrollment will work against real Vault-issued certificates. The
   fixture path is intentionally not production-grade.
+- The `node` role MUST set **`use_csr_common_name=false`** (Vault's default is
+  `true`): the platform passes the intended `common_name` to `pki_int/sign/node`,
+  and with the default the agent's own CSR CN wins instead. Enrolment verifies the
+  issued certificate's CN against the intended subject and aborts (HTTP 503, token
+  not consumed) on a mismatch, so a wrongly configured role fails closed rather
+  than minting a certificate the node's mTLS calls would be rejected for. No role
+  config lives in this repo; set it where the role is created.
 
 **What this means for the smokes:**
 

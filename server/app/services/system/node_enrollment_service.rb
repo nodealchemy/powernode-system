@@ -7,8 +7,13 @@ module System
   #
   # Reference: Golden Eclipse plan — node_api Contract (POST /enroll); M0.O.
   class NodeEnrollmentService
+    # transient: true marks a failure that rolled the token consume back and is
+    # worth retrying with the SAME key (CA/Vault unavailable, audit sink down,
+    # persistence failure, issued-CN mismatch). The controller maps it to 503;
+    # everything else is a definitive refusal (4xx). Audits still FAIL CLOSED:
+    # nothing is issued either way, only the status differs.
     Result = Struct.new(:success?, :error, :node_certificate, :cert_pem, :ca_chain_pem,
-                        :node_instance, keyword_init: true)
+                        :node_instance, :transient, keyword_init: true)
 
     class EnrollmentError < StandardError; end
 
@@ -126,6 +131,7 @@ module System
           ttl_seconds: ttl_seconds,
           common_name: common_name
         )
+        verify_issued_common_name!(issued[:cert_pem], common_name)
 
         cert_record = ::System::NodeCertificate.create!(
           node_instance: instance,
@@ -168,14 +174,16 @@ module System
     rescue ::System::BootstrapToken::InvalidConsumption => e
       failure(e.message)
     rescue ::System::BootstrapToken::AuditFailure
-      failure("enrolment audit unavailable")
+      failure("enrolment audit unavailable", transient: true)
     rescue ::ActiveRecord::Deadlocked
       # The transaction rolled back, nothing is spent: the agent may retry.
-      failure("enrolment conflicted with a concurrent change, retry")
-    rescue ::System::InternalCaService::CaError, ::System::InternalCaService::CsrError => e
-      failure("CSR/CA failure: #{e.message}")
+      failure("enrolment conflicted with a concurrent change, retry", transient: true)
+    rescue ::System::InternalCaService::CsrError => e
+      failure("CSR/CA failure: #{e.message}") # the caller's CSR is bad: definitive
+    rescue ::System::InternalCaService::CaError => e
+      failure("CSR/CA failure: #{e.message}", transient: true)
     rescue ::ActiveRecord::RecordInvalid => e
-      failure("certificate persistence failed: #{e.record.errors.full_messages.join('; ')}")
+      failure("certificate persistence failed: #{e.record.errors.full_messages.join('; ')}", transient: true)
     end
 
     private
@@ -217,8 +225,22 @@ module System
       nil
     end
 
-    def failure(message)
-      Result.new(success?: false, error: message)
+    # Fail closed if the CA issued a certificate whose subject CN is not the
+    # identity we asked for (e.g. a Vault role with use_csr_common_name=true
+    # lets the CSR's CN win, and the node then 401s on every mTLS call).
+    # Raised INSIDE the enrolment transaction, so the token is not consumed.
+    def verify_issued_common_name!(cert_pem, expected)
+      cn = OpenSSL::X509::Certificate.new(cert_pem.to_s).subject.to_a.find { |name, _v, _t| name == "CN" }&.[](1)
+      return if cn.to_s == expected.to_s
+
+      raise ::System::InternalCaService::CaError,
+            "issued certificate CN does not match the intended subject (check the CA role: use_csr_common_name must be false)"
+    rescue OpenSSL::X509::CertificateError
+      raise ::System::InternalCaService::CaError, "issued certificate is not parseable"
+    end
+
+    def failure(message, transient: false)
+      Result.new(success?: false, error: message, transient: transient)
     end
   end
 end

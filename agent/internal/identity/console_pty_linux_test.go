@@ -51,6 +51,9 @@ func ptyStrategy(t *testing.T, slavePath string, timeout time.Duration) (*Consol
 		t.Fatal(err)
 	}
 	stage := filepath.Join(dir, "run", "identity.cfg")
+	oldM := consoleMarkerPath
+	consoleMarkerPath = filepath.Join(dir, "run", "console-staged")
+	t.Cleanup(func() { consoleMarkerPath = oldM })
 	return &ConsolePromptStrategy{
 		Open: func() (ConsoleTTY, error) {
 			f, err := os.OpenFile(slavePath, os.O_RDWR|unix.O_NOCTTY|unix.O_NONBLOCK, 0)

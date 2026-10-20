@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -71,13 +72,40 @@ func lockConsole(path string) (func(), error) {
 	return func() { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN); f.Close() }, nil
 }
 
-func signalContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
+// signalContext cancels the returned context on SIGTERM/SIGINT and reports
+// which signal arrived (nil if none).
+func signalContext(ctx context.Context) (context.Context, context.CancelFunc, func() os.Signal) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
+	cctx, cancel := context.WithCancel(ctx)
+	var mu sync.Mutex
+	var got os.Signal
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case sig := <-ch:
+			mu.Lock()
+			got = sig
+			mu.Unlock()
+			cancel()
+		case <-stop:
+		}
+	}()
+	return cctx, func() { signal.Stop(ch); close(stop); cancel() },
+		func() os.Signal { mu.Lock(); defer mu.Unlock(); return got }
 }
 
-// reraiseSignal restores the default disposition and re-sends SIGTERM to
-// ourselves, so the process still terminates after the terminal is restored.
-func reraiseSignal() {
-	signal.Reset(syscall.SIGTERM, syscall.SIGINT)
-	_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+// killSelf is a seam for tests.
+var killSelf = func(s syscall.Signal) { _ = syscall.Kill(os.Getpid(), s) }
+
+// reraiseSignal restores the default disposition and re-sends the signal that
+// was actually received, so the process still dies the way it was told to
+// after the terminal is restored.
+func reraiseSignal(sig os.Signal) {
+	s, ok := sig.(syscall.Signal)
+	if !ok {
+		s = syscall.SIGTERM
+	}
+	signal.Reset(s)
+	killSelf(s)
 }

@@ -303,4 +303,69 @@ RSpec.describe System::NodeEnrollmentService do
       expect(token_record.reload).not_to be_consumed
     end
   end
+
+  describe "#enroll! failure classification (retryable vs definitive)" do
+    it "marks an audit failure transient (fail closed, key still valid)" do
+      token_record
+      allow(AuditLog).to receive(:log_action).and_raise(StandardError, "audit down")
+      result = described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem)
+      expect(result.success?).to be(false)
+      expect(result.transient).to be(true)
+    end
+
+    it "marks a CA failure transient and rolls the token back" do
+      allow(System::InternalCaService).to receive(:issue_certificate)
+        .and_raise(System::InternalCaService::CaError, "vault down")
+      result = described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem)
+      expect(result.transient).to be(true)
+      expect(token_record.reload.consumed_at).to be_nil
+    end
+
+    it "marks a persistence failure transient" do
+      allow(System::NodeCertificate).to receive(:create!).and_raise(ActiveRecord::RecordInvalid.new(System::NodeCertificate.new))
+      expect(described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem).transient).to be(true)
+    end
+
+    it "keeps definitive refusals non-transient (bad token, bad CSR)" do
+      bad = described_class.enroll!(bootstrap_token_plaintext: "not-a-real-enrol-key", csr_pem: csr_pem)
+      expect([bad.success?, bad.transient]).to eq([false, false])
+      malformed = described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: "garbage")
+      expect([malformed.success?, malformed.transient]).to eq([false, false])
+    end
+  end
+
+  describe "#enroll! issued-CN verification (fail closed)" do
+    def cert_with_cn(cn)
+      key = OpenSSL::PKey.generate_key("ED25519")
+      OpenSSL::X509::Certificate.new.tap do |c|
+        c.version = 2
+        c.serial = 7
+        c.subject = c.issuer = OpenSSL::X509::Name.parse("/CN=#{cn}")
+        c.public_key = key
+        c.not_before = Time.current - 60
+        c.not_after = Time.current + 3600
+        c.sign(key, nil)
+      end
+    end
+
+    it "aborts as transient, without consuming the token, when the CA put a different CN in the certificate" do
+      wrong = cert_with_cn("00000000-0000-0000-0000-000000000000")
+      allow(System::InternalCaService).to receive(:issue_certificate).and_return(
+        cert_pem: wrong.to_pem, ca_chain_pem: wrong.to_pem, serial: "07", subject: wrong.subject.to_s,
+        not_before: wrong.not_before, not_after: wrong.not_after
+      )
+      result = nil
+      expect {
+        result = described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem)
+      }.not_to change(System::NodeCertificate, :count)
+      expect(result.success?).to be(false)
+      expect(result.transient).to be(true)
+      expect(result.error).to match(/CN does not match/)
+      expect(token_record.reload.consumed_at).to be_nil
+    end
+
+    it "accepts the certificate when the CN is the intended subject" do
+      expect(described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem).success?).to be(true)
+    end
+  end
 end

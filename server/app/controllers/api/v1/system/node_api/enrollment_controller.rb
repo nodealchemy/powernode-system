@@ -31,6 +31,12 @@ module Api
 
             unless result.success?
               Rails.logger.warn("[EnrollmentController] enroll failed: #{result.error}")
+              # Transient failures rolled the token back (the key is still valid):
+              # 503 + Retry-After tells the agent to retry, not to discard the key.
+              if result.transient
+                response.set_header("Retry-After", "30")
+                return render_error(result.error, 503)
+              end
               return render_error(result.error, 422)
             end
 

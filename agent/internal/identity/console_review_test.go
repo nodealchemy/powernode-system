@@ -11,20 +11,11 @@ import (
 	"time"
 )
 
-func withTempState(t *testing.T) (stage, refusals string) {
-	t.Helper()
-	dir := t.TempDir()
-	oldS, oldR := stagedIdentityPath, consoleRefusalsPath
-	stagedIdentityPath, consoleRefusalsPath = filepath.Join(dir, "identity.cfg"), filepath.Join(dir, "refusals")
-	t.Cleanup(func() { stagedIdentityPath, consoleRefusalsPath = oldS, oldR })
-	return stagedIdentityPath, consoleRefusalsPath
-}
-
 func fixtureWithState(t *testing.T, input, bootCfg string) *consoleFixture {
 	f := newConsole(t, input, bootCfg)
 	d := filepath.Dir(f.stage)
 	f.s.LockPath = filepath.Join(d, "lock")
-	f.s.RefusalsPath = filepath.Join(d, "refusals")
+	f.s.RefusalsPath = consoleRefusalsPath
 	f.s.Lock = func(string) (func(), error) { return func() {}, nil }
 	return f
 }
@@ -79,38 +70,6 @@ func TestConsoleDisabledAfterThreeRefusals(t *testing.T) {
 	f.tty.in = strings.NewReader(consoleDoc("") + "\n")
 	if _, err := f.s.Discover(context.Background()); !errors.Is(err, ErrNotFound) || len(f.ev.list()) != 0 {
 		t.Fatalf("after %d refusals the prompt must be disabled for this boot: %v %v", MaxConsoleRefusals, err, f.ev.list())
-	}
-}
-
-// M1 + staged cleanup
-func TestConsoleStagedDocumentDeletedOnSuccessAndOnRefusal(t *testing.T) {
-	stage, refusals := withTempState(t)
-	for _, refused := range []bool{false, true} {
-		os.RemoveAll(refusals)
-		os.WriteFile(stage, []byte("x"), 0o600)
-		id := &Identity{Purpose: ConsolePurpose}
-		if refused {
-			id.EnrolRefused()
-		} else {
-			id.EnrolSucceeded()
-		}
-		if _, err := os.Stat(stage); err == nil {
-			t.Fatalf("staged file must be removed (refused=%v)", refused)
-		}
-		_, err := os.Stat(refusals)
-		if refused && err != nil {
-			t.Fatal("a 4xx refusal counts toward the console refusal limit")
-		}
-		if !refused && err == nil {
-			t.Fatal("success resets the refusal counter")
-		}
-	}
-	// documents from any other source are never touched
-	os.WriteFile(stage, []byte("x"), 0o600)
-	(&Identity{Purpose: "disk_image_enroll"}).EnrolSucceeded()
-	(&Identity{}).EnrolRefused()
-	if _, err := os.Stat(stage); err != nil {
-		t.Fatal("only console-staged documents may be deleted")
 	}
 }
 

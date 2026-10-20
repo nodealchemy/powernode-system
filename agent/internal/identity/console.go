@@ -27,6 +27,8 @@ package identity
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -307,7 +309,7 @@ func (s *ConsolePromptStrategy) Discover(ctx context.Context) (*Identity, error)
 
 	// SIGTERM/SIGINT while prompting: restore the terminal, then die the way
 	// the signal intended.
-	sctx, stopSig := signalContext(ctx)
+	sctx, stopSig, received := signalContext(ctx)
 	defer stopSig()
 
 	timeout := s.Timeout
@@ -335,8 +337,8 @@ func (s *ConsolePromptStrategy) Discover(ctx context.Context) (*Identity, error)
 		restore()
 		_ = tty.Close()
 		go func() { wipe((<-ch).buf) }()
-		if ctx.Err() == nil { // a signal, not the caller
-			reraiseSignal()
+		if sig := received(); sig != nil && ctx.Err() == nil { // a signal, not the caller
+			reraiseSignal(sig)
 		}
 		return nil, sctx.Err()
 	}
@@ -377,7 +379,7 @@ func (s *ConsolePromptStrategy) Discover(ctx context.Context) (*Identity, error)
 	if boot.CAFingerprint != "" && id.CAFingerprint != boot.CAFingerprint {
 		return nil, s.refuseTerminal(refuse("document ca_fingerprint does not match the image's pin"))
 	}
-	if err := s.stage(doc); err != nil {
+	if err := s.stage(doc, id.BootstrapToken); err != nil {
 		return nil, fmt.Errorf("console-prompt: staging identity: %w", err)
 	}
 	id.CloudProvider = "console-prompt"
@@ -398,8 +400,14 @@ func (s *ConsolePromptStrategy) bareKeyDocument(b *Identity, key string) ([]byte
 		now = s.Now
 	}
 	t := now().UTC()
+	// The BOOT ID= (claim-by-ID images) is the real instance and becomes the CSR
+	// subject; a generic image has none, so the nil UUID is the placeholder.
+	instanceID := consolePlaceholderInstance
+	if uuidRe.MatchString(b.InstanceUUID) {
+		instanceID = b.InstanceUUID
+	}
 	m := map[string]any{
-		"version": 1, "server": b.PlatformURL, "instance_id": consolePlaceholderInstance,
+		"version": 1, "server": b.PlatformURL, "instance_id": instanceID,
 		"key": key, "ca_fingerprint": b.CAFingerprint,
 		"issued_at": t.Format(time.RFC3339), "expires_at": t.Add(24 * time.Hour).Format(time.RFC3339),
 		"purpose": ConsolePurpose,
@@ -415,7 +423,7 @@ func (s *ConsolePromptStrategy) bareKeyDocument(b *Identity, key string) ([]byte
 }
 
 // stage writes doc to the staged identity path atomically with mode 0600.
-func (s *ConsolePromptStrategy) stage(doc []byte) error {
+func (s *ConsolePromptStrategy) stage(doc []byte, key string) error {
 	path := s.StagePath
 	if path == "" {
 		path = DefaultStagePath
@@ -442,7 +450,22 @@ func (s *ConsolePromptStrategy) stage(doc []byte) error {
 		_ = os.Remove(tmp.Name())
 		return err
 	}
-	return nil
+	return writeMarker(path, key)
+}
+
+func writeMarker(stagedPath, key string) error {
+	raw, err := json.Marshal(stageMarker{Path: stagedPath, KeySHA: keyDigest(key)})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(consoleMarkerPath), 0o700); err != nil {
+		return err
+	}
+	tmp := consoleMarkerPath + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, consoleMarkerPath)
 }
 
 // consolePromptTimeout reads powernode.console_prompt_timeout=<seconds> from
@@ -469,9 +492,41 @@ func consolePromptTimeout(cmdlinePath string) time.Duration {
 
 // Package-level state paths (tests override them).
 var (
-	stagedIdentityPath  = DefaultStagePath
 	consoleRefusalsPath = DefaultRefusalsPath
+	// consoleMarkerPath records HOW a file was staged: it names the staged file
+	// and the sha256 of its key. Cleanup keys on it (not on the document's
+	// purpose, which a pasted document keeps), so it also works after an agent
+	// restart, when the identity is re-read from the staged file.
+	consoleMarkerPath = "/run/powernode/console-staged"
 )
+
+type stageMarker struct {
+	Path   string `json:"path"`
+	KeySHA string `json:"key_sha256"`
+}
+
+func keyDigest(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
+
+// takeMarker returns the marker when id's key is the staged one.
+func takeMarker(id *Identity) (stageMarker, bool) {
+	var m stageMarker
+	if id == nil || id.BootstrapToken == "" {
+		return m, false
+	}
+	raw, err := os.ReadFile(consoleMarkerPath)
+	if err != nil || json.Unmarshal(raw, &m) != nil || m.Path == "" {
+		return m, false
+	}
+	return m, m.KeySHA == keyDigest(id.BootstrapToken)
+}
+
+func dropStaged(m stageMarker) {
+	_ = os.Remove(m.Path)
+	_ = os.Remove(consoleMarkerPath)
+}
 
 func refusalCount(path string) int {
 	raw, err := os.ReadFile(path)
@@ -498,23 +553,23 @@ func (id *Identity) InstanceLabel() string {
 
 // EnrolSucceeded must be called after a successful enrolment: a console-staged
 // document is plaintext key material and is deleted, and the refusal counter
-// is reset. No-op for identities from any other source.
+// is reset. It acts only when id carries the staged key (see stageMarker), so
+// identities from other sources, and unrelated outcomes, never touch it.
 func (id *Identity) EnrolSucceeded() {
-	if id == nil || id.Purpose != ConsolePurpose {
-		return
+	if m, ok := takeMarker(id); ok {
+		dropStaged(m)
+		_ = os.Remove(consoleRefusalsPath)
 	}
-	_ = os.Remove(stagedIdentityPath)
-	_ = os.Remove(consoleRefusalsPath)
 }
 
 // EnrolRefused must be called when the platform definitively refused (4xx) the
 // credential: the staged console document is deleted so the next attempt
 // re-prompts (or reaches the claim poll) instead of re-reading a dead key
-// forever, and the refusal counts toward MaxConsoleRefusals.
+// forever, and the refusal counts toward MaxConsoleRefusals. A 5xx/network
+// failure is NOT a refusal: do not call this, the staged key stays.
 func (id *Identity) EnrolRefused() {
-	if id == nil || id.Purpose != ConsolePurpose {
-		return
+	if m, ok := takeMarker(id); ok {
+		dropStaged(m)
+		bumpRefusals(consoleRefusalsPath)
 	}
-	_ = os.Remove(stagedIdentityPath)
-	bumpRefusals(consoleRefusalsPath)
 }

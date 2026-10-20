@@ -90,6 +90,9 @@ func newConsole(t *testing.T, input string, bootCfg string) *consoleFixture {
 		boot = filepath.Join(dir, "absent.cfg")
 	}
 	stage := filepath.Join(dir, "run", "powernode", "identity.cfg")
+	oldMarker, oldRef := consoleMarkerPath, consoleRefusalsPath
+	consoleMarkerPath, consoleRefusalsPath = filepath.Join(dir, "run", "powernode", "console-staged"), filepath.Join(dir, "refusals")
+	t.Cleanup(func() { consoleMarkerPath, consoleRefusalsPath = oldMarker, oldRef })
 	return &consoleFixture{
 		tty: tty, ev: ev, stage: stage,
 		s: &ConsolePromptStrategy{

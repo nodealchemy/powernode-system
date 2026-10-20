@@ -86,4 +86,33 @@ RSpec.describe "Api::V1::System::NodeApi::Enrollment", type: :request do
       expect(response).to have_http_status(:bad_request).or have_http_status(422)
     end
   end
+
+  describe "POST /api/v1/system/node_api/enroll status mapping" do
+    it "returns 503 + Retry-After for a transient CA failure and leaves the key valid" do
+      allow(System::InternalCaService).to receive(:issue_certificate)
+        .and_raise(System::InternalCaService::CaError, "vault down")
+      post "/api/v1/system/node_api/enroll", params: { bootstrap_token: token_plaintext, csr_pem: csr_pem }
+      expect(response).to have_http_status(:service_unavailable)
+      expect(response.headers["Retry-After"]).to be_present
+      expect(token_pair[0].reload.consumed_at).to be_nil
+    end
+
+    it "returns 503 (fail closed, retryable) when the enrolment audit is unavailable" do
+      token_pair
+      allow(AuditLog).to receive(:log_action).and_raise(StandardError, "audit down")
+      post "/api/v1/system/node_api/enroll", params: { bootstrap_token: token_plaintext, csr_pem: csr_pem }
+      expect(response).to have_http_status(:service_unavailable)
+      expect(response.body).not_to include("BEGIN CERTIFICATE")
+    end
+
+    it "returns 422 for a malformed CSR (definitive)" do
+      post "/api/v1/system/node_api/enroll", params: { bootstrap_token: token_plaintext, csr_pem: "garbage" }
+      expect(response).to have_http_status(:unprocessable_content)
+    end
+
+    it "returns 4xx for an unknown key (definitive)" do
+      post "/api/v1/system/node_api/enroll", params: { bootstrap_token: "not-a-real-enrol-key", csr_pem: csr_pem }
+      expect(response.status).to be_between(400, 499)
+    end
+  end
 end

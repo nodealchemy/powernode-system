@@ -323,10 +323,18 @@ enrolment (rather than only after) so a transient network failure or an agent
 restart does not lose a key the operator typed. The enrol path then cleans up:
 a **4xx refusal** (`enroll.IsRefused`) deletes the staged file and counts a
 refusal, so the next attempt re-prompts instead of re-reading a dead key forever;
-a **successful** enrolment deletes it and resets the counter. A staged bare key
-uses the nil UUID as `instance_id` (the server derives the instance from the
-token); logs show it as "assigned by the platform at enrolment", not as an
-instance. The unit sets `LimitCORE=0` so a crash cannot dump the key.
+a **successful** enrolment deletes it and resets the counter. A **5xx or
+network failure is retryable**: nothing is deleted or counted (the server returns
+503 for transient failures such as the CA or audit sink being down, after rolling
+the token back). Cleanup keys on HOW the file was staged, not on the document's
+purpose (a pasted document keeps its own): a marker at
+`/run/powernode/console-staged` names the staged file and the sha256 of its key,
+so it also works after an agent restart and never touches another identity. A
+staged bare key uses the BOOT `ID=` as `instance_id` (the CSR subject) when the
+image has one, else the nil UUID (logged as "assigned by the platform at
+enrolment", not as an instance). With a Vault CA the role must set
+`use_csr_common_name=false`; enrolment verifies the issued CN and aborts with 503
+(token not consumed) on a mismatch. The unit sets `LimitCORE=0` so a crash cannot dump the key.
 
 **Input is never logged** or echoed in an error, and the buffers are zeroed.
 
