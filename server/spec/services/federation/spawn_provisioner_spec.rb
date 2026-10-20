@@ -95,7 +95,7 @@ RSpec.describe Federation::SpawnProvisioner, type: :service do
       end
     end
 
-    context "when multiple providers exist but only one has an active connection" do
+    context "when multiple providers exist but only one has an active connection", :account_bootstrap do
       # Reproduces the ops2 spawn failure: account has two providers
       # ("Pro Cloud" seeded first, no connections; "proxmox" seeded second,
       # has a connection). Old resolver picked first-by-created_at (Pro
