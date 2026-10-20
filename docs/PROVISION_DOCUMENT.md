@@ -14,7 +14,7 @@ strict parser.
 | Field | Meaning |
 |---|---|
 | `version` | integer `1` |
-| `server` | platform base URL: `https`, DNS name or `[IPv6]` host, optional `:port` (1..65535), optional printable path; no credentials, spaces or control characters, max 2048. The Go, Ruby and schema rules are the same regex |
+| `server` | platform base URL: `https`, DNS name or `[IPv6]` host, optional `:port` (1..65535), optional printable path; the host starts with an alphanumeric; no credentials, spaces, control characters, `?` or `#`; max 2048. The Go, Ruby and schema rules are the same regex |
 | `instance_id` | NodeInstance uuid |
 | `key` | single-use bootstrap token (plaintext), printable, no whitespace, max 512 |
 | `ca_fingerprint` | **always required.** `sha256:<64 lowercase hex>` of the DER of the **last** certificate of the configured CA chain |
@@ -29,7 +29,9 @@ Keys are exact and case-sensitive. Duplicate keys, case-variant keys
 version are all rejected (the agent tokenises the JSON; a generic schema
 validator cannot express this). Any rejection of a v1 document is **terminal**:
 the resolver stops and refuses to enrol, it never falls through to a weaker
-source.
+source. That includes cloud user-data: any `{...}` that is not a well-formed
+legacy JSON object with no `version` key in any letter case (`Version`,
+`VERSION`, a syntax error) is judged by the strict parser and is terminal.
 
 ## The pin
 
@@ -59,12 +61,24 @@ whichever source finally supplies the key: a pinless legacy source (cmdline,
 KEY=VALUE, fw-cfg) never overrides a pinned v1 document, even if it is earlier
 in precedence.
 
+**Network sources never veto.** After a pinless local hit the resolver keeps
+scanning only LOCAL sources (files, fw-cfg, cmdline) for a pin or a refused v1
+document. Cloud metadata (unauthenticated, spoofable on L2) is not consulted
+then, so it can neither supply a pin nor refuse a local identity. Before any
+hit, a cloud source's refusal is still terminal.
+
 **After enrolment.** The pin is persisted next to the PKI material
 (`ca-pin`, alongside `ca-bundle.crt`). With no `ca_pem` (pin-only) the
 verified-chain certificate that matched the pin is saved as the CA bundle, so
 the mTLS transport can load. Every reconnect (`transport.LoadFromPKIDir`) and
 cert rotation enforce the persisted pin on top of the bundle; a malformed pin
-file is an error, never a silent downgrade.
+file is an error, never a silent downgrade. `ca-pin` is written first on save,
+`meta.json` records `"pinned": true`, and a missing `ca-pin` for a pinned
+enrolment fails closed; a pinless re-enrolment removes a stale `ca-pin`.
+
+**Pinned TLS fixes the server name to the platform host.** Off-host absolute
+blob URLs and redirects (for example the OCI pull path) therefore fail closed
+on a pinned node; keep artifact downloads on the platform host.
 
 Expiry is not checked against the device clock (no RTC/NTP at first boot); the
 server enforces token expiry.

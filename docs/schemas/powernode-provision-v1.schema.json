@@ -22,9 +22,9 @@
     },
     "server": {
       "type": "string",
-      "pattern": "^https://([A-Za-z0-9.-]+|\\[[0-9A-Fa-f:.]+\\])(:[0-9]{1,5})?(/[\\x21-\\x7e]*)?$",
+      "pattern": "^https://([A-Za-z0-9][A-Za-z0-9.-]*|\\[[0-9A-Fa-f:.]+\\])(:[0-9]{1,5})?(/[\\x21\\x22\\x24-\\x3e\\x40-\\x7e]*)?$",
       "maxLength": 2048,
-      "description": "Platform base URL. https only, no credentials, no spaces; port, if present, 1..65535 (not expressible here)."
+      "description": "Platform base URL. https only; host starts with an alphanumeric (or is an [IPv6] literal); no credentials, spaces, '?' or '#'; port, if present, 1..65535 (not expressible here)."
     },
     "instance_id": {
       "type": "string",

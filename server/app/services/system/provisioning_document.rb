@@ -21,8 +21,8 @@ module System
     DEFAULT_TTL = 1.hour
     CERT_RE = /-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----/m
     # https, host (DNS name or [IPv6]), optional :port (range checked in code),
-    # optional printable path. Mirrors agent/internal/identity/provision.go.
-    SERVER_RE = %r{\Ahttps://(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::(?<port>[0-9]{1,5}))?(?:/[\x21-\x7e]*)?\z}
+    # optional printable path without '?' or '#'. Mirrors agent/internal/identity/provision.go.
+    SERVER_RE = %r{\Ahttps://(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:.]+\])(?::(?<port>[0-9]{1,5}))?(?:/[\x21\x22\x24-\x3e\x40-\x7e]*)?\z}
 
     class RenderError < StandardError; end
 
