@@ -101,6 +101,12 @@ module System
       plaintext = SecureRandom.urlsafe_base64(PLAINTEXT_BYTES)
       token = nil
       transaction do
+        # ONE usable operator key per instance: minting a new one revokes any
+        # earlier unconsumed key for it (audited, sealed copy purged), so an old
+        # key can never be recovered or redeemed alongside the new one.
+        if SEALED_PURPOSES.include?(purpose.to_s) && node_instance
+          open_for_instance(node_instance.id, purpose: purpose.to_s).each { |prior| prior.revoke!(by: created_by) }
+        end
         token = create!(
           node: node,
           node_instance: node_instance,
@@ -115,6 +121,29 @@ module System
         token.send(:write_audit!, :issued)
       end
       [ token, plaintext ]
+    end
+
+    # Unconsumed, unrevoked keys bound to an instance (expired ones included:
+    # their sealed copy must die too). Locked, so concurrent mint/consume
+    # serialise on the same rows.
+    def self.open_for_instance(node_instance_id, purpose: nil)
+      scope = where(node_instance_id: node_instance_id, consumed_at: nil, revoked_at: nil)
+      scope = scope.where(purpose: purpose) if purpose
+      scope.lock.to_a
+    end
+
+    # Why a key cannot be issued for, or revealed on, this instance - or nil.
+    # Once a device has claimed it, it is running, finished, errored or already
+    # holds an mTLS identity, a key could only invite a second device to try.
+    CLOSED_INSTANCE_STATUSES = %w[running terminated error].freeze
+    def self.instance_refusal(instance)
+      return "this instance has already been claimed by a device" if instance.claimed?
+      return "this instance has already enrolled" if instance.mtls_subject.present?
+      if CLOSED_INSTANCE_STATUSES.include?(instance.status)
+        return "this instance is #{instance.status}"
+      end
+
+      nil
     end
 
     def self.default_ttl_for(purpose)
@@ -148,6 +177,11 @@ module System
 
         update!(consumed_at: Time.current, consumed_from_ip: from_ip, sealed_plaintext: nil)
         write_audit!(:consumed)
+        # This key enrolled the instance, so every other open key bound to it
+        # (any purpose) is dead: revoked and audited in this same transaction.
+        if node_instance_id
+          self.class.open_for_instance(node_instance_id).reject { |t| t.id == id }.each { |t| t.revoke!(by: nil) }
+        end
       end
       self
     end
@@ -169,14 +203,19 @@ module System
     # Returns the plaintext of an UNCONSUMED, UNREVOKED, UNEXPIRED operator key
     # from its sealed copy. The `revealed` audit row is written INSIDE the lock
     # and FAILS CLOSED: if it cannot be written nothing is returned. The row
-    # names the actor and the token, never the plaintext. `by` is the user whose
-    # approval released it (nil when the gate was auto-approved for an agent).
-    def reveal!(by: nil)
+    # names the actor and the token, never the plaintext. `by` MUST be the User whose
+    # own-session approval released it (the verb is human-only).
+    def reveal!(by:)
+      raise ArgumentError, "reveal! requires the approving User" unless by.is_a?(::User)
+
       plaintext = nil
       with_lock do
         raise NotRevealable, "token revoked"          if revoked?
         raise NotRevealable, "token already consumed" if consumed?
         raise NotRevealable, "token expired"          if expired?
+        if node_instance && (why = self.class.instance_refusal(node_instance))
+          raise NotRevealable, why
+        end
 
         plaintext = sealed_plaintext.presence
         raise NotRevealable, "no recoverable copy of this key" if plaintext.nil?

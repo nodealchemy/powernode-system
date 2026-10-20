@@ -464,16 +464,36 @@ RSpec.describe System::BootstrapToken, type: :model do
         expect(described_class::AUDITED_ACTIONS).to include("system.bootstrap_token.revealed")
       end
 
-      it "refuses after consume" do
+      it "refuses a consumed key even if the sealed copy were still present (the state check refuses)" do
         token, _ = issue_operator_key
-        token.consume!
-        expect { token.reveal!(by: user) }.to raise_error(described_class::NotRevealable)
+        token.update_columns(consumed_at: Time.current)
+        expect(token.reload.sealed_plaintext).to be_present
+        expect { token.reveal!(by: user) }.to raise_error(described_class::NotRevealable, /consumed/)
       end
 
-      it "refuses after revoke" do
+      it "refuses a revoked key even if the sealed copy were still present (the state check refuses)" do
         token, _ = issue_operator_key
-        token.revoke!(by: user)
-        expect { token.reveal!(by: user) }.to raise_error(described_class::NotRevealable)
+        token.update_columns(revoked_at: Time.current)
+        expect(token.reload.sealed_plaintext).to be_present
+        expect { token.reveal!(by: user) }.to raise_error(described_class::NotRevealable, /revoked/)
+      end
+
+      it "requires a User as the actor" do
+        token, _ = issue_operator_key
+        expect { token.reveal!(by: nil) }.to raise_error(ArgumentError)
+        expect { token.reveal!(by: "someone") }.to raise_error(ArgumentError)
+      end
+
+      it "refuses once the instance is claimed, running, terminated, errored or enrolled" do
+        { claimed: { claimed_at: Time.current, claim_code: "ABCD-1234" }, running: { status: "running" },
+          terminated: { status: "terminated" }, error: { status: "error" },
+          enrolled: { mtls_subject: "CN=instance-x" } }.each do |label, attrs|
+          instance = create(:system_node_instance, node: node, account: account, status: "pending")
+          token, _ = described_class.issue!(node: node, node_instance: instance, intended_subject: instance.id,
+                                            purpose: "operator_key", created_by: user)
+          instance.update_columns(attrs)
+          expect { token.reveal!(by: user) }.to raise_error(described_class::NotRevealable), "#{label} was revealable"
+        end
       end
 
       it "refuses after expiry" do
@@ -493,6 +513,84 @@ RSpec.describe System::BootstrapToken, type: :model do
         allow(AuditLog).to receive(:log_action).and_raise(StandardError, "audit down")
         expect { token.reveal!(by: user) }.to raise_error(described_class::AuditFailure)
       end
+    end
+  end
+
+  # IMP-5c6a03c3b335 (D4 review) - ONE usable key per instance.
+  describe "sibling keys on one instance" do
+    let(:user) { create(:user, account: account) }
+    let(:instance) { create(:system_node_instance, node: node, account: account, status: "pending") }
+
+    def mint(purpose: "operator_key", instance: self.instance)
+      described_class.issue!(node: node, node_instance: instance, intended_subject: instance.id,
+                             purpose: purpose, created_by: user)
+    end
+
+    it "minting K2 revokes K1: audited, attributed to the issuer, sealed copy purged" do
+      k1, p1 = mint
+      k2, _ = mint
+
+      expect(k1.reload).to be_revoked
+      expect(k1.revoked_by_id).to eq(user.id)
+      expect(k1.sealed_plaintext).to be_nil
+      expect(k2.reload).to be_usable
+      expect(k2.sealed_plaintext).to be_present
+      expect(AuditLog.where(action: "system.bootstrap_token.revoked", resource_id: k1.id).count).to eq(1)
+      expect { k1.reveal!(by: user) }.to raise_error(described_class::NotRevealable)
+      expect(described_class.find_active_by_plaintext(p1)).to be_nil
+    end
+
+    it "does not touch other instances' keys or non-operator keys when minting" do
+      other = create(:system_node_instance, node: node, account: account, status: "pending")
+      other_key, _ = mint(instance: other)
+      seed, _ = mint(purpose: "cloud_seed")
+      mint
+      expect(other_key.reload).to be_usable
+      expect(seed.reload).to be_usable
+    end
+
+    it "consuming K2 revokes the instance's other active keys of any purpose, audited" do
+      k1, _ = mint(purpose: "cloud_seed")
+      k2, _ = mint
+      k3, _ = mint(purpose: "netboot")
+
+      k2.consume!(from_ip: "203.0.113.5")
+
+      expect([ k1, k3 ].map { |k| k.reload.revoked? }).to all(be(true))
+      expect(k2.reload).to be_consumed
+      expect(k2).not_to be_revoked
+      expect(AuditLog.where(action: "system.bootstrap_token.revoked", resource_id: [ k1.id, k3.id ]).count).to eq(2)
+    end
+
+    it "K1 then K2, K2 enrols: a surviving K1 is revoked and unrevealable" do
+      k2, _ = mint
+      # K1 exists alongside K2 (as a legacy row would, bypassing issue!'s revoke-on-mint).
+      k1 = described_class.create!(node: node, node_instance: instance, intended_subject: instance.id,
+                                   token_hash: Digest::SHA256.hexdigest("k1"), expires_at: 1.hour.from_now,
+                                   purpose: "operator_key", created_by: user, sealed_plaintext: "k1-plain")
+      expect(k1.reveal!(by: user)).to eq("k1-plain")
+
+      k2.consume!
+
+      expect(k1.reload).to be_revoked
+      expect(k1.sealed_plaintext).to be_nil
+      expect { k1.reveal!(by: user) }.to raise_error(described_class::NotRevealable)
+    end
+
+    it "consuming an unbound key revokes nothing" do
+      bound, _ = mint
+      unbound, _ = described_class.issue!(node: node, intended_subject: "x")
+      unbound.consume!
+      expect(bound.reload).to be_usable
+    end
+
+    it "rolls the sibling revocation back with a failed audit write" do
+      k1, _ = mint
+      k2, _ = mint(purpose: "cloud_seed")
+      allow(AuditLog).to receive(:log_action).and_raise(StandardError, "audit down")
+      expect { k2.consume! }.to raise_error(described_class::AuditFailure)
+      expect(k1.reload).to be_usable
+      expect(k2.reload).not_to be_consumed
     end
   end
 
