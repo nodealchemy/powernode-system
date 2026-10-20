@@ -234,3 +234,50 @@ RSpec.describe System::EnrollmentSeedCleanup, "leasing and write-back" do
     expect(inst.config.dig("seed_cleanup", "state")).to eq("done")
   end
 end
+
+# Review round 3 (M2 lease ownership).
+RSpec.describe System::EnrollmentSeedCleanup, "lease ownership" do
+  let(:adapter) { double("adapter", provider_type: "gcp") }
+  let(:inst) do
+    i = create(:system_node_instance)
+    i.merge_config!("cloud_instance_id" => "cid-lease")
+    System::EnrollmentSeed.issue_token(instance: i)
+    described_class.mark_pending!(i)
+    i
+  end
+
+  before { allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter) }
+
+  def expire_lease!(instance)
+    System::NodeInstance.where(id: instance.id).update_all(
+      ["config = jsonb_set(config, '{seed_cleanup,next_attempt_at}', to_jsonb(?::text))", 1.minute.ago.utc.iso8601]
+    )
+  end
+
+  it "drops the write-back (and its audit row) of a sweep whose lease was taken over" do
+    stale = described_class.send(:lease!, inst)
+    expire_lease!(inst)
+    fresh = described_class.send(:lease!, inst)
+    expect(stale).to be_present
+    expect(fresh).to be_present
+    expect(fresh).not_to eq(stale)
+
+    allow(adapter).to receive(:clear_enrollment_seed!).and_return(outcome: :cleared, note: "stale")
+    expect { described_class.run!(inst, lease_token: stale) }
+      .not_to change { AuditLog.where(action: "system.enrollment_seed.cleanup", resource_id: inst.id).count }
+    expect(inst.reload.config.dig("seed_cleanup", "state")).to eq("pending")
+
+    described_class.run!(inst, lease_token: fresh)
+    expect(inst.reload.config.dig("seed_cleanup", "state")).to eq("done")
+    expect(inst.config["seed_cleanup"]["lease_token"]).to be_nil
+  end
+
+  it "orders accounts by their oldest due row" do
+    old_acct = create(:account)
+    old = create(:system_node_instance, account: old_acct)
+    old.merge_config!("seed_cleanup" => { "state" => "pending", "requested_at" => 3.hours.ago.utc.iso8601 })
+    inst # newer, other account
+    ordered = described_class.accounts_by_oldest_due(Account.where(id: [ old_acct.id, inst.account_id ]))
+    expect(ordered.map(&:id)).to eq([ old_acct.id, inst.account_id ])
+  end
+end

@@ -34,6 +34,9 @@ module System
     # request timeout (SystemSeedCleanupJob). A row is leased before its provider call.
     SWEEP_LIMIT = 5
     SWEEP_BUDGET = 15 # seconds
+    # Worst case for ONE item is ~1 min (Proxmox: 4 calls at 5s connect + 8s read, a
+    # 20s task wait), far below the lease; a stale holder's write-back is dropped anyway
+    # (lease token), so an expired lease can never be overwritten by its old owner.
     LEASE = 3.minutes
 
     class << self
@@ -47,6 +50,15 @@ module System
       rescue StandardError => e
         Rails.logger.warn("[EnrollmentSeedCleanup] could not queue cleanup for #{instance&.id}: #{e.class}")
         false
+      end
+
+      # Accounts that have a due row, oldest due row first, so a busy account cannot
+      # starve the ones after it within the shared budget.
+      def accounts_by_oldest_due(accounts)
+        ids = due_rows(::System::NodeInstance.where(account_id: accounts.select(:id)))
+                .group(:account_id).order(Arel.sql("MIN(#{ORDER_EXPR})")).pluck(:account_id)
+        by_id = ::Account.where(id: ids).index_by(&:id)
+        ids.filter_map { |id| by_id[id] }
       end
 
       def monotonic_now
@@ -64,9 +76,9 @@ module System
         ran = 0
         due(account).limit(limit.to_i).to_a.each do |instance|
           break if monotonic_now >= deadline
-          next unless lease!(instance)
+          next unless (token = lease!(instance))
 
-          run!(instance)
+          run!(instance, lease_token: token)
           ran += 1
         rescue StandardError => e
           Rails.logger.warn("[EnrollmentSeedCleanup] sweep error for #{instance.id}: #{e.class}")
@@ -79,28 +91,33 @@ module System
 
       # One cleanup attempt. Never raises. The outcome is written back as a patch to
       # the seed_cleanup key only (see #patch!), never as a whole-config rewrite.
-      def run!(instance)
+      def run!(instance, lease_token: nil)
         cfg = instance.config.is_a?(Hash) ? instance.config[KEY] : nil
         return unless cfg.is_a?(Hash) && ACTIVE_STATES.include?(cfg["state"])
 
         outcome = clear_at_provider(instance)
-        record(instance, cfg, outcome)
+        record(instance, cfg, outcome, lease_token)
       rescue StandardError => e
         # Class only: provider messages can echo request bodies.
         Rails.logger.warn("[EnrollmentSeedCleanup] attempt failed for #{instance.id}: #{e.class}")
-        record_failure(instance, cfg || {}, e.class.name)
+        record_failure(instance, cfg || {}, e.class.name, lease_token)
       end
 
       private
 
+      ORDER_EXPR = "COALESCE(system_node_instances.config->'#{KEY}'->>'next_attempt_at', " \
+                   "system_node_instances.config->'#{KEY}'->>'requested_at')"
+
       def due(account)
-        ::System::NodeInstance
-          .where(account_id: account.id)
+        due_rows(::System::NodeInstance.where(account_id: account.id)).order(Arel.sql(ORDER_EXPR))
+      end
+
+      def due_rows(scope)
+        scope
           .where("system_node_instances.config->'#{KEY}'->>'state' IN ('pending','awaiting_stop')")
           .where("system_node_instances.config->'#{KEY}'->>'next_attempt_at' IS NULL OR " \
                  "system_node_instances.config->'#{KEY}'->>'next_attempt_at' <= ?", Time.current.utc.iso8601)
           .where.not(status: "terminated")
-          .order(:updated_at)
       end
 
       # Compare-and-set: claims the row only while it is still due. The conditional
@@ -108,28 +125,35 @@ module System
       def lease!(instance)
         now = Time.current.utc.iso8601
         until_at = (Time.current + LEASE).utc.iso8601
+        token = SecureRandom.hex(8)
         sql = ::System::NodeInstance.sanitize_sql_array([
-          "UPDATE system_node_instances SET config = jsonb_set(config, '{#{KEY},next_attempt_at}', to_jsonb(?::text)) " \
+          "UPDATE system_node_instances SET config = jsonb_set(jsonb_set(config, '{#{KEY},next_attempt_at}', to_jsonb(?::text)), " \
+          "'{#{KEY},lease_token}', to_jsonb(?::text)) " \
           "WHERE id = ? AND config->'#{KEY}'->>'state' IN ('pending','awaiting_stop') AND " \
           "((config->'#{KEY}'->>'next_attempt_at') IS NULL OR (config->'#{KEY}'->>'next_attempt_at') <= ?)",
-          until_at, instance.id, now
+          until_at, token, instance.id, now
         ])
-        ::System::NodeInstance.connection.exec_update(sql, "seed_cleanup_lease").positive?
+        ::System::NodeInstance.connection.exec_update(sql, "seed_cleanup_lease").positive? ? token : nil
       end
 
-      # Atomic write-back of ONLY the seed_cleanup fields this attempt changed,
-      # guarded on the request still being the one this attempt started from
-      # (requested_at), so neither a concurrent mark_pending! nor an unrelated
-      # config write is overwritten. A stale attempt's patch is dropped.
-      def patch!(instance, requested_at, patch)
+      # Atomic write-back of ONLY the seed_cleanup fields this attempt changed.
+      # Guarded on (a) the request still being the one this attempt started from
+      # (requested_at), so a concurrent mark_pending! is not overwritten, and (b) when
+      # the attempt holds a lease, that lease still being ours (lease_token), so a
+      # sweep whose lease expired and was taken over cannot overwrite the new owner.
+      # Always releases the lease. Returns true when the patch was applied; a stale
+      # attempt's patch is dropped (false) and must not be audited.
+      def patch!(instance, requested_at, patch, lease_token = nil)
         sql = ::System::NodeInstance.sanitize_sql_array([
           "UPDATE system_node_instances SET config = jsonb_set(config, '{#{KEY}}', " \
           "COALESCE(config->'#{KEY}', '{}'::jsonb) || ?::jsonb) " \
-          "WHERE id = ? AND (config->'#{KEY}'->>'requested_at') IS NOT DISTINCT FROM ?",
-          patch.to_json, instance.id, requested_at
+          "WHERE id = ? AND (config->'#{KEY}'->>'requested_at') IS NOT DISTINCT FROM ? " \
+          "AND (?::text IS NULL OR (config->'#{KEY}'->>'lease_token') = ?::text)",
+          patch.merge("lease_token" => nil).to_json, instance.id, requested_at, lease_token, lease_token
         ])
-        ::System::NodeInstance.connection.exec_update(sql, "seed_cleanup_patch")
+        applied = ::System::NodeInstance.connection.exec_update(sql, "seed_cleanup_patch").positive?
         instance.reload
+        applied
       end
 
       def clear_at_provider(instance)
@@ -140,7 +164,7 @@ module System
         result.merge(provider_type: adapter.provider_type)
       end
 
-      def record(instance, cfg, result)
+      def record(instance, cfg, result, lease_token = nil)
         outcome = result[:outcome].to_s
         now = Time.current
         case outcome
@@ -149,39 +173,39 @@ module System
           since = cfg["waiting_since"].presence || now.utc.iso8601
           if Time.iso8601(since) < now - STOP_WAIT_LIMIT
             finish(instance, cfg, "done", result.merge(outcome: :abandoned,
-                   note: "VM did not stop within #{STOP_WAIT_LIMIT.inspect}; the next start neutralises the seed"))
+                   note: "VM did not stop within #{STOP_WAIT_LIMIT.inspect}; the next start neutralises the seed"), lease_token)
           else
-            write(instance, cfg, "state" => "awaiting_stop", "waiting_since" => since,
-                                 "next_attempt_at" => (now + STOP_POLL_INTERVAL).utc.iso8601)
-            audit(instance, result) if first
+            applied = write(instance, cfg, lease_token, "state" => "awaiting_stop", "waiting_since" => since,
+                                           "next_attempt_at" => (now + STOP_POLL_INTERVAL).utc.iso8601)
+            audit(instance, result) if first && applied
           end
         else
-          finish(instance, cfg, "done", result)
+          finish(instance, cfg, "done", result, lease_token)
         end
       end
 
-      def finish(instance, cfg, state, result)
-        write(instance, cfg, "state" => state, "next_attempt_at" => nil, "finished_at" => Time.current.utc.iso8601,
-                             "outcome" => result[:outcome].to_s)
-        audit(instance, result)
+      def finish(instance, cfg, state, result, lease_token = nil)
+        applied = write(instance, cfg, lease_token, "state" => state, "next_attempt_at" => nil,
+                                       "finished_at" => Time.current.utc.iso8601, "outcome" => result[:outcome].to_s)
+        audit(instance, result) if applied
       end
 
-      def record_failure(instance, cfg, error_class)
+      def record_failure(instance, cfg, error_class, lease_token = nil)
         attempts = cfg["attempts"].to_i + 1
         if attempts >= MAX_ATTEMPTS
-          write(instance, cfg, "state" => "failed", "attempts" => attempts, "next_attempt_at" => nil,
-                               "outcome" => "failed")
-          audit(instance, { outcome: :failed, note: "gave up after #{attempts} attempts (#{error_class}); D12 neutralises the seed at the next start" })
+          applied = write(instance, cfg, lease_token, "state" => "failed", "attempts" => attempts,
+                                         "next_attempt_at" => nil, "outcome" => "failed")
+          audit(instance, { outcome: :failed, note: "gave up after #{attempts} attempts (#{error_class}); D12 neutralises the seed at the next start" }) if applied
         else
-          write(instance, cfg, "state" => cfg["state"].presence || "pending", "attempts" => attempts,
-                               "next_attempt_at" => (Time.current + (RETRY_BACKOFF * attempts)).utc.iso8601)
+          write(instance, cfg, lease_token, "state" => cfg["state"].presence || "pending", "attempts" => attempts,
+                                         "next_attempt_at" => (Time.current + (RETRY_BACKOFF * attempts)).utc.iso8601)
         end
       rescue StandardError => e
         Rails.logger.warn("[EnrollmentSeedCleanup] could not record failure for #{instance.id}: #{e.class}")
       end
 
-      def write(instance, cfg, patch)
-        patch!(instance, cfg["requested_at"], patch)
+      def write(instance, cfg, lease_token, patch)
+        patch!(instance, cfg["requested_at"], patch, lease_token)
       end
 
       # Best-effort: an audit hiccup is logged, never raised. No key material.

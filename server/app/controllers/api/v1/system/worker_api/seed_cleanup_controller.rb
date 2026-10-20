@@ -24,7 +24,7 @@ module Api
 
             deadline = ::System::EnrollmentSeedCleanup.monotonic_now + ::System::EnrollmentSeedCleanup::SWEEP_BUDGET
             swept = 0
-            scope_accounts.each do |account|
+            ::System::EnrollmentSeedCleanup.accounts_by_oldest_due(scope_accounts).each do |account|
               break if ::System::EnrollmentSeedCleanup.monotonic_now >= deadline
               next if ::Ai::Autonomy::KillSwitchService.new(account: account).halted?
 

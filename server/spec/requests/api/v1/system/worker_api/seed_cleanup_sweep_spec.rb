@@ -12,9 +12,15 @@ RSpec.describe "POST /api/v1/system/worker_api/seed_cleanup/sweep", type: :reque
   let(:headers) { worker_mtls_headers(worker) }
   let(:path) { "/api/v1/system/worker_api/seed_cleanup/sweep" }
 
+  def due_instance(acct, requested_at: Time.current)
+    inst = create(:system_node_instance, node: create(:system_node, account: acct),
+                  name: "ni-#{SecureRandom.hex(3)}", variety: "cloud", status: "running")
+    inst.merge_config!("seed_cleanup" => { "state" => "pending", "requested_at" => requested_at.utc.iso8601 })
+    inst
+  end
+
   before do
-    node = create(:system_node, account: account)
-    create(:system_node_instance, node: node, name: "ni-#{SecureRandom.hex(3)}", variety: "cloud", status: "running")
+    due_instance(account)
     allow_any_instance_of(Worker).to receive(:has_permission?).with("system.fleet.reconcile").and_return(true)
     allow(System::Autonomy::ControlPlaneRole).to receive(:active?).and_return(true)
   end
@@ -47,14 +53,26 @@ RSpec.describe "POST /api/v1/system/worker_api/seed_cleanup/sweep", type: :reque
   end
 
   it "stops starting accounts once the shared budget is spent" do
-    other = create(:account)
-    create(:system_node_instance, node: create(:system_node, account: other), name: "ni-#{SecureRandom.hex(3)}",
-           variety: "cloud", status: "running")
+    due_instance(create(:account))
     allow(System::EnrollmentSeedCleanup).to receive(:monotonic_now).and_return(0.0, 1.0, 99.0, 99.0, 99.0)
     allow(System::EnrollmentSeedCleanup).to receive(:sweep!).and_return(0)
 
     post path, headers: headers
     expect(System::EnrollmentSeedCleanup).to have_received(:sweep!).once
+  end
+
+  it "visits accounts by their oldest due row first, and skips accounts with nothing due" do
+    late = create(:account)
+    due_instance(late, requested_at: 2.hours.ago)
+    idle = create(:account)
+    create(:system_node_instance, node: create(:system_node, account: idle), name: "ni-#{SecureRandom.hex(3)}",
+           variety: "cloud", status: "running")
+    order = []
+    allow(System::EnrollmentSeedCleanup).to receive(:sweep!) { |account:, **| order << account.id; 0 }
+
+    post path, headers: headers
+
+    expect(order).to eq([ late.id, account.id ])
   end
 
   it "keeps answering 200 when a sweep blows up" do
