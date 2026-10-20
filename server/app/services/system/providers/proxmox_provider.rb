@@ -19,7 +19,7 @@ module System
     #   alloc/assoc/disassoc/release methods return no_op responses so callers
     #   that abstract across cloud providers don't have to special-case PVE.
     # - Volumes: PVE storage API for create/attach/detach/delete/get
-    # - Images: import from URL via /storage/{storage}/download-url plus snapshot ops
+    # - Images: import from URL via /storage/{storage}/download-url (no cloud-side image CRUD)
     #
     # === Auth ===
     # API Token only. Token ID has the form `USER@REALM!TOKENNAME` (e.g.
@@ -727,8 +727,7 @@ module System
       # FALSE, deliberately, and this override exists so nobody reads it off
       # #get_metadata. That features list advertises "snapshots" and it is not
       # wrong — but PVE snapshots are VM-SCOPED
-      # (/nodes/{node}/{kind}/{vmid}/snapshot, the endpoints #create_image and
-      # #delete_image below already use). There is no per-volume snapshot verb
+      # (/nodes/{node}/{kind}/{vmid}/snapshot). There is no per-volume snapshot verb
       # in the PVE API: a rollback takes every disk on the VM — and its RAM
       # state when one was captured — back with it. Answering true here would
       # give System::VolumeManagementService a volume snapshot that silently
@@ -740,55 +739,6 @@ module System
       # surface unavailable until it ships.
       def supports_volume_snapshots?
         false
-      end
-
-      # ----------------------------------------------------------------
-      # Images / templates
-      # ----------------------------------------------------------------
-
-      # Snapshot the running instance as a "template" — PVE has both
-      # snapshot-based templates and convert-to-template VMs. We use
-      # snapshots here for simplicity and reversibility.
-      def create_image(instance_id, name:, description: nil)
-        log_operation("create_image", instance_id: instance_id, name: name)
-        node, kind, vmid = parse_instance_id!(instance_id)
-        c = require_client!
-        snapname = sanitize_snapname(name)
-        upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/snapshot",
-                      { "snapname" => snapname, "description" => description.to_s })
-        c.wait_task(node: node, upid: upid)
-        { success: true, image_id: "#{node}/#{kind}/#{vmid}@#{snapname}" }
-      rescue Proxmox::Client::Error => e
-        logger.error("[#{self.class.name}] create_image (snapshot) failed: #{e.class}: #{e.message}")
-        build_error_response(::System::CallerFacingMessages::GENERIC)
-      end
-
-      def get_image(image_id)
-        log_operation("get_image", image_id: image_id)
-        c = require_client!
-        node, kind, vmid, snapname = parse_image_id!(image_id)
-        snaps = c.get("/api2/json/nodes/#{node}/#{kind}/#{vmid}/snapshot")
-        snap = (snaps || []).find { |s| s["name"] == snapname }
-        raise ResourceNotFoundError, "Image #{image_id} not found" unless snap
-
-        { success: true, image_id: image_id, details: snap }
-      rescue Proxmox::Client::Error => e
-        logger.error("[#{self.class.name}] get_image failed: #{e.class}: #{e.message}")
-        build_error_response(::System::CallerFacingMessages::GENERIC)
-      end
-
-      def delete_image(image_id)
-        log_operation("delete_image", image_id: image_id)
-        c = require_client!
-        node, kind, vmid, snapname = parse_image_id!(image_id)
-        upid = c.delete("/api2/json/nodes/#{node}/#{kind}/#{vmid}/snapshot/#{snapname}")
-        c.wait_task(node: node, upid: upid)
-        { success: true, image_id: image_id }
-      rescue Proxmox::Client::NotFoundError
-        { success: true, image_id: image_id, message: "already deleted" }
-      rescue Proxmox::Client::Error => e
-        logger.error("[#{self.class.name}] delete_image failed: #{e.class}: #{e.message}")
-        build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
       # ----------------------------------------------------------------
@@ -2053,12 +2003,6 @@ module System
         [ node, kind, vmid ]
       end
 
-      def parse_image_id!(image_id)
-        m = image_id.to_s.match(%r{\A([^/]+)/(qemu|lxc)/(\d+)@(.+)\z})
-        raise ResourceNotFoundError, "Malformed image_id #{image_id.inspect}; expected <node>/<kind>/<vmid>@<snapname>" unless m
-        [ m[1], m[2], m[3], m[4] ]
-      end
-
       # ============================================================
       # Cluster discovery helpers
       # ============================================================
@@ -2464,10 +2408,6 @@ module System
 
       def upid_like?(value)
         value.is_a?(String) && value.start_with?("UPID:")
-      end
-
-      def sanitize_snapname(name)
-        name.to_s.gsub(/[^A-Za-z0-9_-]/, "").slice(0, 40).presence || "snap-#{Time.now.to_i}"
       end
 
       def encode_volid(volid)

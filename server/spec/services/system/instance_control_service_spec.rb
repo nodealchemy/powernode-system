@@ -144,7 +144,7 @@ RSpec.describe System::InstanceControlService do
 
   # IMP-af53c24a956f — terminate had zero coverage. cloud_instance_id is a
   # store_accessor on config (see NodeInstance), so it's settable directly on
-  # the factory the same way cloud_sync_service_spec/image_creation_service_spec
+  # the factory the same way cloud_sync_service_spec
   # already do it.
   describe '#execute — terminate (cloud)' do
     let(:instance) do

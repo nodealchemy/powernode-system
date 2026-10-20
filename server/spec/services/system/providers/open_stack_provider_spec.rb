@@ -23,7 +23,6 @@ RSpec.describe System::Providers::OpenStackProvider do
   let(:compute_client) { double("Fog::OpenStack::Compute") }
   let(:network_client) { double("Fog::OpenStack::Network") }
   let(:volume_client) { double("Fog::OpenStack::Volume") }
-  let(:image_client) { double("Fog::OpenStack::Image") }
 
   subject(:provider) { described_class.new(connection, region: region) }
 
@@ -35,7 +34,6 @@ RSpec.describe System::Providers::OpenStackProvider do
     allow(Fog::OpenStack::Compute).to receive(:new).and_return(compute_client)
     allow(Fog::OpenStack::Network).to receive(:new).and_return(network_client)
     allow(Fog::OpenStack::Volume).to receive(:new).and_return(volume_client)
-    allow(Fog::OpenStack::Image).to receive(:new).and_return(image_client)
   end
 
   it_behaves_like "a cloud provider"

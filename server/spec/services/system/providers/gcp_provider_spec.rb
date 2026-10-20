@@ -15,7 +15,6 @@ RSpec.describe System::Providers::GcpProvider do
   let(:instances_client) { double("Google Instances Client") }
   let(:addresses_client) { double("Google Addresses Client") }
   let(:disks_client) { double("Google Disks Client") }
-  let(:images_client) { double("Google Images Client") }
   let(:zone_operations_client) { double("Google ZoneOperations Client") }
 
   subject(:provider) { described_class.new(connection, region: region) }
@@ -25,7 +24,6 @@ RSpec.describe System::Providers::GcpProvider do
     allow(provider).to receive(:instances_client).and_return(instances_client)
     allow(provider).to receive(:addresses_client).and_return(addresses_client)
     allow(provider).to receive(:disks_client).and_return(disks_client)
-    allow(provider).to receive(:images_client).and_return(images_client)
     allow(provider).to receive(:zone_operations_client).and_return(zone_operations_client)
   end
 

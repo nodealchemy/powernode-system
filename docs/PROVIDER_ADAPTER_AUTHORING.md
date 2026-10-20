@@ -3,7 +3,7 @@
 > Status: active
 
 How to write a new **cloud/hypervisor provider adapter** for the fleet substrate so the platform can
-provision, control, and reconcile compute instances (and, optionally, volumes / IPs / images) on a new
+provision, control, and reconcile compute instances (and, optionally, volumes / IPs) on a new
 backend — AWS, GCP, Azure, OpenStack, Proxmox, ProCloud, local libvirt/QEMU, or your own.
 
 Every adapter subclasses `System::Providers::BaseProvider`
@@ -128,14 +128,6 @@ contract for method existence + arity is the shared spec in §7.
 | `delete_volume` | `delete_volume(volume_id)` | `{ success: }` |
 | `get_volume` | `get_volume(volume_id)` | normalized volume hash |
 
-### Images
-
-| Method | Signature | Returns |
-|---|---|---|
-| `create_image` | `create_image(instance_id, name:, description: nil)` | `{ success:, image_id: }` |
-| `get_image` | `get_image(image_id)` | normalized image hash |
-| `delete_image` | `delete_image(image_id)` | `{ success: }` |
-
 > **Signatures are enforced.** `detach_volume` MUST be `(volume_id, force:)`, `attach_volume` MUST be
 > `(volume_id, instance_id, device:)`, and the method MUST be named `reboot_instance` (not
 > `restart_instance`). The `"a provider class with BaseProvider signatures"` shared example asserts
@@ -249,12 +241,12 @@ the credential reader the four cloud adapters use.
 
 ## 6. Capabilities (graceful degradation)
 
-The default surface is `BaseProvider::CAPABILITIES = %i[instances volumes ips images sync]`. A backend
+The default surface is `BaseProvider::CAPABILITIES = %i[instances volumes ips sync]`. A backend
 that does less overrides `capabilities`:
 
 ```ruby
 def capabilities
-  %i[instances sync]   # LocalQemuProvider — no volumes/IPs/images
+  %i[instances sync]   # LocalQemuProvider — no volumes/IPs
 end
 ```
 
@@ -284,7 +276,7 @@ end
 The shared examples (opt-in groups, adopt as your internals stabilize):
 
 - **`"a cloud provider"`** — asserts the subject responds to the entire abstract interface
-  (`provider_type`, all lifecycle / volume / IP / image methods). Cheap smoke test that catches a method
+  (`provider_type`, all lifecycle / volume / IP methods). Cheap smoke test that catches a method
   dropped during a refactor.
 - **`"a provider class with BaseProvider signatures"`** — class-level signature assertions:
   `detach_volume(volume_id, force:)`, `attach_volume(volume_id, instance_id, device:)`, and
@@ -470,7 +462,7 @@ Using `MockProvider` (`app/services/system/providers/mock_provider.rb`) as the m
    and every error with `build_error_response`; map backend statuses through `normalize_status` into
    `BaseProvider::STATUSES`. Signal "gone" via the `code: "NotFound"` hash **or** `ResourceNotFoundError`.
 5. **Apply the timeout convention (§9)** to every HTTP/SDK call.
-6. **Narrow `capabilities` (§6)** if your backend lacks volumes/IPs/images/sync — don't fake them.
+6. **Narrow `capabilities` (§6)** if your backend lacks volumes/IPs/sync — don't fake them.
 7. **Raise the typed errors (§8)** on auth/rate/not-found/quota failures (especially in `list_instances`).
 8. **Register in the Registry (§10)** — add `"<name>" => "System::Providers::<Name>Provider"` to
    `PROVIDER_CLASSES` in `app/services/system/providers/registry.rb`. If your adapter needs a gem

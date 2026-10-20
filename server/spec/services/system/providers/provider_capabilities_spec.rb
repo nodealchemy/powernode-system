@@ -15,18 +15,17 @@ RSpec.describe "Provider capability discovery (F4-06)" do
 
   describe System::Providers::BaseProvider do
     it "declares the full capability set by default" do
-      expect(described_class::CAPABILITIES).to match_array(%i[instances volumes ips images sync])
+      expect(described_class::CAPABILITIES).to match_array(%i[instances volumes ips sync])
     end
   end
 
   describe System::Providers::LocalQemuProvider do
-    it "declares instances + sync only (no volume/ip/image surface)" do
+    it "declares instances + sync only (no volume/ip surface)" do
       adapter = adapter_for(described_class)
       expect(adapter.capabilities).to match_array(%i[instances sync])
       expect(adapter.supports?(:instances)).to be true
       expect(adapter.supports?(:volumes)).to be false
       expect(adapter.supports?(:ips)).to be false
-      expect(adapter.supports?(:images)).to be false
     end
   end
 

@@ -379,63 +379,6 @@ module System
       end
 
       # ===========================================
-      # Image Operations
-      # ===========================================
-
-      def create_image(instance_id, name:, description: nil)
-        log_operation("create_image", instance_id: instance_id, name: name)
-
-        begin
-          response = ec2_client.create_image(
-            instance_id: instance_id,
-            name: name,
-            description: description || "Created by Powernode",
-            no_reboot: false
-          )
-
-          {
-            success: true,
-            image_id: response.image_id,
-            status: "pending"
-          }
-        rescue Aws::EC2::Errors::ServiceError => e
-          handle_aws_error(e)
-        end
-      end
-
-      def get_image(image_id)
-        log_operation("get_image", image_id: image_id)
-
-        begin
-          response = ec2_client.describe_images(image_ids: [ image_id ])
-          image = response.images.first
-
-          return build_error_response("Image not found", code: "NotFound") unless image
-
-          {
-            success: true,
-            image_id: image.image_id,
-            name: image.name,
-            description: image.description,
-            status: image.state
-          }
-        rescue Aws::EC2::Errors::ServiceError => e
-          handle_aws_error(e)
-        end
-      end
-
-      def delete_image(image_id)
-        log_operation("delete_image", image_id: image_id)
-
-        begin
-          ec2_client.deregister_image(image_id: image_id)
-          { success: true }
-        rescue Aws::EC2::Errors::ServiceError => e
-          handle_aws_error(e)
-        end
-      end
-
-      # ===========================================
       # Utility Methods
       # ===========================================
 
@@ -470,7 +413,7 @@ module System
         {
           provider: "aws",
           region: aws_region,
-          features: %w[instances volumes ips images snapshots security_groups vpcs]
+          features: %w[instances volumes ips snapshots security_groups vpcs]
         }
       end
 

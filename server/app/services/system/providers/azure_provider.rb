@@ -778,29 +778,6 @@ module System
 
       # Azure managed-disk SKUs are platform-fixed (not region-discoverable).
       # Returning the canonical set so the catalog ingestion has stable rows.
-      # ===========================================
-      # Images (Microsoft.Compute/images)
-      # ===========================================
-      #
-      # Image capture/restore against Azure managed images is a future
-      # iteration — the platform's primary image flow runs through the
-      # System::ImageCreationService which produces FileManagement::Object
-      # blobs, not cloud-native images. These stubs satisfy the BaseProvider
-      # contract (interface compliance) and raise the typed ProviderError
-      # so callers handle them consistently with other unsupported paths.
-
-      def create_image(_instance_id, name:, description: nil) # rubocop:disable Lint/UnusedMethodArgument
-        log_operation("create_image", name: name)
-        raise ProviderError, "AzureProvider#create_image is not yet supported"
-      end
-
-      def get_image(_image_id)
-        raise ProviderError, "AzureProvider#get_image is not yet supported"
-      end
-
-      def delete_image(_image_id)
-        raise ProviderError, "AzureProvider#delete_image is not yet supported"
-      end
 
       # Map a cloud-side power state string (e.g. "PowerState/running") to a
       # platform status. Status keys come from AZURE_STATUS_MAP. Anything not

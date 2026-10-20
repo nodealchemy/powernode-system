@@ -437,64 +437,6 @@ module System
       end
 
       # ===========================================
-      # Image Operations
-      # ===========================================
-
-      def create_image(instance_id, name:, description: nil)
-        log_operation("create_image", instance_id: instance_id, name: name)
-
-        begin
-          server = compute_client.servers.get(instance_id)
-          raise ResourceNotFoundError, "Instance not found" unless server
-
-          # Create snapshot image
-          image_id = server.create_image(name, metadata: { description: description || "" })
-
-          {
-            success: true,
-            image_id: image_id,
-            status: "pending"
-          }
-        rescue Excon::Error => e
-          handle_openstack_error(e)
-        end
-      end
-
-      def get_image(image_id)
-        log_operation("get_image", image_id: image_id)
-
-        begin
-          image = image_client.images.get(image_id)
-          return build_error_response("Image not found") unless image
-
-          {
-            success: true,
-            image_id: image.id,
-            name: image.name,
-            description: image.metadata&.dig("description"),
-            status: image.status&.downcase
-          }
-        rescue Excon::Error => e
-          handle_openstack_error(e)
-        end
-      end
-
-      def delete_image(image_id)
-        log_operation("delete_image", image_id: image_id)
-
-        begin
-          image = image_client.images.get(image_id)
-          return build_error_response("Image not found") unless image
-
-          image.destroy
-
-          { success: true }
-        rescue Excon::Error => e
-          handle_openstack_error(e)
-        end
-      end
-
-      # ===========================================
       # Utility Methods
       # ===========================================
 
@@ -530,7 +472,7 @@ module System
           provider: "openstack",
           endpoint: auth_url,
           project: project_name,
-          features: %w[instances volumes ips images snapshots security_groups networks]
+          features: %w[instances volumes ips snapshots security_groups networks]
         }
       end
 
@@ -639,10 +581,6 @@ module System
 
       def volume_client
         @volume_client ||= Fog::OpenStack::Volume.new(fog_credentials.merge(openstack_volume_v3: true))
-      end
-
-      def image_client
-        @image_client ||= Fog::OpenStack::Image.new(fog_credentials.merge(openstack_image_v2: true))
       end
 
       def fog_credentials

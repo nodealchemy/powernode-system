@@ -220,24 +220,6 @@ RSpec.describe System::Providers::BaseProvider do
         expect { abstract_provider.disassociate_ip("id") }.to raise_error(described_class::NotImplementedError)
       end
     end
-
-    describe "#create_image" do
-      it "raises NotImplementedError" do
-        expect { abstract_provider.create_image("inst", name: "test") }.to raise_error(described_class::NotImplementedError)
-      end
-    end
-
-    describe "#delete_image" do
-      it "raises NotImplementedError" do
-        expect { abstract_provider.delete_image("id") }.to raise_error(described_class::NotImplementedError)
-      end
-    end
-
-    describe "#get_image" do
-      it "raises NotImplementedError" do
-        expect { abstract_provider.get_image("id") }.to raise_error(described_class::NotImplementedError)
-      end
-    end
   end
 
   describe "error classes" do

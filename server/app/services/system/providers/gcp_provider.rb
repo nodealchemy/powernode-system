@@ -572,98 +572,6 @@ module System
       end
 
       # ===========================================
-      # Image Operations
-      # ===========================================
-
-      def create_image(instance_id, name:, description: nil)
-        log_operation("create_image", instance_id: instance_id, name: name)
-
-        begin
-          instance = instances_client.get(
-            project: project_id,
-            zone: zone,
-            instance: instance_id
-          )
-
-          # Get the boot disk
-          boot_disk = instance.disks.find { |d| d.boot }
-          return build_error_response("No boot disk found") unless boot_disk
-
-          source_disk = boot_disk.source
-
-          image_resource = Google::Cloud::Compute::V1::Image.new(
-            name: name.downcase.gsub(/[^a-z0-9-]/, "-"),
-            description: description || "Created by Powernode",
-            source_disk: source_disk
-          )
-
-          operation = images_client.insert(
-            project: project_id,
-            image_resource: image_resource
-          )
-
-          wait_for_global_operation(operation)
-
-          {
-            success: true,
-            image_id: image_resource.name,
-            status: "pending"
-          }
-        rescue Google::Cloud::Error => e
-          handle_gcp_error(e)
-        end
-      end
-
-      def get_image(image_id)
-        log_operation("get_image", image_id: image_id)
-
-        begin
-          image = images_client.get(
-            project: project_id,
-            image: image_id
-          )
-
-          status = case image.status
-          when "READY" then "available"
-          when "PENDING" then "pending"
-          when "FAILED" then "failed"
-          else "unknown"
-          end
-
-          {
-            success: true,
-            image_id: image.name,
-            name: image.name,
-            description: image.description,
-            status: status
-          }
-        rescue Google::Cloud::NotFoundError
-          build_error_response("Image not found", code: "NotFound")
-        rescue Google::Cloud::Error => e
-          handle_gcp_error(e)
-        end
-      end
-
-      def delete_image(image_id)
-        log_operation("delete_image", image_id: image_id)
-
-        begin
-          operation = images_client.delete(
-            project: project_id,
-            image: image_id
-          )
-
-          wait_for_global_operation(operation)
-
-          { success: true }
-        rescue Google::Cloud::NotFoundError
-          build_error_response("Image not found", code: "NotFound")
-        rescue Google::Cloud::Error => e
-          handle_gcp_error(e)
-        end
-      end
-
-      # ===========================================
       # Utility Methods
       # ===========================================
 
@@ -701,7 +609,7 @@ module System
           project: project_id,
           zone: zone,
           region: gcp_region,
-          features: %w[instances disks addresses images snapshots networks firewalls]
+          features: %w[instances disks addresses snapshots networks firewalls]
         }
       end
 
@@ -830,13 +738,6 @@ module System
 
       def disks_client
         @disks_client ||= Google::Cloud::Compute::V1::Disks::Rest::Client.new do |config|
-          config.credentials = gcp_credentials
-          apply_gcp_timeout(config)
-        end
-      end
-
-      def images_client
-        @images_client ||= Google::Cloud::Compute::V1::Images::Rest::Client.new do |config|
           config.credentials = gcp_credentials
           apply_gcp_timeout(config)
         end

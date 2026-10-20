@@ -9,7 +9,6 @@ module System
       @@instances = {}
       @@volumes = {}
       @@ips = {}
-      @@images = {}
 
       def provider_type
         "mock"
@@ -393,65 +392,6 @@ module System
       end
 
       # ===========================================
-      # Image Operations
-      # ===========================================
-
-      def create_image(instance_id, name:, description: nil)
-        log_operation("create_image", instance_id: instance_id, name: name)
-
-        instance = @@instances[instance_id]
-        return build_error_response("Instance not found") unless instance
-
-        image_id = "ami-mock-#{SecureRandom.hex(8)}"
-
-        @@images[image_id] = {
-          id: image_id,
-          name: name,
-          description: description,
-          source_instance: instance_id,
-          status: "pending",
-          created_at: Time.current
-        }
-
-        Thread.new do
-          sleep(1)
-          @@images[image_id][:status] = "available" if @@images[image_id]
-        end
-
-        {
-          success: true,
-          image_id: image_id,
-          status: "pending"
-        }
-      end
-
-      def get_image(image_id)
-        log_operation("get_image", image_id: image_id)
-
-        image = @@images[image_id]
-        return build_error_response("Image not found") unless image
-
-        {
-          success: true,
-          image_id: image_id,
-          name: image[:name],
-          description: image[:description],
-          status: image[:status]
-        }
-      end
-
-      def delete_image(image_id)
-        log_operation("delete_image", image_id: image_id)
-
-        image = @@images[image_id]
-        return build_error_response("Image not found") unless image
-
-        @@images.delete(image_id)
-
-        { success: true }
-      end
-
-      # ===========================================
       # Utility Methods
       # ===========================================
 
@@ -462,7 +402,7 @@ module System
           success: true,
           message: "Mock provider connection successful",
           provider: "mock",
-          features: %w[instances volumes ips images]
+          features: %w[instances volumes ips]
         }
       end
 
@@ -483,7 +423,6 @@ module System
         @@instances = {}
         @@volumes = {}
         @@ips = {}
-        @@images = {}
       end
 
       def self.instances
@@ -496,10 +435,6 @@ module System
 
       def self.ips
         @@ips
-      end
-
-      def self.images
-        @@images
       end
 
       protected

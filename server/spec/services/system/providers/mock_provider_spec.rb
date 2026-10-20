@@ -332,58 +332,6 @@ RSpec.describe System::Providers::MockProvider do
     end
   end
 
-  describe "#create_image" do
-    let!(:instance_id) do
-      result = provider.create_instance(name: "test", instance_type: "mock.small")
-      result[:cloud_instance_id]
-    end
-
-    it "returns success with image details" do
-      result = provider.create_image(instance_id, name: "test-image", description: "Test")
-
-      expect(result[:success]).to be true
-      expect(result[:image_id]).to start_with("ami-mock-")
-      expect(result[:status]).to eq("pending")
-    end
-  end
-
-  describe "#delete_image" do
-    let!(:instance_id) do
-      result = provider.create_instance(name: "test", instance_type: "mock.small")
-      result[:cloud_instance_id]
-    end
-
-    let!(:image_id) do
-      result = provider.create_image(instance_id, name: "test-image")
-      result[:image_id]
-    end
-
-    it "returns success for existing image" do
-      result = provider.delete_image(image_id)
-
-      expect(result[:success]).to be true
-    end
-  end
-
-  describe "#get_image" do
-    let!(:instance_id) do
-      result = provider.create_instance(name: "test", instance_type: "mock.small")
-      result[:cloud_instance_id]
-    end
-
-    let!(:image_id) do
-      result = provider.create_image(instance_id, name: "test-image")
-      result[:image_id]
-    end
-
-    it "returns image details" do
-      result = provider.get_image(image_id)
-
-      expect(result[:success]).to be true
-      expect(result[:image_id]).to eq(image_id)
-    end
-  end
-
   describe "#test_connection" do
     it "returns success" do
       result = provider.test_connection

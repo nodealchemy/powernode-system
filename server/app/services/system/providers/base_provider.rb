@@ -127,7 +127,7 @@ module System
       # structured Result instead of a NotImplementedError mid-mission.
       # The full set is the default; providers with a narrower surface
       # override #capabilities.
-      CAPABILITIES = %i[instances volumes ips images sync].freeze
+      CAPABILITIES = %i[instances volumes ips sync].freeze
 
       def capabilities
         CAPABILITIES
@@ -469,36 +469,6 @@ module System
       # @return [Hash] Normalized volume data
       def get_volume(volume_id)
         raise NotImplementedError, "#{self.class} must implement #get_volume"
-      end
-
-      # ===========================================
-      # Image Operations
-      # ===========================================
-
-      # Create an image from an instance
-      #
-      # @param instance_id [String] Cloud instance ID
-      # @param name [String] Image name
-      # @param description [String, nil] Image description
-      # @return [Hash] Result with :success, :image_id
-      def create_image(instance_id, name:, description: nil)
-        raise NotImplementedError, "#{self.class} must implement #create_image"
-      end
-
-      # Get image information
-      #
-      # @param image_id [String] Cloud image ID
-      # @return [Hash] Normalized image data
-      def get_image(image_id)
-        raise NotImplementedError, "#{self.class} must implement #get_image"
-      end
-
-      # Delete an image
-      #
-      # @param image_id [String] Cloud image ID
-      # @return [Hash] Result with :success
-      def delete_image(image_id)
-        raise NotImplementedError, "#{self.class} must implement #delete_image"
       end
 
       # ===========================================

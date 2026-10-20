@@ -38,11 +38,6 @@ RSpec.shared_examples "a cloud provider" do
     it { is_expected.to respond_to(:release_ip) }
     it { is_expected.to respond_to(:associate_ip) }
     it { is_expected.to respond_to(:disassociate_ip) }
-
-    # Images
-    it { is_expected.to respond_to(:create_image) }
-    it { is_expected.to respond_to(:delete_image) }
-    it { is_expected.to respond_to(:get_image) }
   end
 end
 
