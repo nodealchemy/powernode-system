@@ -166,7 +166,7 @@ func (s *ClaimStrategy) buildRequest(instanceID string) claimRequest {
 		DMIUUID:      discoverDMIUUID(),
 		InstanceID:   instanceID,
 		Hostname:     hostname,
-		AgentVersion: agentVersion(),
+		AgentVersion: AgentVersion,
 		Architecture: runtime.GOARCH,
 	}
 }
@@ -313,6 +313,7 @@ func discoverDMIUUID() string {
 	return ""
 }
 
-// agentVersion is sourced from VERSION at build time; the agent's
-// main package sets it via -ldflags. Default placeholder for tests.
-var agentVersion = func() string { return "0.1.0-dev" }
+// AgentVersion is the version reported in the claim request. It is set at
+// startup from the main package's Version, which -ldflags stamps from the
+// release tag (stage15.sh / Makefile); "dev" is only the unstamped default.
+var AgentVersion = "dev"

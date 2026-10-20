@@ -338,3 +338,13 @@ func sandboxClaimConsole(t *testing.T) {
 	claimConsolePath = console
 	t.Cleanup(func() { claimConsolePath = prev })
 }
+
+func TestBuildRequestReportsAgentVersion(t *testing.T) {
+	old := AgentVersion
+	defer func() { AgentVersion = old }()
+	AgentVersion = "9.9.9"
+	req := (&ClaimStrategy{}).buildRequest("")
+	if req.AgentVersion != "9.9.9" {
+		t.Fatalf("AgentVersion = %q, want 9.9.9 (no hardcoded placeholder)", req.AgentVersion)
+	}
+}

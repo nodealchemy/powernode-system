@@ -32,6 +32,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nodealchemy/powernode-system/agent/cmd/powernode-agent/internal/cli"
+	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 )
 
 // Version is set at build time via -ldflags, and reaches the platform as
@@ -50,6 +51,10 @@ var (
 	GitCommit = "unknown"
 	BuildDate = "unknown"
 )
+
+// The claim flow reports the build's version too; Version is final here (set
+// by -ldflags before package init runs).
+func init() { identity.AgentVersion = Version }
 
 func main() {
 	root := &cobra.Command{
