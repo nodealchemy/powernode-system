@@ -208,6 +208,16 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
       end
     end
 
+    context "clear_enrollment_seed! (D13)" do
+      it "is a recorded no-op: user-data is only changeable while stopped, so nothing is sent" do
+        enroll!
+        expect(ec2).not_to receive(:modify_instance_attribute)
+        result = provider.clear_enrollment_seed!(cloud_id, instance: instance)
+        expect(result).to include(outcome: :noop)
+        expect(result[:note]).to match(/aws.*stopped/i)
+      end
+    end
+
     it "excludes user_data from the create_instance log" do
       allow(ec2).to receive(:run_instances).and_raise(StandardError, "stop here")
       logs = capture_logs(provider) do
@@ -242,6 +252,13 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
       allow(provider).to receive(:extract_private_ip).and_return(nil)
       allow(provider).to receive(:extract_public_ip).and_return(nil)
       expect { provider.start_instance(cloud_id) }.not_to change { issued_rows.count }
+    end
+
+    it "clear_enrollment_seed! is a recorded no-op (Nova cannot change user_data after create)" do
+      enroll!
+      result = provider.clear_enrollment_seed!(cloud_id, instance: instance)
+      expect(result).to include(outcome: :noop)
+      expect(result[:note]).to match(/openstack.*create/i)
     end
 
     it "excludes user_data from the create_instance log" do
@@ -342,6 +359,46 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
             @minted_key = doc_of(kw[:metadata_resource].items.find { |i| i.key == "user-data" }.value)["key"]
           end
           provider.start_instance(cloud_id)
+        end
+      end
+    end
+
+    context "clear_enrollment_seed! (D13)" do
+      let(:current) do
+        double("instance", metadata: metadata_struct.new(
+          fingerprint: "fp-1",
+          items: [ item_struct.new(key: "user-data", value: "stale"), item_struct.new(key: "startup-script", value: "echo operator") ]
+        ))
+      end
+
+      before { allow(client).to receive(:get).and_return(current) }
+
+      it "ENROLLED: removes only the user-data item (fingerprint kept), mints nothing, never starts" do
+        enroll!
+        sent = nil
+        allow(client).to receive(:set_metadata) { |**kw| sent = kw[:metadata_resource] }
+        expect(client).not_to receive(:start)
+
+        result = nil
+        expect { result = provider.clear_enrollment_seed!(cloud_id, instance: instance) }.not_to change { issued_rows.count }
+        expect(result).to include(outcome: :cleared)
+        expect(sent.items.map(&:key)).to eq([ "startup-script" ])
+        expect(sent.fingerprint).to eq("fp-1")
+      end
+
+      it "NOT enrolled: does nothing (never re-mints, never clears a live seed)" do
+        expect(client).not_to receive(:set_metadata)
+        expect { expect(provider.clear_enrollment_seed!(cloud_id, instance: instance)).to include(outcome: :noop) }
+          .not_to change { issued_rows.count }
+      end
+
+      context "an instance the platform never seeded" do
+        let(:seeded) { false }
+
+        it "leaves the metadata untouched" do
+          enroll!
+          expect(client).not_to receive(:set_metadata)
+          expect(provider.clear_enrollment_seed!(cloud_id, instance: instance)).to include(outcome: :noop)
         end
       end
     end
@@ -510,6 +567,103 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
       instance.merge_config!("boot_mode" => "cloud_init")
       expect { provider.start_instance(cloud_id) }.not_to change { issued_rows.count }
       expect(seed_file).to be_nil
+    end
+
+    context "clear_enrollment_seed! (D13)" do
+      let(:disc) { instance.id.delete("-").first(12) }
+      let(:config_path) { "/api2/json/nodes/pve1/qemu/100/config" }
+
+      def attached_config(extra)
+        { "name" => "vm", "ide2" => "local:cloudinit,media=cdrom" }.merge(extra)
+      end
+
+      before do
+        enroll!
+        allow(client).to receive(:put).and_return(nil)
+        allow(client).to receive(:delete).and_return(nil)
+        %w[user meta net].each { |k| File.write(File.join(tmp, "100-#{disc}-#{k}.yml"), "seed") }
+      end
+
+      it "snippet transport: queues the cicustom removal for the next stop and KEEPS the files meanwhile" do
+        allow(client).to receive(:get).with(config_path, { "current" => 1 })
+          .and_return(attached_config("cicustom" => "snip:snippets/100-#{disc}-user.yml"))
+
+        result = provider.clear_enrollment_seed!(cloud_id, instance: instance)
+
+        expect(client).to have_received(:put).with(config_path, { "delete" => "cicustom" })
+        expect(result).to include(outcome: :awaiting_stop)
+        expect(Dir[File.join(tmp, "*.yml")].size).to eq(3)
+      end
+
+      it "never restarts the VM: no status endpoint is ever called" do
+        allow(client).to receive(:get).with(config_path, { "current" => 1 })
+          .and_return(attached_config("cicustom" => "snip:snippets/100-#{disc}-user.yml"))
+        expect(client).not_to receive(:post)
+        provider.clear_enrollment_seed!(cloud_id, instance: instance)
+      end
+
+      it "snippet transport: removes the snippets once the stop has applied the change" do
+        allow(client).to receive(:get).with(config_path, { "current" => 1 }).and_return(attached_config({}))
+
+        result = provider.clear_enrollment_seed!(cloud_id, instance: instance)
+
+        expect(result).to include(outcome: :cleared)
+        expect(Dir[File.join(tmp, "*.yml")]).to be_empty
+        expect(client).not_to have_received(:put)
+      end
+
+      context "ISO transport" do
+        let(:iso) { "cidata-100-#{disc}.iso" }
+
+        before do
+          connection.config["cidata_transport"] = "iso"
+          connection.config["cidata_iso_storage"] = "isos"
+        end
+
+        it "queues the ide2 removal, then deletes the uploaded ISO after the stop" do
+          allow(client).to receive(:get).with(config_path, { "current" => 1 })
+            .and_return(attached_config("ide2" => "isos:iso/#{iso},media=cdrom"), attached_config({}))
+
+          first = provider.clear_enrollment_seed!(cloud_id, instance: instance)
+          expect(client).to have_received(:put).with(config_path, { "delete" => "ide2" })
+          expect(first).to include(outcome: :awaiting_stop)
+          expect(client).not_to have_received(:delete)
+
+          second = provider.clear_enrollment_seed!(cloud_id, instance: instance)
+          expect(client).to have_received(:delete).with("/api2/json/nodes/pve1/storage/isos/content/isos:iso/#{iso}")
+          expect(second).to include(outcome: :cleared)
+        end
+
+        it "treats an already-gone ISO as cleared" do
+          allow(client).to receive(:get).with(config_path, { "current" => 1 }).and_return(attached_config({}))
+          allow(client).to receive(:delete).and_raise(System::Providers::Proxmox::Client::NotFoundError, "gone")
+          expect(provider.clear_enrollment_seed!(cloud_id, instance: instance)).to include(outcome: :cleared)
+        end
+      end
+
+      it "NOT enrolled: does nothing" do
+        instance.update_columns(mtls_subject: nil)
+        expect(client).not_to receive(:put)
+        expect(provider.clear_enrollment_seed!(cloud_id, instance: instance)).to include(outcome: :noop)
+        expect(Dir[File.join(tmp, "*.yml")].size).to eq(3)
+      end
+
+      it "skips VMs that are not pivot-boot (no platform key rides that seed)" do
+        instance.merge_config!("boot_mode" => "cloud_init")
+        expect(client).not_to receive(:put)
+        expect(provider.clear_enrollment_seed!(cloud_id, instance: instance)).to include(outcome: :noop)
+      end
+
+      it "skips federation spawns (their snippet slot carries the spawn payload)" do
+        instance.merge_config!("federation_spawn" => { "x" => 1 })
+        expect(client).not_to receive(:put)
+        expect(provider.clear_enrollment_seed!(cloud_id, instance: instance)).to include(outcome: :noop)
+      end
+
+      it "skips LXC" do
+        expect(client).not_to receive(:put)
+        expect(provider.clear_enrollment_seed!("pve1/lxc/100", instance: instance)).to include(outcome: :noop)
+      end
     end
 
     it "keeps the key out of the logs" do

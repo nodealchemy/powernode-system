@@ -221,6 +221,26 @@ write then fails (for example AWS `modify_instance_attribute` rejected because t
 instance is running), the previous key stays revoked and the new one is lost; the
 next start mints again.
 
+### Seed cleanup after enrolment (D13, best-effort)
+
+Single use is the real control; cleanup only narrows how long the spent seed stays
+readable. It never restarts a VM and never fails or rolls back the enrolment.
+`NodeEnrollmentService#enroll!` does one local write after commit
+(`EnrollmentSeedCleanup.mark_pending!`, only for platform-seeded instances); the
+worker's reconcile tick (`worker_api/fleet/reconcile`, skipped when halted or on
+standby) calls `EnrollmentSeedCleanup.sweep!`, which retries with backoff (5
+attempts) and writes a `system.enrollment_seed.cleanup` audit row per outcome:
+
+- GCP: the `user-data` metadata item is removed (live edit, other items kept).
+- Proxmox (pivot-boot QEMU, enrolled): the `ide2` seed ISO (ISO transport) or
+  `cicustom` (snippet transport) delete is queued as a PVE pending change and
+  applies at the next natural stop; once the live config no longer references it
+  the ISO or snippet files are deleted. A VM that never stops within 14 days is
+  left to the start policy above.
+- AWS and OpenStack: no-op, recorded with a note (their user-data cannot change
+  on a running instance; the start policy covers restarts). Azure is not covered
+  here and relies on the start policy.
+
 Size limits (raw bytes, enforced in `EnrollmentSeed`, `SeedError` names the limit):
 AWS 16384, OpenStack 49149 and Azure 49151 (64 KB base64), GCP 262144. The agent
 fetches up to 512 KiB of user-data and a provision part up to 128 KiB.

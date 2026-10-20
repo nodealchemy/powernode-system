@@ -398,6 +398,79 @@ module System
         end
       end
 
+      # D13 (best-effort, NEVER restarts the VM): detach the spent seed from an
+      # ENROLLED, platform-seeded pivot-boot VM, then delete its files. On a running
+      # VM PVE queues the config delete as a pending change that applies at the
+      # next stop/start, so this is two-phase and idempotent:
+      #   1. seed still attached (current config): queue `delete` of ide2 (ISO
+      #      transport) or cicustom (snippet transport) -> :awaiting_stop. The files
+      #      stay (the running VM and the pending config may still reference them).
+      #   2. seed no longer attached (the stop applied it): remove the ISO /
+      #      snippets -> :cleared.
+      # A later D12 start only rewrites the neutral placeholder file in place.
+      # Never logs the seed.
+      def clear_enrollment_seed!(instance_id, instance: nil)
+        with_known_instance(instance) do
+          node, kind, vmid = parse_instance_id!(instance_id)
+          record = seed_instance_for(instance_id)
+          skip = proxmox_cleanup_skip_reason(record, kind)
+          return { outcome: :noop, note: "proxmox: #{skip}" } if skip
+
+          c = require_client!
+          cfg = c.get("/api2/json/nodes/#{node}/qemu/#{vmid}/config", { "current" => 1 })
+          cfg = {} unless cfg.is_a?(Hash)
+          key = seed_discriminator(instance: record)
+          if cidata_iso_transport?
+            filename = "cidata-#{vmid}-#{key}.iso"
+            return queue_seed_detach(c, node, vmid, "ide2") if cfg["ide2"].to_s.include?(filename)
+
+            delete_cidata_iso(c, node, filename)
+          else
+            seed_key = "#{vmid}-#{key}"
+            return queue_seed_detach(c, node, vmid, "cicustom") if cfg["cicustom"].to_s.include?(seed_key)
+
+            delete_cicustom_snippets(seed_key)
+          end
+          { outcome: :cleared, note: "proxmox: seed detached and removed" }
+        end
+      end
+      public :clear_enrollment_seed!
+
+      private def proxmox_cleanup_skip_reason(record, kind)
+        return "only QEMU VMs carry a platform seed" unless kind == "qemu"
+        return "fw-cfg seeding has no detachable drive" if ENV["POWERNODE_PVE_USE_FWCFG"] == "1"
+        return "instance not found" unless record
+        return "not a pivot-boot VM" unless record.pivot_boot?
+        return "not platform-seeded" unless ::System::EnrollmentSeed.ever_seeded?(record)
+        return "federation spawn: its snippet slot carries the spawn payload" if record.config.is_a?(Hash) && record.config["federation_spawn"].present?
+        return "instance not enrolled yet" unless ::System::EnrollmentSeed.enrolled?(record)
+
+        nil
+      end
+
+      private def queue_seed_detach(c, node, vmid, field)
+        c.put("/api2/json/nodes/#{node}/qemu/#{vmid}/config", { "delete" => field })
+        { outcome: :awaiting_stop, note: "proxmox: #{field} removal queued, applied at the next natural stop (no restart)" }
+      end
+
+      private def delete_cidata_iso(c, node, filename)
+        storage = connection&.config&.dig("cidata_iso_storage").presence ||
+                  pve_credential("default_storage", "default_storage").presence
+        return if storage.blank?
+
+        c.delete("/api2/json/nodes/#{node}/storage/#{storage}/content/#{storage}:iso/#{filename}")
+      rescue Proxmox::Client::NotFoundError
+        nil # already gone
+      end
+
+      private def delete_cicustom_snippets(seed_key)
+        dir = connection&.config&.dig("snippets_local_path") || "/mnt/pve-data/snippets"
+        %w[user meta net].each do |part|
+          path = File.join(dir, "#{seed_key}-#{part}.yml")
+          File.delete(path) if File.file?(path)
+        end
+      end
+
       def stop_instance(instance_id, force: false)
         log_operation("stop_instance", instance_id: instance_id, force: force)
         node, kind, vmid = parse_instance_id!(instance_id)

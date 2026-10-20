@@ -844,6 +844,23 @@ module System
         )
       end
 
+      # D13: remove the spent seed from a RUNNING enrolled instance. GCE metadata is
+      # editable live and the edit does not restart anything. Reuses the D12 clear
+      # path (#reseed_user_data! -> seed_for_start action :clear), but only ever for a
+      # platform-seeded, enrolled instance: never mints, never clears a live seed.
+      def clear_enrollment_seed!(instance_id, instance: nil)
+        with_known_instance(instance) do
+          record = seed_instance_for(instance_id)
+          unless record && ::System::EnrollmentSeed.ever_seeded?(record) && ::System::EnrollmentSeed.enrolled?(record)
+            return { outcome: :noop, note: "gcp: instance is not a platform-seeded, enrolled instance" }
+          end
+
+          reseed_user_data!(instance_id)
+          { outcome: :cleared, note: "gcp: user-data metadata item removed" }
+        end
+      end
+      public :clear_enrollment_seed!
+
       # Re-mint on start (D12): setMetadata replaces ONLY the `user-data` item
       # (other items, incl. an operator startup-script, are preserved) using the
       # current fingerprint. The document is never logged.

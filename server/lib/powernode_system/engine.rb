@@ -698,6 +698,7 @@ module PowernodeSystem
           "system",
           ::System::LifecycleAuditable::AUDITED_ACTIONS +
             ::System::BootstrapToken::AUDITED_ACTIONS +
+            ::System::EnrollmentSeedCleanup::AUDITED_ACTIONS +
             ::System::InternalCaService::AUDITED_ACTIONS +
             ::System::Governance::PolicyReconciler::AUDITED_ACTIONS +
             ::System::Governance::GapMaterializer::AUDITED_ACTIONS +

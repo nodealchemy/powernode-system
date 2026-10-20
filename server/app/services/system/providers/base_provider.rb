@@ -670,6 +670,23 @@ module System
 
       public :known_instance, :known_instance=, :with_known_instance
 
+      # D13 (best-effort): what each provider can do to a seed AFTER the instance
+      # enrolled, without ever restarting it. Adapters that can override
+      # #clear_enrollment_seed!; the rest record why they do nothing (D12
+      # neutralises their seed at the next start). Returns
+      # { outcome: :cleared | :awaiting_stop | :noop, note: String }.
+      NO_SEED_CLEANUP_NOTES = {
+        "aws" => "aws user-data can only be changed while the instance is stopped; D12 neutralises it at the next start",
+        "openstack" => "openstack (Nova) cannot change user_data after create; the spent key is single-use and D12 covers restarts"
+      }.freeze
+
+      def clear_enrollment_seed!(_cloud_id, instance: nil)
+        { outcome: :noop,
+          note: NO_SEED_CLEANUP_NOTES.fetch(provider_type.to_s,
+                                            "#{provider_type}: no post-enrolment seed cleanup; D12 neutralises it at the next start") }
+      end
+      public :clear_enrollment_seed!
+
       def seed_instance_for(cloud_id)
         known = known_instance
         return known if known && known.cloud_instance_id.to_s == cloud_id.to_s && known.cloud_instance_id.present?
