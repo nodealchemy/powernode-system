@@ -196,6 +196,15 @@ refuses more than one such part or a legacy shape inside it. The initramfs
 stager stages any JSON user-data that has a `"version"` key (any case, any
 layout) as the identity file and lets the agent's strict parser decide.
 
+## Operator download (one-shot)
+
+`POST .../node_instances/:id/bootstrap_tokens` with `include_provisioning_document: true`
+returns the rendered document as `provisioning_document` beside the one-time `token`.
+The node-instances tab ("Generate enrolment key") builds `powernode-provision.cfg`
+client-side from that response (a Blob); no server URL serves it again. The request
+is refused with 409 once the instance is claimed or enrolled, and with 422 (no key
+minted) when no CA is configured. The existing `identity.cfg` download stays key-free.
+
 ## Drive scan (`powernode-provision.cfg`)
 
 A booting, UNENROLLED node scans attached drives for a v1 document (agent
