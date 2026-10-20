@@ -133,6 +133,10 @@ module System
           sealed_plaintext: (plaintext if SEALED_PURPOSES.include?(purpose.to_s))
         )
         token.send(:write_audit!, :issued)
+        # Optional in-transaction hook (e.g. rendering a provisioning document
+        # from the plaintext): anything it raises rolls the mint AND its audit
+        # row back together, so no orphan key is left behind.
+        yield(token, plaintext) if block_given?
       end
       [ token, plaintext ]
     rescue ActiveRecord::RecordNotUnique

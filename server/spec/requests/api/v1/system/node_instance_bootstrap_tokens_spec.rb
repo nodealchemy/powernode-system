@@ -5,6 +5,8 @@ require "rails_helper"
 # IMP-5c6a03c3b335 (D4) - operator-issued, single-use enrolment keys bound to
 # one NodeInstance. The plaintext is returned ONCE, in the create response, and
 # is recoverable afterwards only through the gated MCP reveal verb.
+RSpec::Matchers.define_negated_matcher :not_change, :change
+
 RSpec.describe "Api::V1::System::NodeInstanceBootstrapTokens", type: :request do
   let(:account)  { create(:account) }
   let(:template) { create(:system_node_template, account: account) }
@@ -218,6 +220,21 @@ RSpec.describe "Api::V1::System::NodeInstanceBootstrapTokens", type: :request do
       expect { post_create({ include_provisioning_document: true }) }.not_to change { System::BootstrapToken.count }
       expect(response).to have_http_status(:unprocessable_content)
       expect(response.body).not_to include("provisioning_document")
+    end
+
+    it "rolls back the mint and its audit row when the real render fails after the dry run" do
+      calls = 0
+      allow(System::ProvisioningDocument).to receive(:render).and_wrap_original do |m, **kw|
+        calls += 1
+        raise System::ProvisioningDocument::RenderError, "boom" if calls > 1
+
+        m.call(**kw)
+      end
+      expect { post_create({ include_provisioning_document: true }) }
+        .to not_change { System::BootstrapToken.count }
+        .and not_change { AuditLog.where(action: "system.bootstrap_token.issued").count }
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(response.body).not_to include("provisioning_document\":")
     end
 
     it "does not log the key or the document" do

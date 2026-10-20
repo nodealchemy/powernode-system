@@ -53,6 +53,7 @@ module Api
           # minted that the operator could then not package.
           return if want_document && !document_renderable?
 
+          document = nil
           token, plaintext = ::System::BootstrapToken.issue!(
             node: @node,
             node_instance: @instance,
@@ -60,23 +61,24 @@ module Api
             purpose: "operator_key",
             ttl: ttl,
             created_by: current_user
-          )
-          payload = { bootstrap_token: serialize(token), token: plaintext }
-          if want_document
-            # One-shot, like the key: rendered from the mint-time plaintext,
-            # returned in this response only; never stored or logged.
-            payload[:provisioning_document] = ::System::ProvisioningDocument.render(
-              instance: @instance, key: plaintext, purpose: "operator_key", expires_at: token.expires_at
-            )
+          ) do |minted, key|
+            # Rendered INSIDE the mint transaction: a RenderError rolls back the
+            # key and its audit row together. One-shot; never stored or logged.
+            if want_document
+              document = ::System::ProvisioningDocument.render(
+                instance: @instance, key: key, purpose: "operator_key", expires_at: minted.expires_at
+              )
+            end
           end
+          payload = { bootstrap_token: serialize(token), token: plaintext }
+          payload[:provisioning_document] = document if document
           render_success(data: payload, status: :created)
         rescue ::System::BootstrapToken::InstanceNotAvailable => e
           render_error("A bootstrap key cannot be issued: #{e.message}.", status: :conflict)
         rescue ::System::ProvisioningDocument::RenderError
-          # Not reachable after the pre-flight unless config changed mid-request.
-          # The key is never returned: revoke it (audited) so it cannot linger.
-          token&.revoke!(by: current_user)
-          render_error("Provisioning document could not be rendered; the key was revoked.",
+          # Not reachable after the pre-flight unless config changed mid-request;
+          # the mint transaction rolled back, so no key exists.
+          render_error("Provisioning document could not be rendered; no key was issued.",
                        status: :unprocessable_content)
         rescue ::System::BootstrapToken::AuditFailure
           render_error("Bootstrap key was not issued: the audit record could not be written.",
