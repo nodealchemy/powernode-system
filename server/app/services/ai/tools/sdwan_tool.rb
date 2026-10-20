@@ -426,7 +426,7 @@ module Ai
           },
           "system_sdwan_rotate_peer_key" => {
             description: "Rotate ONE SDWAN peer's WireGuard keypair IN PLACE, the remedy for a LEAKED KEY rather than a compromised node. " \
-                         "The private half turned up in a backup, a log, a transcript or a copied config; the new " \
+                         "A key is leaked when its private half turns up in a backup, a log, a transcript or a copied config; the new " \
                          "private key is delivered to the peer's node on its next pull, so if the node itself is suspect, " \
                          "detach the peer (system_sdwan_detach_peer) and revoke or reprovision the instance instead. The peer id, " \
                          "overlay address, network and endpoints stay unchanged (detach + re-attach would change the id " \
