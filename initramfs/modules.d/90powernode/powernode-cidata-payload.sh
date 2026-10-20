@@ -61,7 +61,15 @@ json_has_version_key() {
     _found=1
     while IFS= read -r _l || [ -n "$_l" ]; do
         case "$_l" in
-            *'"'[Vv][Ee][Rr][Ss][Ii][Oo][Nn]'"'*) _found=0; break ;;
+            *'"'[Vv][Ee][Rr][Ss][Ii][Oo][Nn]'"'*)
+                # Key position only: `"version"` followed (after optional
+                # whitespace) by a colon. A "version" VALUE does not count.
+                _r=${_l#*'"'[Vv][Ee][Rr][Ss][Ii][Oo][Nn]'"'}
+                _r=${_r#"${_r%%[![:space:]]*}"}
+                case "$_r" in
+                    :*) _found=0; break ;;
+                esac
+                ;;
         esac
     done < "$1"
     return "$_found"

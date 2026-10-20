@@ -52,6 +52,8 @@ route_case "compact v1 (version first)" '{"version":1,"key":"not-a-real-enrol-ke
 route_case "reordered v1 (version last)" '{"key":"not-a-real-enrol-key","version":1}' identity
 route_case "pretty-printed v1" "$(printf '{\n  "server": "https://p.example.test",\n  "version": 1\n}\n')" identity
 route_case "case-variant VERSION key" '{"VERSION":1,"key":"x"}' identity
+route_case "spaced key (\"version\" : 1)" '{"a":1, "version" : 1}' identity
+route_case "federation payload with the word version only as a value" '{"parent_url":"https://p.example.test","note":"version"}' federation
 route_case "legacy KEY= identity" "$(printf 'ID=abc\nKEY=not-a-real-enrol-key\n')" identity
 route_case "federation payload (contract_version only)" '{"parent_url":"https://p.example.test","contract_version":"v1"}' federation
 
