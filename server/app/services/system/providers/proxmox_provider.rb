@@ -868,7 +868,8 @@ module System
         log_operation("get_volume", volume_id: volume_id)
         c = require_client!
         node = first_online_node!(c)
-        info = c.get("/api2/json/nodes/#{node}/storage/#{encode_volid(volume_id)}/content")
+        storage = volume_id.to_s.split(":", 2).first
+        info = c.get("/api2/json/nodes/#{node}/storage/#{storage}/content/#{encode_volid(volume_id)}")
         { success: true, volume_id: volume_id, details: info }
       rescue Proxmox::Client::NotFoundError
         raise ResourceNotFoundError, "Volume #{volume_id} not found"
