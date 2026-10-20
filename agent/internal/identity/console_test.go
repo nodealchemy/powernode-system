@@ -253,7 +253,7 @@ func TestConsoleInvalidDocumentTerminal(t *testing.T) {
 				t.Fatal("refused document must not be staged")
 			}
 			// terminal at the Resolver: a later source must not rescue it
-			r := &Resolver{Interactive: true, Strategies: []Strategy{f.s, stubStrategy{id: &Identity{InstanceUUID: "u", BootstrapToken: "k"}}}}
+			r := &Resolver{Interactive: true, Strategies: []Strategy{f.s, consoleStubStrategy{id: &Identity{InstanceUUID: "u", BootstrapToken: "k"}}}}
 			f2 := newConsole(t, doc+"\n", bootCfgPinned)
 			r.Strategies[0] = f2.s
 			if _, err := r.Resolve(context.Background()); !errors.Is(err, ErrProvisionRefused) {
@@ -263,10 +263,10 @@ func TestConsoleInvalidDocumentTerminal(t *testing.T) {
 	}
 }
 
-type stubStrategy struct{ id *Identity }
+type consoleStubStrategy struct{ id *Identity }
 
-func (stubStrategy) Name() string                                  { return "stub" }
-func (s stubStrategy) Discover(context.Context) (*Identity, error) { return s.id, nil }
+func (consoleStubStrategy) Name() string                                  { return "stub" }
+func (s consoleStubStrategy) Discover(context.Context) (*Identity, error) { return s.id, nil }
 
 func TestConsoleEmptyLineAndSkipFallThrough(t *testing.T) {
 	f := newConsole(t, "\n", bootCfgPinned)
@@ -341,7 +341,7 @@ func TestConsoleNothingLogged(t *testing.T) {
 func TestResolverDoesNotPromptAfterPinlessHit(t *testing.T) {
 	prompted := false
 	c := &ConsolePromptStrategy{Open: func() (ConsoleTTY, error) { prompted = true; return nil, errors.New("x") }, Skip: func() bool { return false }}
-	r := &Resolver{Strategies: []Strategy{stubStrategy{id: &Identity{InstanceUUID: "u", BootstrapToken: "k"}}, c}}
+	r := &Resolver{Strategies: []Strategy{consoleStubStrategy{id: &Identity{InstanceUUID: "u", BootstrapToken: "k"}}, c}}
 	if _, err := r.Resolve(context.Background()); err != nil {
 		t.Fatal(err)
 	}
