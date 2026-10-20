@@ -28,12 +28,33 @@ RSpec.describe Ai::Assembly::Service, "v1 eval tasks", type: :service do
     [ "Provision a VM with attached storage for a new project", "fleet-operator" ] => %w[fleet-provisioning-entry storage-operations fleet-capacity-operations],
     [ "Help me onboard: I want to set up Powernode for my team", "powernode-concierge" ] => %w[front-door-triage provisioning-brief-capture],
     [ "Rotate the WireGuard key for an SD-WAN peer", "fleet-operator" ] => %w[sdwan-operations],
+    # STAND-IN for the design's sixth v1 task, (f) marketing, which has no skill until P4
+    # (marketing skills move to the marketing extension); see the pending example below.
     [ "Deploy my app", "platform-engineer" ] => %w[deployment-handoff]
   }.each do |(task, agent), owners|
     it "#{agent}: #{task.inspect} selects #{owners.join(' or ')}" do
       slugs = assemble(task, agent_slug: agent)[:skills].map { |s| s[:slug] }
 
       expect(slugs & owners).not_to be_empty, "got #{slugs.inspect}"
+    end
+  end
+
+  describe "the sixth v1 task: marketing (no skill until P4)" do
+    let(:task) { "Plan a marketing campaign for our product launch" }
+
+    it "currently comes back uncovered for the concierge instead of a guessed skill" do
+      result = assemble(task, agent_slug: "powernode-concierge")
+
+      expect(result[:skills]).to eq([])
+      expect(result[:uncovered]).not_to be_empty
+    end
+
+    it "selects a marketing skill once P4 lands them" do
+      pending "P4: the marketing extension seeds the marketing skills"
+
+      slugs = assemble(task, agent_slug: "powernode-concierge")[:skills].map { |s| s[:slug] }
+
+      expect(slugs.grep(/marketing/)).not_to be_empty
     end
   end
 

@@ -967,6 +967,22 @@ module PowernodeSystem
       end
     end
 
+    # Verbs a gate_category-read skill of this extension may name although their
+    # declaration is `mutating: true` (core's seed gate otherwise refuses a read
+    # skill that names a writing verb): approval-parking, read-only probes. Both
+    # run a FIXED, read-only collector on a node and are governed auto_approve by
+    # default; they are declared mutating only because they queue a probe task.
+    initializer "powernode_system.register_read_probe_verbs" do
+      config.to_prepare do
+        next unless defined?(::Ai::Skills::Contract)
+
+        ::Ai::Skills::Contract.register_read_probe_verbs(
+          owner: "extensions/system",
+          verbs: %w[system_inspect_node system_platform_health_check]
+        )
+      end
+    end
+
     # The Fleet Operator joins core's canonical-agent roster (a registry; core
     # declares only its own three and names none of ours). The roster feeds the
     # seed (db/seeds/fleet_operator_agent.rb), the committed Claude Code
@@ -975,7 +991,10 @@ module PowernodeSystem
     # CanonicalRoster is a reloadable core constant. Tier `standard` is the
     # floor for read-only/inspect runs; a mutating run is raised to
     # reasoning/high by the assembler (skill hints and verb risk), not by this
-    # row. The domain ceiling is the domains registered above.
+    # row. The domain ceiling is the domains registered above. Deliberately NO
+    # rescue: the roster validates a spec (tier, domains, role, charter length)
+    # and a bad registration must stop the boot, not leave the install without
+    # its operator agent and a skeleton set that silently differs from the seed.
     initializer "powernode_system.register_roster_agents" do
       config.to_prepare do
         next unless defined?(::Ai::Agents::CanonicalRoster) && defined?(::Ai::Skills::Contract)
@@ -990,7 +1009,7 @@ module PowernodeSystem
                          "ingress, runtimes, disk images, packages and CVEs — inspects live state and takes " \
                          "operational actions through the platform's gated verbs. Every deploy is handed to it.",
             domains: ::Ai::Skills::Contract.domains_for("extensions/system"),
-            role: { code: false, shell: false, server_grant: true,
+            role: { code: false, shell: false, server_grant: true, read_only: false, verbs: [],
                     duty: "Act only through the platform's gated verbs; report a parked action, never work around it." },
             charter: ::Ai::Agents::CanonicalRoster.assembly_charter(
               identity: "You are the **Fleet Operator**: you operate the running fleet and take every deploy " \
@@ -1006,8 +1025,6 @@ module PowernodeSystem
           },
           owner: "extensions/system"
         )
-      rescue StandardError => e
-        Rails.logger.error "[PowernodeSystem] Could not register roster agents: #{e.message}"
       end
     end
 
