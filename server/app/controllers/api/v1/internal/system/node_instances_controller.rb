@@ -5,7 +5,7 @@ module Api
     module Internal
       module System
         # Internal API for system node instance operations: SSH execution,
-        # AASM lifecycle control, IP management, image creation, maintenance,
+        # AASM lifecycle control, maintenance,
         # and cloud-state sync. Worker-only — accessed via the worker token
         # at the parent InternalBaseController.
         class NodeInstancesController < BaseController
@@ -75,36 +75,6 @@ module Api
           # a real caller elsewhere (System::NodeMaintenanceService), unlike
           # .cleanse/#cleanse (ssh_cleanse's only caller), which is removed
           # with it — see that file.
-
-          # POST /api/v1/internal/system/node_instances/:id/associate_public_ip
-          def associate_public_ip
-            result = ::System::IpManagementService.associate_public_ip(instance: @instance)
-            render_or_error(result, data: { success: true, public_ip_address: result[:public_ip_address] })
-          end
-
-          # POST /api/v1/internal/system/node_instances/:id/disassociate_public_ip
-          def disassociate_public_ip
-            result = ::System::IpManagementService.disassociate_public_ip(instance: @instance)
-            render_or_error(result, data: { success: true })
-          end
-
-          # POST /api/v1/internal/system/node_instances/:id/create_image
-          def create_image
-            image_format = params[:image_format] || "img"
-            return render_error("Invalid image format", status: :unprocessable_content) unless %w[img iso].include?(image_format)
-
-            result = ::System::ImageCreationService.create_instance_image(
-              instance: @instance,
-              format: image_format,
-              operation_id: params[:operation_id]
-            )
-
-            render_or_error(result, data: {
-              success: true,
-              image_path: result[:image_path],
-              image_size: result[:image_size]
-            })
-          end
 
           # POST /api/v1/internal/system/node_instances/:id/maintenance
           def maintenance
