@@ -823,3 +823,22 @@ func TestLogTail_HeaderAfterBase64IsNotPartOfAClippedBody(t *testing.T) {
 		t.Fatalf("got:\n%.300s", got)
 	}
 }
+
+func TestLogTail_Clipped70ColumnKeyRemainderIsRemoved(t *testing.T) {
+	// OpenSSH wraps at 70 (== 2 mod 4): after an odd number of full lines the
+	// padded body's remainder is 2, 6, 10 or 14 characters.
+	hdr := "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
+	for _, c := range []struct{ lines, rem int }{{1, 2}, {3, 6}, {5, 10}, {7, 14}} {
+		var lines []string
+		for i := 0; i < c.lines; i++ {
+			lines = append(lines, strings.Repeat(string(rune('A'+i)), 69)+"x")
+		}
+		remainder := strings.Repeat("Z", c.rem)
+		lines = append(lines, remainder)
+		in := "stage 1\n" + hdr + "\n" + strings.Join(lines, "\n") + "\n"
+		got := logTail([]byte(in), []byte("ok"))
+		if got != "stdout: stage 1\n"+wantKeyBlockMarker+"\nstderr: ok" {
+			t.Fatalf("lines=%d rem=%d got:\n%.300s", c.lines, c.rem, got)
+		}
+	}
+}

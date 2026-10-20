@@ -758,7 +758,7 @@ func clippedBodyLine(line []byte, prevWidth int, last bool) bool {
 	if len(line) >= 16 {
 		return true
 	}
-	return last && len(line)%4 == 0 && (prevWidth == 64 || prevWidth == 70 || prevWidth == 76)
+	return last && (len(line)%4 == 0 && (prevWidth == 64 || prevWidth == 70 || prevWidth == 76) || len(line)%4 == 2 && prevWidth == 70)
 }
 
 // dropCutKeyBody handles a window whose cut landed inside a PEM body whose
