@@ -245,7 +245,7 @@ func TestOrchestratorEnroll_CarriesPinAndAllowsPinOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pin-only boot enrol: %v", err)
 	}
-	if enroll.ReadPin(paths) != pin {
+	if got, err := enroll.LoadPin(paths); err != nil || got != pin {
 		t.Fatal("pin not persisted by the boot path")
 	}
 	if b, _ := os.ReadFile(paths.CABundle); len(b) == 0 {

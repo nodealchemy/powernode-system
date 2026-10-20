@@ -373,7 +373,10 @@ func TestCheckAndRotatePreservesCAPin(t *testing.T) {
 	if err := r.CheckAndRotate(testCtx()); err != nil {
 		t.Fatal(err)
 	}
-	if got := enroll.ReadPin(paths); got != pin {
-		t.Fatalf("pin lost across rotation: %q", got)
+	if got, err := enroll.LoadPin(paths); err != nil || got != pin {
+		t.Fatalf("pin lost across rotation: %q %v", got, err)
+	}
+	if m, _ := os.ReadFile(paths.Meta); !strings.Contains(string(m), `"pinned":true`) {
+		t.Fatalf("meta lost the pinned flag across rotation: %s", m)
 	}
 }

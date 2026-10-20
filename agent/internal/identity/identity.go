@@ -138,11 +138,16 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 	)
 	for _, s := range r.Strategies {
 		if first != nil {
-			// A pinless hit was already found: keep scanning ONLY to collect a
-			// pin (and to let a refused v1 document stop us). Never run a
-			// strategy that blocks or polls (claim), and never let a later
-			// source replace the identity that supplied the key.
-			if _, isClaim := s.(*ClaimStrategy); isClaim {
+			// A pinless hit was already found: keep scanning ONLY LOCAL sources
+			// (files, fw-cfg, cmdline) to collect a pin and let a refused local
+			// v1 document stop us. Never run a strategy that blocks or polls
+			// (claim) or that goes over the network: unauthenticated cloud
+			// metadata (169.254.169.254 over HTTP) is spoofable on L2, so it can
+			// neither supply a pin nor veto a local identity (and skipping it
+			// avoids seconds of probing on bare metal). A later source never
+			// replaces the identity that supplied the key.
+			switch s.(type) {
+			case *ClaimStrategy, *CloudStrategy:
 				continue
 			}
 		}

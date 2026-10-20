@@ -437,18 +437,49 @@ func TestClient_Enroll_PinOnly_PersistsBundleAndPin(t *testing.T) {
 	if b, err := os.ReadFile(paths.CABundle); err != nil || len(b) == 0 {
 		t.Fatalf("ca bundle not persisted: %v", err)
 	}
-	if got := ReadPin(paths); got != pinOf(srv) {
+	if got, err := LoadPin(paths); err != nil || got != pinOf(srv) {
 		t.Fatalf("pin not persisted: %q", got)
 	}
 }
 
-func TestReadPin_AbsentOrMalformedIsEmpty(t *testing.T) {
+func TestLoadPin_FailsClosed(t *testing.T) {
+	// no pin, not pinned: fine
 	paths := PathsUnder(t.TempDir())
-	if ReadPin(paths) != "" {
-		t.Fatal("absent pin file should read empty")
+	if pin, err := LoadPin(paths); err != nil || pin != "" {
+		t.Fatalf("unpinned enrolment: %q %v", pin, err)
 	}
-	os.WriteFile(filepath.Join(paths.Dir, "ca-pin"), []byte("garbage"), 0o644)
-	if ReadPin(paths) != "" {
-		t.Fatal("malformed pin should read empty")
+	// malformed file: error, never "no pin"
+	os.WriteFile(paths.CAPin, []byte("garbage"), 0o644)
+	if _, err := LoadPin(paths); err == nil {
+		t.Fatal("malformed pin file read as no pin")
+	}
+	// meta says pinned but the pin file is gone: error
+	paths = PathsUnder(t.TempDir())
+	os.WriteFile(paths.Meta, []byte(`{"instance_id":"i","pinned":true}`), 0o644)
+	if _, err := LoadPin(paths); err == nil {
+		t.Fatal("missing ca-pin with pinned=true read as no pin")
+	}
+}
+
+func TestSave_PinOrderingAndStalePinRemoval(t *testing.T) {
+	kp, _ := GenerateKeypair()
+	paths := PathsUnder(t.TempDir())
+	pinned := &EnrolledIdentity{Keypair: kp, CertPEM: []byte("c"), CAChainPEM: []byte("c"), CABundlePEM: []byte("b"), CAFingerprint: "sha256:" + strings.Repeat("ab", 32)}
+	if err := Save(pinned, paths); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := os.ReadFile(paths.Meta); !strings.Contains(string(m), `"pinned":true`) {
+		t.Fatalf("meta does not record pinned: %s", m)
+	}
+	// re-enrol WITHOUT a pin: the stale pin must not survive
+	unpinned := &EnrolledIdentity{Keypair: kp, CertPEM: []byte("c"), CAChainPEM: []byte("c"), CABundlePEM: []byte("b")}
+	if err := Save(unpinned, paths); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(paths.CAPin); !os.IsNotExist(err) {
+		t.Fatal("stale ca-pin survived a pinless re-enrolment")
+	}
+	if pin, err := LoadPin(paths); err != nil || pin != "" {
+		t.Fatalf("after pinless re-enrol: %q %v", pin, err)
 	}
 }

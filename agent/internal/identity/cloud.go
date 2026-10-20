@@ -71,10 +71,13 @@ func parseUserData(raw string) (*Identity, error) {
 		return nil, ErrNotFound
 	}
 	if strings.HasPrefix(raw, "{") {
-		if isV1Shaped(raw) {
-			return ParseProvisionDocument([]byte(raw))
+		if isLegacyJSON(raw) {
+			return parseUserDataJSON(raw)
 		}
-		return parseUserDataJSON(raw)
+		// Anything else that starts with "{" - a v1 document, a "Version"/
+		// "VERSION" variant, or a syntax error - is judged by the strict parser
+		// and its refusal is TERMINAL (never downgraded to a legacy shape).
+		return ParseProvisionDocument([]byte(raw))
 	}
 	// DEPRECATED (one image release): legacy KEY=VALUE / cmdline forms.
 	id, err := parseUserDataKV(raw)
@@ -108,16 +111,20 @@ func parseUserDataJSON(raw string) (*Identity, error) {
 	}, nil
 }
 
-// isV1Shaped reports whether a JSON object declares a "version" - such a
-// document is parsed strictly as powernode-provision v1 and is never
-// downgraded to the legacy shapes on failure.
-func isV1Shaped(raw string) bool {
+// isLegacyJSON reports whether raw is a well-formed JSON object with NO key
+// that equals "version" in any letter case. Only such objects may use the
+// deprecated unversioned shape; everything else goes to the strict parser.
+func isLegacyJSON(raw string) bool {
 	var probe map[string]json.RawMessage
 	if json.Unmarshal([]byte(raw), &probe) != nil {
 		return false
 	}
-	_, ok := probe["version"]
-	return ok
+	for k := range probe {
+		if strings.EqualFold(k, "version") {
+			return false
+		}
+	}
+	return true
 }
 
 func parseUserDataKV(raw string) (*Identity, error) {

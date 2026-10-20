@@ -105,7 +105,7 @@ func printable(s string, allowWhitespace bool) bool {
 // serverRe is the shared server-URL rule (mirrored in the Ruby renderer and
 // the JSON Schema): https, host (DNS name or [IPv6]), optional :port, optional
 // printable path. The port range is checked in code.
-var serverRe = regexp.MustCompile(`^https://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?(/[\x21-\x7e]*)?$`)
+var serverRe = regexp.MustCompile(`^https://([A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?(/[\x21\x22\x24-\x3e\x40-\x7e]*)?$`)
 
 func checkServerURL(s string) error {
 	if len(s) > provisionMaxURL {

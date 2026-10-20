@@ -2,6 +2,7 @@ package enroll
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -118,6 +119,17 @@ func Save(id *EnrolledIdentity, paths PKIPaths) error {
 		return fmt.Errorf("mkdir %s: %w", paths.Dir, err)
 	}
 
+	// Pin FIRST, before any identity material, so a crash can never leave an
+	// enrolled node without its pin. A pinless (re-)enrolment removes a stale
+	// pin so it cannot constrain (or be mistaken for) the new identity.
+	if id.CAFingerprint != "" {
+		if err := writeFileAtomic(paths.CAPin, []byte(id.CAFingerprint+"\n"), 0o644); err != nil {
+			return err
+		}
+	} else if err := os.Remove(paths.CAPin); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale ca pin: %w", err)
+	}
+
 	keyPEM, err := id.Keypair.PrivatePEM()
 	if err != nil {
 		return fmt.Errorf("encode private key: %w", err)
@@ -138,15 +150,9 @@ func Save(id *EnrolledIdentity, paths PKIPaths) error {
 		}
 	}
 
-	if id.CAFingerprint != "" {
-		if err := writeFileAtomic(paths.CAPin, []byte(id.CAFingerprint+"\n"), 0o644); err != nil {
-			return err
-		}
-	}
-
 	meta := fmt.Sprintf(
-		"{\"instance_id\":%q,\"mtls_subject\":%q,\"certificate_id\":%q,\"not_after\":%q,\"platform_url\":%q}\n",
-		id.InstanceID, id.MTLSSubject, id.CertificateID, id.NotAfter.UTC().Format("2006-01-02T15:04:05Z"), id.PlatformURL,
+		"{\"instance_id\":%q,\"mtls_subject\":%q,\"certificate_id\":%q,\"not_after\":%q,\"platform_url\":%q,\"pinned\":%t}\n",
+		id.InstanceID, id.MTLSSubject, id.CertificateID, id.NotAfter.UTC().Format("2006-01-02T15:04:05Z"), id.PlatformURL, id.CAFingerprint != "",
 	)
 	return writeFileAtomic(paths.Meta, []byte(meta), 0o644)
 }
@@ -203,20 +209,6 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(tmpName, path)
 }
 
-// ReadPin returns the persisted CA pin ("sha256:<hex>"), or "" when absent or
-// malformed.
-func ReadPin(paths PKIPaths) string {
-	data, err := os.ReadFile(paths.CAPin)
-	if err != nil {
-		return ""
-	}
-	pin := strings.TrimSpace(string(data))
-	if !identity.ValidFingerprint(pin) {
-		return ""
-	}
-	return pin
-}
-
 // LoadPin is the fail-closed reader used by every post-enrolment TLS path: an
 // absent pin file means "no pin" (legacy enrolment), but a PRESENT file that is
 // unreadable or malformed is an error, never a silent downgrade to no pin.
@@ -224,6 +216,11 @@ func LoadPin(paths PKIPaths) (string, error) {
 	data, err := os.ReadFile(paths.CAPin)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			// meta.json records whether this enrolment was pinned; a missing pin
+			// file for a pinned enrolment is tampering/corruption: fail closed.
+			if metaPinned(paths) {
+				return "", errors.New("enrolment was pinned but ca-pin is missing")
+			}
 			return "", nil
 		}
 		return "", fmt.Errorf("read ca pin: %w", err)
@@ -233,4 +230,15 @@ func LoadPin(paths PKIPaths) (string, error) {
 		return "", errors.New("ca pin file is malformed")
 	}
 	return pin, nil
+}
+
+func metaPinned(paths PKIPaths) bool {
+	data, err := os.ReadFile(paths.Meta)
+	if err != nil {
+		return false
+	}
+	var m struct {
+		Pinned bool `json:"pinned"`
+	}
+	return json.Unmarshal(data, &m) == nil && m.Pinned
 }
