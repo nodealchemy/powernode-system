@@ -38,7 +38,16 @@ type CmdlineStrategy struct {
 	// Client fetches powernode.ca_pem_url. Injectable for tests; nil means a
 	// short-timeout default client.
 	Client *http.Client
+	// FetchBackoff is the initial delay between ca_pem_url attempts (doubled
+	// each retry); zero means defaultFetchBackoff. Injectable for tests.
+	FetchBackoff time.Duration
 }
+
+const (
+	// The initramfs network may not be up when the cmdline is first read.
+	defaultFetchAttempts = 4
+	defaultFetchBackoff  = 500 * time.Millisecond
+)
 
 func (s *CmdlineStrategy) Name() string { return "kernel-cmdline" }
 
@@ -87,8 +96,11 @@ func (s *CmdlineStrategy) Discover(ctx context.Context) (*Identity, error) {
 }
 
 // fetchCA downloads the CA PEM (capped at provisionMaxCAPEM) and returns it
-// only if it matches pin. Content problems are terminal refusals; a transport
-// failure is a plain error (nothing was accepted).
+// only if it matches pin. Transport failures are retried with backoff within
+// ctx (the network may not be up yet); if the fetch still fails the result is
+// a TERMINAL refusal: the cmdline asserted a pin, so falling through to a weaker
+// source (metadata, a stick, console) would let an L2 attacker who blocks this
+// GET enrol the node elsewhere. Content problems are terminal immediately.
 func (s *CmdlineStrategy) fetchCA(ctx context.Context, rawURL, pin string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -98,29 +110,57 @@ func (s *CmdlineStrategy) fetchCA(ctx context.Context, rawURL, pin string) (stri
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
+	backoff := s.FetchBackoff
+	if backoff <= 0 {
+		backoff = defaultFetchBackoff
+	}
+	var lastErr error
+	for attempt := 0; attempt < defaultFetchAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", refuse("fetch ca_pem_url: %v (last error: %v)", ctx.Err(), lastErr)
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+		}
+		body, retryable, err := fetchOnce(ctx, client, rawURL)
+		if err == nil {
+			if len(body) > provisionMaxCAPEM || !printable(string(body), true) {
+				return "", refuse("ca_pem_url body too large or not printable")
+			}
+			if err := checkPEMMatchesPin(body, pin); err != nil {
+				return "", refuse("ca_pem_url: %v", err)
+			}
+			return string(body), nil
+		}
+		lastErr = err
+		if !retryable {
+			break
+		}
+	}
+	return "", refuse("fetch ca_pem_url failed, refusing to fall back to an unpinned source: %v", lastErr)
+}
+
+// fetchOnce performs one GET. retryable is true for transport/status/read errors.
+func fetchOnce(ctx context.Context, client *http.Client, rawURL string) ([]byte, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return "", refuse("ca_pem_url: %v", err)
+		return nil, false, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetch ca_pem_url: %w", err)
+		return nil, true, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetch ca_pem_url: status %d", resp.StatusCode)
+		return nil, true, fmt.Errorf("status %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, provisionMaxCAPEM+1))
 	if err != nil {
-		return "", fmt.Errorf("fetch ca_pem_url: %w", err)
+		return nil, true, err
 	}
-	if len(body) > provisionMaxCAPEM || !printable(string(body), true) {
-		return "", refuse("ca_pem_url body too large or not printable")
-	}
-	if err := checkPEMMatchesPin(body, pin); err != nil {
-		return "", refuse("ca_pem_url: %v", err)
-	}
-	return string(body), nil
+	return body, false, nil
 }
 
 // parseCmdline parses /proc/cmdline-style space-separated key=value pairs.

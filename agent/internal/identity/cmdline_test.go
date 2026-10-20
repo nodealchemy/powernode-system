@@ -154,17 +154,89 @@ func TestCmdlineCAPEMURLBadSchemeIsRefused(t *testing.T) {
 	}
 }
 
-func TestCmdlineCAPEMURLFetchFailureIsNotAnAcceptance(t *testing.T) {
+func TestCmdlineCAPEMURLFetchFailureIsTerminalAfterRetries(t *testing.T) {
 	_, pin := selfSignedPEM(t, "ca-f")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", 500) }))
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		http.Error(w, "no", 500)
+	}))
 	defer srv.Close()
 	s := &CmdlineStrategy{
-		Path:   writeCmdline(t, cmdlineWith("powernode.ca_fingerprint="+pin+" powernode.ca_pem_url="+srv.URL)),
-		Client: srv.Client(),
+		Path:         writeCmdline(t, cmdlineWith("powernode.ca_fingerprint="+pin+" powernode.ca_pem_url="+srv.URL)),
+		Client:       srv.Client(),
+		FetchBackoff: time.Millisecond,
 	}
 	id, err := s.Discover(context.Background())
-	if id != nil || err == nil {
-		t.Fatalf("want an error and no identity, got id=%v err=%v", id, err)
+	if id != nil || !errors.Is(err, ErrProvisionRefused) {
+		t.Fatalf("want terminal ErrProvisionRefused, got id=%v err=%v", id, err)
+	}
+	if got := atomic.LoadInt32(&hits); got != int32(defaultFetchAttempts) {
+		t.Errorf("attempts = %d, want %d", got, defaultFetchAttempts)
+	}
+}
+
+func TestCmdlineCAPEMURLRetriesUntilNetworkIsUp(t *testing.T) {
+	ca, pin := selfSignedPEM(t, "ca-g")
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&hits, 1) < 3 {
+			http.Error(w, "not yet", 503)
+			return
+		}
+		fmt.Fprint(w, ca)
+	}))
+	defer srv.Close()
+	s := &CmdlineStrategy{
+		Path:         writeCmdline(t, cmdlineWith("powernode.ca_fingerprint="+pin+" powernode.ca_pem_url="+srv.URL)),
+		Client:       srv.Client(),
+		FetchBackoff: time.Millisecond,
+	}
+	id, err := s.Discover(context.Background())
+	if err != nil || id.CABundlePEM != ca {
+		t.Fatalf("retry did not recover: id=%v err=%v", id, err)
+	}
+}
+
+func TestCmdlineCAPEMURLContextCancelStopsRetries(t *testing.T) {
+	_, pin := selfSignedPEM(t, "ca-h")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", 500) }))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s := &CmdlineStrategy{
+		Path:         writeCmdline(t, cmdlineWith("powernode.ca_fingerprint="+pin+" powernode.ca_pem_url="+srv.URL)),
+		Client:       srv.Client(),
+		FetchBackoff: time.Hour,
+	}
+	if _, err := s.Discover(ctx); err == nil {
+		t.Fatal("expected an error under a cancelled context")
+	}
+}
+
+type laterStubStrategy struct{ id *Identity }
+
+func (laterStubStrategy) Name() string { return "stub-later" }
+func (s laterStubStrategy) Discover(context.Context) (*Identity, error) {
+	return s.id, nil
+}
+
+// The attack: the cmdline asserted a pin, the fetch is blocked, and a spoofed
+// later source offers an identity. The resolver must stop, not enrol it.
+func TestResolverStopsWhenPinnedCAFetchFails(t *testing.T) {
+	_, pin := selfSignedPEM(t, "ca-i")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", 500) }))
+	defer srv.Close()
+	cm := &CmdlineStrategy{
+		Path:         writeCmdline(t, cmdlineWith("powernode.ca_fingerprint="+pin+" powernode.ca_pem_url="+srv.URL)),
+		Client:       srv.Client(),
+		FetchBackoff: time.Millisecond,
+	}
+	evil := laterStubStrategy{id: &Identity{InstanceUUID: "evil", BootstrapToken: "t", PlatformURL: "https://evil.example"}}
+	r := &Resolver{Strategies: []Strategy{cm, evil}}
+	id, err := r.Resolve(context.Background())
+	if id != nil || !errors.Is(err, ErrProvisionRefused) {
+		t.Fatalf("resolver fell through: id=%v err=%v", id, err)
 	}
 }
 
