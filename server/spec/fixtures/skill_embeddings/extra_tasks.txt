@@ -1,0 +1,17 @@
+# Tasks this extension's capability discovery specs embed directly (beyond
+# each skill's own evals). Re-record after editing:
+#   rails "skills:eval:record_embeddings[,extensions/system]"
+Work a dev-improve task that adds a migration and a spec
+Review this campaign increment against its acceptance criteria
+Provision a VM with attached storage for a new project
+Help me onboard: I want to set up Powernode for my team
+Rotate the WireGuard key for an SD-WAN peer
+Expose service X publicly with a Let's Encrypt cert behind the reverse proxy
+Join two SD-WAN sites
+Federate with a partner
+Roll back the customer's last deploy
+Patch a CVE in a running customer service
+Probe platform health and report what is down or degraded
+Handle a repeated fleet lane signal
+Deploy the customer's Node app to production with a public HTTPS endpoint
+Deploy my app
