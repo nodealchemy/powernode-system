@@ -243,6 +243,26 @@ RSpec.describe System::Gitops::RepoSyncService do
     end
   end
 
+  describe "git binary missing from the host" do
+    let(:repository) do
+      create(:system_gitops_repository, account: account,
+                                        repo_url: "https://git.example.test/powernode/public.git",
+                                        vault_credential_path: nil)
+    end
+
+    before do
+      allow(Open3).to receive(:capture3).and_raise(Errno::ENOENT, "git")
+    end
+
+    it "reports git_unavailable and names the binary" do
+      result = described_class.sync!(repository)
+
+      expect(result.ok?).to be(false)
+      expect(result.reason).to eq("git_unavailable")
+      expect(result.error).to include("git_unavailable").and include("git")
+    end
+  end
+
   describe "anonymous clone" do
     let(:repository) do
       create(:system_gitops_repository,

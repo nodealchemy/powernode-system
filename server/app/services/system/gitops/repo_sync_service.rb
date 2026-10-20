@@ -49,8 +49,13 @@ module System
       # git would pick a transport of its own for it, so git never runs.
       class UnsupportedRemoteError < StandardError; end
 
+      # The `git` binary is not installed on this host (a deploy defect: the
+      # hub-backend module ships git + openssh-client via its package_spec).
+      class GitUnavailableError < StandardError; end
+
       HOST_KEY_MISMATCH_REASON    = "host_key_mismatch"
       HOST_KEY_UNAVAILABLE_REASON = "host_key_unavailable"
+      GIT_UNAVAILABLE_REASON = "git_unavailable"
       UNSUPPORTED_REMOTE_REASON   = "unsupported_remote"
       HOST_KEY_VERIFICATION_FAILED = "Host key verification failed"
 
@@ -103,6 +108,9 @@ module System
         # key" (the message comes from RepositoryHostKey.scan).
         Rails.logger.warn("[Gitops::RepoSync] #{@repository.id}: #{HOST_KEY_UNAVAILABLE_REASON}: #{e.message}")
         Result.new(ok?: false, reason: HOST_KEY_UNAVAILABLE_REASON, error: "#{HOST_KEY_UNAVAILABLE_REASON}: #{e.message}")
+      rescue GitUnavailableError => e
+        Rails.logger.error("[Gitops::RepoSync] #{@repository.id}: #{GIT_UNAVAILABLE_REASON}: #{e.message}")
+        Result.new(ok?: false, reason: GIT_UNAVAILABLE_REASON, error: "#{GIT_UNAVAILABLE_REASON}: #{e.message}")
       rescue UnsupportedRemoteError => e
         Rails.logger.warn("[Gitops::RepoSync] #{@repository.id}: #{UNSUPPORTED_REMOTE_REASON}: #{e.message}")
         Result.new(ok?: false, reason: UNSUPPORTED_REMOTE_REASON, error: "#{UNSUPPORTED_REMOTE_REASON}: #{e.message}")
@@ -135,14 +143,26 @@ module System
       end
 
       def read_commit_sha
-        out, _err, status = Open3.capture3("git", "rev-parse", "HEAD", chdir: work_tree_path)
+        out, _err, status = capture_git("git", "rev-parse", "HEAD", chdir: work_tree_path)
         raise "rev-parse failed (#{status.exitstatus})" unless status.success?
         out.strip
       end
 
+      # Open3.capture3 for a git exec, rescuing ENOENT around the exec only
+      # (a missing work tree / cwd also raises ENOENT and must not read as a
+      # missing binary — hence the cwd check).
+      def capture_git(*cmd, chdir:)
+        Open3.capture3(*cmd, chdir: chdir)
+      rescue Errno::ENOENT
+        raise unless File.directory?(chdir)
+
+        raise GitUnavailableError,
+              "the `git` binary was not found on PATH; install git (and openssh-client) on the hub-backend host"
+      end
+
       def run_git!(*args, cwd:)
         env = build_git_env
-        out, err, status = Open3.capture3(env, "git", *args, chdir: cwd)
+        out, err, status = capture_git(env, "git", *args, chdir: cwd)
         unless status.success?
           host_key_mismatch! if host_key_mismatch?(err)
           # Two-pass sanitization. The git-specific regex catches the
