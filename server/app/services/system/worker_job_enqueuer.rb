@@ -17,10 +17,6 @@ module System
   module WorkerJobEnqueuer
     DEFAULT_QUEUE = "default"
     DEFAULT_RETRY = 2
-    # Worker uses Redis DB 1 by convention (server is DB 0, ActionCable DB 2).
-    # Override via SIDEKIQ_REDIS_URL or POWERNODE_WORKER_REDIS_URL env vars
-    # so deployments with non-standard Redis can point at the right place.
-    DEFAULT_WORKER_REDIS_URL = "redis://localhost:6379/1"
 
     module_function
 
@@ -48,14 +44,21 @@ module System
     end
 
     # Lazy-initialized per-process client to the worker's Redis. Distinct
-    # from Powernode::Redis.client (server DB 0) — the worker process
-    # reads from its own DB.
+    # from Powernode::Redis.client (the general database) — the worker
+    # process reads its queues from its own. Built by
+    # Powernode::Redis.new_worker_client so the URL and the short timeouts
+    # (an unanswering Redis must not hold the caller open) live in one place.
     def worker_redis
-      @worker_redis ||= ::Redis.new(url: worker_redis_url)
+      @worker_redis ||= Powernode::Redis.new_worker_client
     end
 
+    # The same address the Sidekiq health checks read (IMP-daecbb8a050e): one
+    # resolution, so an enqueue can never land where the probe isn't looking.
+    # Precedence (POWERNODE_WORKER_REDIS_URL, then the deprecated
+    # SIDEKIQ_REDIS_URL, then the general URL on /1) lives in
+    # Powernode::Redis.worker_url.
     def worker_redis_url
-      ENV["SIDEKIQ_REDIS_URL"] || ENV["POWERNODE_WORKER_REDIS_URL"] || DEFAULT_WORKER_REDIS_URL
+      Powernode::Redis.worker_url
     end
   end
 end
