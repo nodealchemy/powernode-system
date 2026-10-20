@@ -52,33 +52,46 @@ module System
     # @param instance [System::NodeInstance]
     # @param bootstrap_token [String] single-use plaintext token
     # @param image_base [String] absolute URL prefix for kernel/initrd
-    # @param ca_pem_url [String, nil] preferred when CA chain >1 cert
-    # @param ca_pem_inline [String, nil] fallback for inline CA in cmdline
+    # @param ca_pem_url [String, nil] override for where the agent fetches the CA;
+    #   defaults to the public GET /api/v1/system/netboot/ca.pem route
+    # @param platform_url [String, nil] defaults to the configured platform URL
+    # @param ca_pem [String, nil] defaults to the configured enrolment CA
+    # @raise [System::ProvisioningDocument::RenderError] when no usable CA is
+    #   configured: the CA pin is ALWAYS emitted, never optional
     # @return [String] rendered iPXE script
     def self.render_ipxe_script(instance:, bootstrap_token:, image_base:,
-                                ca_pem_url: nil, ca_pem_inline: nil)
+                                ca_pem_url: nil, platform_url: nil, ca_pem: nil)
       new.render_ipxe_script(
         instance: instance,
         bootstrap_token: bootstrap_token,
         image_base: image_base,
         ca_pem_url: ca_pem_url,
-        ca_pem_inline: ca_pem_inline
+        platform_url: platform_url,
+        ca_pem: ca_pem
       )
     end
 
     def render_ipxe_script(instance:, bootstrap_token:, image_base:,
-                           ca_pem_url: nil, ca_pem_inline: nil)
+                           ca_pem_url: nil, platform_url: nil, ca_pem: nil)
       validate_instance!(instance)
       raise NetbootError, "bootstrap_token required" if bootstrap_token.blank?
       raise NetbootError, "image_base required" if image_base.blank?
       raise NetbootError, "iPXE template missing at #{IPXE_TEMPLATE_PATH}" unless File.exist?(IPXE_TEMPLATE_PATH)
 
+      platform_url = (platform_url.presence || ::System::PhysicalEnrollmentService.platform_url).to_s.chomp("/")
+      raise NetbootError, "platform_url required: configure the platform URL for PXE enrolment" if platform_url.blank?
+
+      ca_pem = ca_pem.presence || ::System::ProvisioningDocument.configured_ca_pem
+      # Raises RenderError without a usable self-signed CA: no pin-less script.
+      ca_fingerprint = ::System::ProvisioningDocument.fingerprint_for(ca_pem)
+
       template_src = File.read(IPXE_TEMPLATE_PATH)
       bind_ctx = IpxeRenderContext.new(
         instance_uuid: instance.id,
         bootstrap_token: bootstrap_token,
-        ca_pem_url: ca_pem_url,
-        ca_pem_inline: ca_pem_inline,
+        platform_url: platform_url,
+        ca_fingerprint: ca_fingerprint,
+        ca_pem_url: ca_pem_url.presence || "#{platform_url}/api/v1/system/netboot/ca.pem",
         image_base: image_base
       ).get_binding
       ERB.new(template_src, trim_mode: "-").result(bind_ctx)
@@ -88,14 +101,15 @@ module System
     # surface — avoids leaking accidental ivars from the service into the
     # template.
     class IpxeRenderContext
-      def initialize(instance_uuid:, bootstrap_token:, ca_pem_url:, ca_pem_inline:, image_base:)
+      def initialize(instance_uuid:, bootstrap_token:, platform_url:, ca_fingerprint:, ca_pem_url:, image_base:)
         @instance_uuid = instance_uuid
         @bootstrap_token = bootstrap_token
+        @platform_url = platform_url
+        @ca_fingerprint = ca_fingerprint
         @ca_pem_url = ca_pem_url
-        @ca_pem_inline = ca_pem_inline
         @image_base = image_base
       end
-      attr_reader :instance_uuid, :bootstrap_token, :ca_pem_url, :ca_pem_inline, :image_base
+      attr_reader :instance_uuid, :bootstrap_token, :platform_url, :ca_fingerprint, :ca_pem_url, :image_base
 
       def get_binding
         binding

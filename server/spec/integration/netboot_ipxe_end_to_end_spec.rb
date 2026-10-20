@@ -23,7 +23,20 @@ RSpec.describe "Netboot iPXE end-to-end", type: :request do
   let(:instance) { create(:system_node_instance, :running, node: node) }
   let(:user)     { user_with_permissions("system.instances.create", account: account) }
 
+  let(:ca_pem) { self_signed_ca_pem }
+
+  before { stub_enroll_settings(ca: ca_pem) }
+
   describe "the full render chain" do
+    it "pins the CA, names the server and points at the ca.pem route" do
+      get "/api/v1/system/netboot/#{instance.id}/script.ipxe", headers: auth_headers_for(user)
+      pin = System::ProvisioningDocument.fingerprint_for(ca_pem)
+      expect(response.body).to include("powernode.ca_fingerprint=#{pin}")
+      expect(response.body).to include("powernode.platform_url=https://platform.example.test")
+      expect(response.body).to include("powernode.ca_pem_url=https://platform.example.test/api/v1/system/netboot/ca.pem")
+      expect(response.body).not_to include("BEGIN CERTIFICATE")
+    end
+
     it "produces a valid iPXE script with all required boot directives" do
       get "/api/v1/system/netboot/#{instance.id}/script.ipxe",
           headers: auth_headers_for(user),
@@ -94,8 +107,9 @@ RSpec.describe "Netboot iPXE end-to-end", type: :request do
       ENV["POWERNODE_CA_PEM_URL"] = "https://platform.example/.well-known/powernode-ca.pem"
       begin
         get "/api/v1/system/netboot/#{instance.id}/script.ipxe", headers: auth_headers_for(user)
-        expect(response.body).to include("powernode.ca_url=https://platform.example/.well-known/powernode-ca.pem")
-        expect(response.body).not_to include("powernode.ca=-----BEGIN CERTIFICATE-----")
+        expect(response.body).to include("powernode.ca_pem_url=https://platform.example/.well-known/powernode-ca.pem")
+        expect(response.body).not_to include("powernode.ca_url=")
+        expect(response.body).not_to include("powernode.ca=")
       ensure
         ENV["POWERNODE_CA_PEM_URL"] = original
       end
@@ -120,8 +134,9 @@ RSpec.describe "Netboot iPXE end-to-end", type: :request do
       ctx = System::NetbootService::IpxeRenderContext.new(
         instance_uuid: "uuid-1",
         bootstrap_token: "tok-1",
-        ca_pem_url: nil,
-        ca_pem_inline: "FIXTURE",
+        ca_pem_url: "https://platform.example/api/v1/system/netboot/ca.pem",
+        platform_url: "https://platform.example",
+        ca_fingerprint: "sha256:#{"a" * 64}",
         image_base: "https://example/imgs"
       )
       expect {

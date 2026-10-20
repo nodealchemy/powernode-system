@@ -83,6 +83,13 @@ module System
           ENV["POWERNODE_ENROLL_CA_PEM"].presence
       end
 
+      # Only the CERTIFICATE blocks of the configured CA, newline-joined ("" when
+      # none). Used by the public netboot ca.pem route: no other PEM block is
+      # ever served.
+      def configured_ca_certificates_pem
+        certificates(configured_ca_pem.to_s).join("\n")
+      end
+
       private
 
       def configured_server

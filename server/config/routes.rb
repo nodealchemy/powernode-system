@@ -509,6 +509,8 @@ Rails.application.routes.draw do
         end
 
         # === Netboot (operator-driven iPXE script generation) ===
+        # Public trust-anchor fetch for the booting agent (certificates only).
+        get "netboot/ca.pem", to: "netboot#ca", defaults: { format: "txt" }
         get "netboot/:instance_id/script.ipxe", to: "netboot#script", defaults: { format: "txt" }
 
         # === Fleet observability + attribution (Golden Eclipse M7 + M-FE-3) ===

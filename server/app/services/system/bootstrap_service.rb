@@ -38,8 +38,7 @@ module System
         instance: instance,
         bootstrap_token: plaintext,
         image_base: resolve_image_base(image_base),
-        ca_pem_url: ca_pem_url,
-        ca_pem_inline: ca_pem_url.nil? ? ca_pem_inline : nil
+        ca_pem_url: ca_pem_url
       )
 
       # Observability: surfaces "boot script issued" so a stuck provision is
@@ -74,16 +73,11 @@ module System
         (Rails.env.production? ? "https://platform.local" : "http://localhost:3000")
     end
 
-    # Prefer a URL pointer to the CA chain (kernel cmdline has a ~2 KB
-    # limit; multi-cert chains overflow). Inline only when
-    # POWERNODE_CA_PEM_URL is unset, e.g. dev/test.
+    # Optional override of where the agent fetches the CA PEM. Default (nil) is
+    # the platform's public netboot/ca.pem route; the agent trusts the bytes only
+    # if they match the cmdline ca_fingerprint pin, whatever the transport.
     def ca_pem_url
-      ENV["POWERNODE_CA_PEM_URL"]
-    end
-
-    def ca_pem_inline
-      ENV["POWERNODE_CA_PEM"] ||
-        "-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----"
+      ENV["POWERNODE_CA_PEM_URL"].presence
     end
   end
 end

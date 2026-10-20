@@ -11,6 +11,8 @@ RSpec.describe System::BootstrapService do
   let(:node)     { create(:system_node, account: account, node_template: template) }
   let(:instance) { create(:system_node_instance, :running, node: node) }
 
+  before { stub_enroll_settings(ca: self_signed_ca_pem) }
+
   describe ".render_for_instance" do
     it "issues a token + renders an iPXE script" do
       expect {
@@ -54,11 +56,21 @@ RSpec.describe System::BootstrapService do
       ENV["POWERNODE_CA_PEM_URL"] = "https://ca.example/cert.pem"
       begin
         result = described_class.render_for_instance(instance: instance)
-        expect(result.script).to include("powernode.ca_url=https://ca.example/cert.pem")
-        expect(result.script).not_to include("powernode.ca=-----")
+        expect(result.script).to include("powernode.ca_pem_url=https://ca.example/cert.pem")
+        expect(result.script).to include("powernode.ca_fingerprint=sha256:")
+        expect(result.script).not_to include("powernode.ca_url=")
+        expect(result.script).not_to include("powernode.ca=")
       ensure
         ENV["POWERNODE_CA_PEM_URL"] = original
       end
+    end
+
+    it "fails (no script) when no CA is configured, and never falls back to a fixture CA" do
+      stub_enroll_settings(ca: nil)
+      result = described_class.render_for_instance(instance: instance)
+      expect(result.ok?).to be false
+      expect(result.error).to match(/no CA certificate/)
+      expect(result.script).to be_nil
     end
 
     it "honors a custom ttl" do

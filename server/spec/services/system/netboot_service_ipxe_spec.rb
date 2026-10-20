@@ -10,18 +10,23 @@ RSpec.describe System::NetbootService, ".render_ipxe_script" do
   let(:node)     { create(:system_node, account: account, node_template: template) }
   let(:instance) { create(:system_node_instance, :running, node: node) }
 
-  describe "with valid arguments and inline CA" do
+  let(:ca_pem) { self_signed_ca_pem }
+  let(:pin)    { System::ProvisioningDocument.fingerprint_for(ca_pem) }
+
+  before { stub_enroll_settings(ca: ca_pem, url: "https://platform.example.test") }
+
+  describe "with valid arguments" do
     it "renders the iPXE template with all variables substituted" do
       script = described_class.render_ipxe_script(
         instance: instance,
         bootstrap_token: "tok-abc-1234",
-        image_base: "https://platform.example/.well-known/powernode/images",
-        ca_pem_inline: "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----"
+        image_base: "https://platform.example/.well-known/powernode/images"
       )
       expect(script).to include("#!ipxe")
       expect(script).to include("powernode.bootstrap_token=tok-abc-1234")
       expect(script).to include("powernode.instance_uuid=#{instance.id}")
-      expect(script).to include("powernode.ca=-----BEGIN CERTIFICATE-----")
+      expect(script).not_to include("powernode.ca=")
+      expect(script).not_to include("BEGIN CERTIFICATE")
       expect(script).to include("https://platform.example/.well-known/powernode/images")
       expect(script).to include("kernel https://platform.example")
       expect(script).to include("initrd https://platform.example")
@@ -29,15 +34,39 @@ RSpec.describe System::NetbootService, ".render_ipxe_script" do
     end
   end
 
-  describe "with ca_pem_url (preferred when chain >1 cert)" do
-    it "embeds powernode.ca_url instead of powernode.ca" do
-      script = described_class.render_ipxe_script(
-        instance: instance,
-        bootstrap_token: "tok-2",
-        image_base: "https://example",
-        ca_pem_url: "https://example/.well-known/powernode-ca.pem"
-      )
-      expect(script).to include("powernode.ca_url=https://example/.well-known/powernode-ca.pem")
+  describe "CA pin, platform_url and CA fetch pointer" do
+    def render(**kw)
+      described_class.render_ipxe_script(instance: instance, bootstrap_token: "tok-2",
+                                         image_base: "https://example", **kw)
+    end
+
+    it "emits platform_url" do
+      expect(render).to include("powernode.platform_url=https://platform.example.test ")
+    end
+
+    it "emits ca_fingerprint computed from the configured CA" do
+      expect(render).to include("powernode.ca_fingerprint=#{pin} ")
+      expect(pin).to match(/\Asha256:[0-9a-f]{64}\z/)
+    end
+
+    it "defaults ca_pem_url to the public netboot ca.pem route" do
+      expect(render).to include("powernode.ca_pem_url=https://platform.example.test/api/v1/system/netboot/ca.pem ")
+    end
+
+    it "refuses without a CA" do
+      stub_enroll_settings(ca: nil)
+      expect { render }.to raise_error(System::ProvisioningDocument::RenderError, /no CA certificate/)
+    end
+
+    it "refuses without a platform_url" do
+      stub_enroll_settings(ca: ca_pem, url: nil)
+      expect { render }.to raise_error(System::NetbootService::NetbootError, /platform_url/)
+    end
+
+    it "embeds an explicit ca_pem_url override" do
+      script = render(ca_pem_url: "https://example/.well-known/powernode-ca.pem")
+      expect(script).to include("powernode.ca_pem_url=https://example/.well-known/powernode-ca.pem")
+      expect(script).not_to include("powernode.ca_url=")
       expect(script).not_to include("powernode.ca=")
     end
   end
@@ -61,7 +90,7 @@ RSpec.describe System::NetbootService, ".render_ipxe_script" do
     it "always emits lockdown=integrity and ima_appraise=enforce" do
       script = described_class.render_ipxe_script(
         instance: instance, bootstrap_token: "t",
-        image_base: "https://x", ca_pem_inline: "fake"
+        image_base: "https://x"
       )
       expect(script).to include("lockdown=integrity")
       expect(script).to include("ima_appraise=enforce")

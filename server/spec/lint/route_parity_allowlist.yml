@@ -22,6 +22,10 @@ routes:
     "Machine endpoint: renders the iPXE chainload script a booting instance fetches
      as text/plain via `chain http://...`. Operator-gated, but the consumer is a
      bootloader, not a page."
+  "GET /api/v1/system/netboot/ca.pem":
+    "Machine endpoint: public, unauthenticated trust-anchor fetch for the booting
+     agent (powernode.ca_pem_url). Serves certificates only; the agent accepts the
+     bytes solely if they match the cmdline ca_fingerprint pin."
   "GET /api/v1/system/ingress/forward_auth":
     "Machine endpoint: Traefik's forwardAuth hook for locally exposed services,
      called per proxied request with the original request's headers."
