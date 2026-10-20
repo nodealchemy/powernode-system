@@ -43,11 +43,16 @@ func (s *CmdlineStrategy) Discover(ctx context.Context) (*Identity, error) {
 		return nil, ErrNotFound
 	}
 
+	pin, err := legacyPin(params["powernode.ca_fingerprint"])
+	if err != nil {
+		return nil, err
+	}
 	return &Identity{
 		InstanceUUID:   uuid,
 		BootstrapToken: params["powernode.bootstrap_token"],
 		PlatformURL:    params["powernode.platform_url"],
 		CABundlePEM:    params["powernode.ca_pem"],
+		CAFingerprint:  pin,
 		CloudProvider:  "kernel-cmdline",
 	}, nil
 }

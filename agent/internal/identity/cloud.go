@@ -71,9 +71,14 @@ func parseUserData(raw string) (*Identity, error) {
 		return nil, ErrNotFound
 	}
 	if strings.HasPrefix(raw, "{") {
+		if isV1Shaped(raw) {
+			return ParseProvisionDocument([]byte(raw))
+		}
 		return parseUserDataJSON(raw)
 	}
-	return parseUserDataKV(raw), nil
+	// DEPRECATED (one image release): legacy KEY=VALUE / cmdline forms.
+	id, err := parseUserDataKV(raw)
+	return id, err
 }
 
 func parseUserDataJSON(raw string) (*Identity, error) {
@@ -82,6 +87,7 @@ func parseUserDataJSON(raw string) (*Identity, error) {
 		BootstrapToken string `json:"bootstrap_token"`
 		PlatformURL    string `json:"platform_url"`
 		CABundlePEM    string `json:"ca_pem"`
+		CAFingerprint  string `json:"ca_fingerprint"`
 	}
 	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 		return nil, fmt.Errorf("user-data JSON parse: %w", err)
@@ -89,25 +95,47 @@ func parseUserDataJSON(raw string) (*Identity, error) {
 	if doc.InstanceUUID == "" {
 		return nil, ErrNotFound
 	}
+	pin, err := legacyPin(doc.CAFingerprint)
+	if err != nil {
+		return nil, err
+	}
 	return &Identity{
 		InstanceUUID:   doc.InstanceUUID,
 		BootstrapToken: doc.BootstrapToken,
 		PlatformURL:    doc.PlatformURL,
 		CABundlePEM:    doc.CABundlePEM,
+		CAFingerprint:  pin,
 	}, nil
 }
 
-func parseUserDataKV(raw string) *Identity {
+// isV1Shaped reports whether a JSON object declares a "version" - such a
+// document is parsed strictly as powernode-provision v1 and is never
+// downgraded to the legacy shapes on failure.
+func isV1Shaped(raw string) bool {
+	var probe map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &probe) != nil {
+		return false
+	}
+	_, ok := probe["version"]
+	return ok
+}
+
+func parseUserDataKV(raw string) (*Identity, error) {
 	// Try kernel-cmdline form first (`powernode.instance_uuid=...`),
 	// fall back to legacy ID=/KEY=/SERVER=.
 	cm := parseCmdline(raw)
 	if cm["powernode.instance_uuid"] != "" {
+		pin, err := legacyPin(cm["powernode.ca_fingerprint"])
+		if err != nil {
+			return nil, err
+		}
 		return &Identity{
 			InstanceUUID:   cm["powernode.instance_uuid"],
 			BootstrapToken: cm["powernode.bootstrap_token"],
 			PlatformURL:    cm["powernode.platform_url"],
 			CABundlePEM:    cm["powernode.ca_pem"],
-		}
+			CAFingerprint:  pin,
+		}, nil
 	}
 
 	// Legacy shell-style: parse ID=, KEY=, SERVER= per-line.
@@ -125,14 +153,19 @@ func parseUserDataKV(raw string) *Identity {
 		kv[strings.TrimSpace(line[:eq])] = stripQuotes(strings.TrimSpace(line[eq+1:]))
 	}
 	if kv["ID"] == "" {
-		return nil
+		return nil, nil
+	}
+	pin, err := legacyPin(kv["CA_FINGERPRINT"])
+	if err != nil {
+		return nil, err
 	}
 	return &Identity{
 		InstanceUUID:   kv["ID"],
 		BootstrapToken: kv["KEY"],
 		PlatformURL:    kv["SERVER"],
 		CABundlePEM:    kv["CA_PEM"],
-	}
+		CAFingerprint:  pin,
+	}, nil
 }
 
 // httpDo is the shared transport for cloud metadata calls. Aggressive

@@ -945,14 +945,15 @@ func (s *Service) bootstrap(ctx context.Context, paths enroll.PKIPaths) (*transp
 	if platformURL == "" {
 		return nil, errors.New("no PlatformURL from --platform-url flag or identity")
 	}
-	if len(ident.CABundlePEM) == 0 {
-		return nil, errors.New("identity has no CABundlePEM (platform CA chain)")
+	if len(ident.CABundlePEM) == 0 && ident.CAFingerprint == "" {
+		return nil, errors.New("identity has no CABundlePEM (platform CA chain) and no ca_fingerprint")
 	}
 
 	enrollClient := &enroll.Client{
-		PlatformURL:  platformURL,
-		CABundlePEM:  []byte(ident.CABundlePEM),
-		AgentVersion: s.cfg.AgentVersion,
+		PlatformURL:   platformURL,
+		CABundlePEM:   []byte(ident.CABundlePEM),
+		CAFingerprint: ident.CAFingerprint,
+		AgentVersion:  s.cfg.AgentVersion,
 	}
 	enrolled, err := enrollClient.Enroll(ctx, enroll.EnrollRequest{
 		BootstrapToken: ident.BootstrapToken,

@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
@@ -378,3 +380,35 @@ func mustSelfSignedCAPEM(t *testing.T) []byte {
 // only call site — they document the meta sidecar contract for Save consumers.
 var _ = base64.StdEncoding
 var _ = filepath.Join
+
+func pinOf(srv *httptest.Server) string {
+	sum := sha256.Sum256(srv.Certificate().Raw)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// A matching pin enrols; a mismatching pin refuses even when the CA bundle
+// itself would verify, and the HTTPClient override cannot bypass it. The key
+// never appears in the error.
+func TestClient_Enroll_PinEnforced(t *testing.T) {
+	srv := fakePlatformTLS(t, "good-token-SECRET")
+	defer srv.Close()
+	caPEM := caPEMForFakePlatform(srv)
+
+	ok := &Client{PlatformURL: srv.URL, CABundlePEM: caPEM, CAFingerprint: pinOf(srv)}
+	if _, err := ok.Enroll(context.Background(), EnrollRequest{BootstrapToken: "good-token-SECRET", Subject: "s"}); err != nil {
+		t.Fatalf("matching pin refused: %v", err)
+	}
+
+	bad := &Client{
+		PlatformURL: srv.URL, CABundlePEM: caPEM,
+		CAFingerprint: "sha256:" + strings.Repeat("0", 64),
+		HTTPClient:    srv.Client(), // must be ignored: the pin is not bypassable
+	}
+	_, err := bad.Enroll(context.Background(), EnrollRequest{BootstrapToken: "good-token-SECRET", Subject: "s"})
+	if err == nil {
+		t.Fatal("pin mismatch was accepted")
+	}
+	if strings.Contains(err.Error(), "good-token-SECRET") {
+		t.Fatalf("error leaks the key: %v", err)
+	}
+}

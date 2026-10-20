@@ -2,8 +2,10 @@ package identity
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"strings"
 )
@@ -41,8 +43,23 @@ func (s *LocalIdentityStrategy) Discover(ctx context.Context) (*Identity, error)
 	}
 	defer f.Close()
 
+	// powernode-provision v1 JSON file (strict). Anything else is the
+	// DEPRECATED legacy KEY=VALUE format below (accepted for one image release).
+	raw, err := io.ReadAll(io.LimitReader(f, provisionMaxDocBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if trimmed := bytes.TrimSpace(raw); bytes.HasPrefix(trimmed, []byte("{")) {
+		id, err := ParseProvisionDocument(trimmed)
+		if err != nil {
+			return nil, err
+		}
+		id.CloudProvider = "local-identity-cfg"
+		return id, nil
+	}
+
 	kv := map[string]string{}
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(bytes.NewReader(raw))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -68,11 +85,16 @@ func (s *LocalIdentityStrategy) Discover(ctx context.Context) (*Identity, error)
 		return nil, ErrNotFound
 	}
 
+	pin, err := legacyPin(kv["CA_FINGERPRINT"])
+	if err != nil {
+		return nil, err
+	}
 	id := &Identity{
 		InstanceUUID:   uuid,
 		BootstrapToken: kv["KEY"],
 		PlatformURL:    kv["SERVER"],
 		CloudProvider:  "local-identity-cfg",
+		CAFingerprint:  pin,
 	}
 	if pemFile := kv["CA_PEM_FILE"]; pemFile != "" {
 		if data, err := os.ReadFile(pemFile); err == nil {

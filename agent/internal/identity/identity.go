@@ -33,6 +33,11 @@ type Identity struct {
 	// before completing enrollment.
 	CABundlePEM string
 
+	// CAFingerprint is the pin ("sha256:<hex>") of the platform CA, from a
+	// powernode-provision v1 document (always present there) or an optional
+	// legacy field. When set it is enforced on the enrolment connection.
+	CAFingerprint string
+
 	// Architecture is the node's CPU architecture as the kernel sees it.
 	Architecture string
 

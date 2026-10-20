@@ -53,6 +53,12 @@ func (s *FwCfgStrategy) Discover(ctx context.Context) (*Identity, error) {
 	id.BootstrapToken, _ = readFwCfg(root, "bootstrap_token")
 	id.PlatformURL, _ = readFwCfg(root, "platform_url")
 	id.CABundlePEM, _ = readFwCfg(root, "ca_pem")
+	pinRaw, _ := readFwCfg(root, "ca_fingerprint")
+	pin, err := legacyPin(pinRaw)
+	if err != nil {
+		return nil, err
+	}
+	id.CAFingerprint = pin
 	return id, nil
 }
 

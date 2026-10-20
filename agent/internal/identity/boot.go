@@ -2,8 +2,10 @@ package identity
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"strings"
 )
@@ -56,8 +58,22 @@ func (s *BootIdentityStrategy) Discover(ctx context.Context) (*Identity, error) 
 	}
 	defer f.Close()
 
+	raw, err := io.ReadAll(io.LimitReader(f, provisionMaxDocBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	// powernode-provision v1 JSON (strict); else DEPRECATED legacy KEY=VALUE.
+	if trimmed := bytes.TrimSpace(raw); bytes.HasPrefix(trimmed, []byte("{")) {
+		id, err := ParseProvisionDocument(trimmed)
+		if err != nil {
+			return nil, err
+		}
+		id.CloudProvider = "boot-identity-cfg"
+		return id, nil
+	}
+
 	kv := map[string]string{}
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(bytes.NewReader(raw))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -81,10 +97,15 @@ func (s *BootIdentityStrategy) Discover(ctx context.Context) (*Identity, error) 
 		return nil, ErrNotFound
 	}
 
+	pin, err := legacyPin(kv["CA_FINGERPRINT"])
+	if err != nil {
+		return nil, err
+	}
 	id := &Identity{
 		InstanceUUID:   kv["ID"],
 		BootstrapToken: kv["KEY"],
 		PlatformURL:    server,
+		CAFingerprint:  pin,
 	}
 
 	// CA can be inline or referenced via CA_PEM_FILE. Inline takes

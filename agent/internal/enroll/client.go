@@ -3,8 +3,6 @@ package enroll
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 )
 
 // EnrolledIdentity is what the agent has after a successful enrollment:
@@ -46,6 +46,11 @@ type Client struct {
 	// platform certs during enrollment — that's the whole point of
 	// embedding this in cloud-init / iPXE).
 	CABundlePEM []byte
+	// CAFingerprint is the "sha256:<hex>" pin from the provision document (or
+	// an optional legacy field). When set the server's verified chain MUST
+	// contain a certificate with this fingerprint; mismatch refuses the
+	// connection. With a pin, CABundlePEM may be empty (system roots + pin).
+	CAFingerprint string
 	// AgentVersion is reported back to the platform so operators can
 	// correlate boot events with agent releases.
 	AgentVersion string
@@ -83,8 +88,8 @@ func (c *Client) Enroll(ctx context.Context, req EnrollRequest) (*EnrolledIdenti
 	if c.PlatformURL == "" {
 		return nil, errors.New("enroll.Client: PlatformURL required")
 	}
-	if len(c.CABundlePEM) == 0 {
-		return nil, errors.New("enroll.Client: CABundlePEM required")
+	if len(c.CABundlePEM) == 0 && c.CAFingerprint == "" {
+		return nil, errors.New("enroll.Client: CABundlePEM or CAFingerprint required")
 	}
 	if req.BootstrapToken == "" || req.Subject == "" {
 		return nil, errors.New("enroll: BootstrapToken and Subject required")
@@ -115,8 +120,9 @@ func (c *Client) Enroll(ctx context.Context, req EnrollRequest) (*EnrolledIdenti
 	}
 
 	// HTTP client with the supplied CA bundle pinned.
+	// A pin is never bypassable by an HTTPClient override.
 	client := c.HTTPClient
-	if client == nil {
+	if client == nil || c.CAFingerprint != "" {
 		client, err = c.buildHTTPClient()
 		if err != nil {
 			return nil, err
@@ -185,17 +191,14 @@ func (c *Client) Enroll(ctx context.Context, req EnrollRequest) (*EnrolledIdenti
 // CABundlePEM. This is the security-critical bit: the agent will refuse
 // to talk to a platform that doesn't chain up to the bundled CA.
 func (c *Client) buildHTTPClient() (*http.Client, error) {
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(c.CABundlePEM) {
-		return nil, errors.New("CABundlePEM contains no parseable certificates")
+	cfg, err := identity.PinnedTLSConfig(c.CABundlePEM, c.CAFingerprint)
+	if err != nil {
+		return nil, err
 	}
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:    pool,
-				MinVersion: tls.VersionTLS13, // platform-wide policy
-			},
+			TLSClientConfig:       cfg, // TLS 1.3 minimum (platform-wide policy) + pin
 			ResponseHeaderTimeout: 10 * time.Second,
 		},
 	}, nil

@@ -209,6 +209,18 @@ func (s *ClaimStrategy) httpClient(boot *Identity) *http.Client {
 	}
 
 	tlsConfig := &tls.Config{}
+	if boot.CAFingerprint != "" {
+		// A pin from any source is enforced; a bad pin/CA yields a client that
+		// can never connect rather than one that silently drops the pin.
+		if cfg, err := PinnedTLSConfig([]byte(boot.CABundlePEM), boot.CAFingerprint); err == nil {
+			return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: cfg}}
+		}
+		return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{VerifyConnection: func(tls.ConnectionState) error {
+				return errors.New("ca_fingerprint/CA bundle unusable; refusing to connect")
+			}},
+		}}
+	}
 	if boot.CABundlePEM != "" {
 		pool := x509.NewCertPool()
 		if pool.AppendCertsFromPEM([]byte(boot.CABundlePEM)) {
