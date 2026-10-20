@@ -44,6 +44,24 @@ RSpec.describe "Rack::Attack throttling for POST /api/v1/system/node_api/enroll"
     expect(response).to have_http_status(:too_many_requests)
   end
 
+  it "counts /enroll.json and /enroll/ against the same cap (no suffix bypass)" do
+    json_enroll = lambda do
+      post "/api/v1/system/node_api/enroll.json", params: { bootstrap_token: "k", csr_pem: "x" }.to_json,
+                                                 headers: { "Content-Type" => "application/json" }
+    end
+    slash_enroll = lambda do
+      post "/api/v1/system/node_api/enroll/", params: { bootstrap_token: "k", csr_pem: "x" }.to_json,
+                                             headers: { "Content-Type" => "application/json" }
+    end
+    json_enroll.call
+    slash_enroll.call
+    enroll
+    expect(response).not_to have_http_status(:too_many_requests)
+
+    json_enroll.call
+    expect(response).to have_http_status(:too_many_requests)
+  end
+
   it "does not count another IP against the cap" do
     3.times { enroll }
     post "/api/v1/system/node_api/enroll",
@@ -58,6 +76,10 @@ RSpec.describe "Rack::Attack throttling for POST /api/v1/system/node_api/enroll"
     req = ->(path, method) { Rack::Attack::Request.new(Rack::MockRequest.env_for(path, method: method)) }
 
     expect(safelist.matched_by?(req.call("/api/v1/system/node_api/enroll", "POST"))).to be(false)
+    expect(safelist.matched_by?(req.call("/api/v1/system/node_api/enroll.json", "POST"))).to be(false)
+    expect(safelist.matched_by?(req.call("/api/v1/system/node_api/enroll/", "POST"))).to be(false)
+    expect(safelist.matched_by?(req.call("/api/v1/system/node_api/claim.json", "POST"))).to be(false)
+    expect(safelist.matched_by?(req.call("/api/v1/system/node_api/claim/", "POST"))).to be(false)
     expect(safelist.matched_by?(req.call("/api/v1/system/node_api/enroll/refresh", "POST"))).to be(true)
     expect(safelist.matched_by?(req.call("/api/v1/system/node_api/tasks", "GET"))).to be(true)
   end

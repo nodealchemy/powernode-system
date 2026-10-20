@@ -49,6 +49,16 @@ RSpec.describe "Rack::Attack throttling for POST /api/v1/system/node_api/claim",
     expect(response).to have_http_status(:too_many_requests)
   end
 
+  it "counts /claim.json and /claim/ against the same cap (no suffix bypass)" do
+    hdr = { "Content-Type" => "application/json" }
+    post "/api/v1/system/node_api/claim.json", params: { mac: "de:ad:00:00:01:01" }.to_json, headers: hdr
+    post "/api/v1/system/node_api/claim/", params: { mac: "de:ad:00:00:01:02" }.to_json, headers: hdr
+    claim("de:ad:00:00:01:03")
+    post "/api/v1/system/node_api/claim.json", params: { mac: "de:ad:00:00:01:04" }.to_json, headers: hdr
+
+    expect(response).to have_http_status(:too_many_requests)
+  end
+
   it "keeps the claim path out of the node_api safelist while agent paths stay safelisted" do
     safelist = Rack::Attack.safelists.fetch("powernode_node_api")
 
