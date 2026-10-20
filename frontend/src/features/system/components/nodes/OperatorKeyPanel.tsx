@@ -65,7 +65,8 @@ export const OperatorKeyPanel: React.FC<OperatorKeyPanelProps> = ({ nodeId, inst
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    // Deferred: some browsers cancel the download if the URL is revoked synchronously.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const revoke = async () => {

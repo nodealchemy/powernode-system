@@ -53,6 +53,7 @@ describe('OperatorKeyPanel', () => {
   });
 
   it('downloads powernode-provision.cfg client-side from the one-time response', async () => {
+    jest.useFakeTimers();
     const click = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     await open();
     fireEvent.click(screen.getByRole('button', { name: /download powernode-provision\.cfg/i }));
@@ -65,8 +66,12 @@ describe('OperatorKeyPanel', () => {
     });
     expect(text).toBe(DOC);
     expect(click).toHaveBeenCalled();
+    // Deferred so browsers that start the download asynchronously are not cancelled.
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1000);
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:x');
     click.mockRestore();
+    jest.useRealTimers();
   });
 
   it('revokes the key and drops the secret from the DOM', async () => {
