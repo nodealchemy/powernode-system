@@ -838,4 +838,41 @@ RSpec.describe System::InternalCaService do
       end
     end
   end
+
+  describe "VaultCaAdapter local CSR validation" do
+    it "raises CsrError (definitive) for a malformed CSR without calling Vault" do
+      pki = instance_double(Security::VaultPkiClient)
+      expect(pki).not_to receive(:sign)
+      adapter = described_class::VaultCaAdapter.new(pki_client: pki)
+      expect { adapter.issue_certificate(csr_pem: "garbage", ttl_seconds: 60, common_name: "n") }
+        .to raise_error(described_class::CsrError)
+    end
+
+    it "raises CsrError for a CSR whose signature does not verify" do
+      key = OpenSSL::PKey.generate_key("ED25519")
+      other = OpenSSL::PKey.generate_key("ED25519")
+      csr = OpenSSL::X509::Request.new
+      csr.subject = OpenSSL::X509::Name.parse("/CN=x")
+      csr.public_key = other
+      csr.sign(key, nil)
+      pki = instance_double(Security::VaultPkiClient)
+      expect(pki).not_to receive(:sign)
+      adapter = described_class::VaultCaAdapter.new(pki_client: pki)
+      expect { adapter.issue_certificate(csr_pem: csr.to_pem, ttl_seconds: 60, common_name: "n") }
+        .to raise_error(described_class::CsrError)
+    end
+
+    it "still maps a Vault-side PkiError to the (retryable) CaError" do
+      key = OpenSSL::PKey.generate_key("ED25519")
+      csr = OpenSSL::X509::Request.new
+      csr.subject = OpenSSL::X509::Name.parse("/CN=x")
+      csr.public_key = key
+      csr.sign(key, nil)
+      pki = instance_double(Security::VaultPkiClient)
+      allow(pki).to receive(:sign).and_raise(Security::VaultPkiClient::PkiError, "boom")
+      adapter = described_class::VaultCaAdapter.new(pki_client: pki)
+      expect { adapter.issue_certificate(csr_pem: csr.to_pem, ttl_seconds: 60, common_name: "n") }
+        .to raise_error(described_class::CaError) { |e| expect(e).not_to be_a(described_class::CsrError) }
+    end
+  end
 end

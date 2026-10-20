@@ -368,4 +368,61 @@ RSpec.describe System::NodeEnrollmentService do
       expect(described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem).success?).to be(true)
     end
   end
+
+  describe "#enroll! CN rule" do
+    it "requires EXACTLY one CN, equal to the expected value" do
+      key = OpenSSL::PKey.generate_key("ED25519")
+      two = OpenSSL::X509::Certificate.new.tap do |c|
+        c.version = 2; c.serial = 5
+        c.subject = c.issuer = OpenSSL::X509::Name.new([ [ "CN", token_record.intended_subject.presence || instance.id ], [ "CN", "attacker" ] ])
+        c.public_key = key; c.not_before = Time.current - 60; c.not_after = Time.current + 3600
+        c.sign(key, nil)
+      end
+      allow(System::InternalCaService).to receive(:issue_certificate).and_return(
+        cert_pem: two.to_pem, ca_chain_pem: two.to_pem, serial: "05", subject: two.subject.to_s,
+        not_before: two.not_before, not_after: two.not_after
+      )
+      result = described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem)
+      expect(result.success?).to be(false)
+      expect(result.transient).to be(true)
+      expect(token_record.reload.consumed_at).to be_nil
+    end
+  end
+
+  describe "#refresh!" do
+    let(:enrolled) do
+      described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem).node_instance
+    end
+
+    it "classifies CA errors transient and a bad CSR definitive" do
+      enrolled # enrol for real BEFORE the CA is made to fail
+      allow(System::InternalCaService).to receive(:issue_certificate)
+        .and_raise(System::InternalCaService::CaError, "vault down")
+      r = described_class.refresh!(node_instance: enrolled, csr_pem: csr_pem)
+      expect([r.success?, r.transient]).to eq([ false, true ])
+
+      allow(System::InternalCaService).to receive(:issue_certificate).and_call_original
+      bad = described_class.refresh!(node_instance: enrolled, csr_pem: "garbage")
+      expect([bad.success?, bad.transient]).to eq([ false, false ])
+    end
+
+    it "fails closed (transient) when the issued CN differs from the instance's mtls_subject" do
+      key = OpenSSL::PKey.generate_key("ED25519")
+      wrong = OpenSSL::X509::Certificate.new.tap do |c|
+        c.version = 2; c.serial = 6
+        c.subject = c.issuer = OpenSSL::X509::Name.parse("/CN=somebody-else")
+        c.public_key = key; c.not_before = Time.current - 60; c.not_after = Time.current + 3600
+        c.sign(key, nil)
+      end
+      inst = enrolled
+      allow(System::InternalCaService).to receive(:issue_certificate).and_return(
+        cert_pem: wrong.to_pem, ca_chain_pem: wrong.to_pem, serial: "06", subject: "x",
+        not_before: wrong.not_before, not_after: wrong.not_after
+      )
+      expect {
+        r = described_class.refresh!(node_instance: inst, csr_pem: csr_pem)
+        expect([r.success?, r.transient]).to eq([ false, true ])
+      }.not_to change(System::NodeCertificate, :count)
+    end
+  end
 end

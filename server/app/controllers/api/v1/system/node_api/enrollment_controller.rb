@@ -35,7 +35,8 @@ module Api
               # 503 + Retry-After tells the agent to retry, not to discard the key.
               if result.transient
                 response.set_header("Retry-After", "30")
-                return render_error(result.error, 503)
+                Rails.logger.warn("[EnrollmentController] transient: #{result.error}")
+                return render_error("enrolment temporarily unavailable", 503)
               end
               return render_error(result.error, 422)
             end

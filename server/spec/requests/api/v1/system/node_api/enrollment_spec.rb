@@ -94,6 +94,8 @@ RSpec.describe "Api::V1::System::NodeApi::Enrollment", type: :request do
       post "/api/v1/system/node_api/enroll", params: { bootstrap_token: token_plaintext, csr_pem: csr_pem }
       expect(response).to have_http_status(:service_unavailable)
       expect(response.headers["Retry-After"]).to be_present
+      expect(response.body).to include("enrolment temporarily unavailable")
+      expect(response.body).not_to include("vault down") # detail stays in the server log
       expect(token_pair[0].reload.consumed_at).to be_nil
     end
 

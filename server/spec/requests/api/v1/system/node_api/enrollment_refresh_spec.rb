@@ -123,4 +123,39 @@ RSpec.describe "Api::V1::System::NodeApi::EnrollmentRefresh#refresh", type: :req
       expect(response).to have_http_status(:unprocessable_content)
     end
   end
+
+  describe "POST /api/v1/system/node_api/enroll/refresh failure mapping" do
+    it "returns 503 with a generic body (no internal detail) for a transient CA failure" do
+      allow(System::InternalCaService).to receive(:issue_certificate)
+        .and_raise(System::InternalCaService::CaError, "vault at 10.0.0.9 down")
+      post "/api/v1/system/node_api/enroll/refresh", params: body, headers: headers, as: :json
+      expect(response).to have_http_status(:service_unavailable)
+      expect(response.headers["Retry-After"]).to be_present
+      expect(response.body).to include("temporarily unavailable")
+      expect(response.body).not_to include("10.0.0.9")
+    end
+
+    it "returns 503 when the CA issued a certificate with the wrong CN (fail closed)" do
+      key = OpenSSL::PKey.generate_key("ED25519")
+      wrong = OpenSSL::X509::Certificate.new.tap do |c|
+        c.version = 2; c.serial = 9
+        c.subject = c.issuer = OpenSSL::X509::Name.parse("/CN=somebody-else")
+        c.public_key = key; c.not_before = Time.current - 60; c.not_after = Time.current + 3600
+        c.sign(key, nil)
+      end
+      allow(System::InternalCaService).to receive(:issue_certificate).and_return(
+        cert_pem: wrong.to_pem, ca_chain_pem: wrong.to_pem, serial: "09", subject: "x",
+        not_before: wrong.not_before, not_after: wrong.not_after
+      )
+      expect {
+        post "/api/v1/system/node_api/enroll/refresh", params: body, headers: headers, as: :json
+      }.not_to change { ::System::NodeCertificate.where(node_instance_id: instance.id).count }
+      expect(response).to have_http_status(:service_unavailable)
+    end
+
+    it "keeps a malformed CSR a definitive 422" do
+      post "/api/v1/system/node_api/enroll/refresh", params: { csr_pem: "garbage" }, headers: headers, as: :json
+      expect(response).to have_http_status(:unprocessable_content)
+    end
+  end
 end

@@ -423,7 +423,7 @@ func (s *ConsolePromptStrategy) bareKeyDocument(b *Identity, key string) ([]byte
 }
 
 // stage writes doc to the staged identity path atomically with mode 0600.
-func (s *ConsolePromptStrategy) stage(doc []byte, key string) error {
+func (s *ConsolePromptStrategy) stage(doc []byte, key string) (err error) {
 	path := s.StagePath
 	if path == "" {
 		path = DefaultStagePath
@@ -432,25 +432,53 @@ func (s *ConsolePromptStrategy) stage(doc []byte, key string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.OpenFile(filepath.Join(dir, ".identity.cfg.tmp"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// Marker FIRST: a key is never on disk without the record that lets the
+	// enrol path clean it up. A stale marker is harmless (it only matches by
+	// key digest). Any later failure removes both.
+	if err := writeMarker(path, key); err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(path)
+			_ = os.Remove(consoleMarkerPath)
+		}
+	}()
+	return writeFileAtomic(dir, filepath.Base(path), doc)
+}
+
+// writeFileAtomic writes data to dir/name via a 0600 temp file in the same
+// directory, fsyncs it, and renames it into place.
+func writeFileAtomic(dir, name string, data []byte) error {
+	tmp, err := os.CreateTemp(dir, "."+name+".*.tmp")
 	if err != nil {
 		return err
 	}
-	_, werr := tmp.Write(doc)
-	cerr := tmp.Close()
-	if werr != nil || cerr != nil {
-		_ = os.Remove(tmp.Name())
-		return errors.Join(werr, cerr)
-	}
-	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		_ = os.Remove(tmp.Name())
+	cleanup := func() { _ = os.Remove(tmp.Name()) }
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		cleanup()
 		return err
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		_ = os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		cleanup()
 		return err
 	}
-	return writeMarker(path, key)
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmp.Name(), filepath.Join(dir, name)); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
 }
 
 func writeMarker(stagedPath, key string) error {
@@ -458,14 +486,11 @@ func writeMarker(stagedPath, key string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(consoleMarkerPath), 0o700); err != nil {
+	dir := filepath.Dir(consoleMarkerPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := consoleMarkerPath + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, consoleMarkerPath)
+	return writeFileAtomic(dir, filepath.Base(consoleMarkerPath), raw)
 }
 
 // consolePromptTimeout reads powernode.console_prompt_timeout=<seconds> from

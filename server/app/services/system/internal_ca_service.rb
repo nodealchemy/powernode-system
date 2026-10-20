@@ -849,6 +849,18 @@ module System
       end
 
       def issue_certificate(csr_pem:, ttl_seconds:, common_name: nil, sans: [])
+        # Validate the CSR locally first (as the local adapter does): a malformed
+        # CSR is the caller's fault (CsrError => 4xx) and must not come back from
+        # Vault as an opaque 400 that is then retried forever as a "CA outage".
+        # Any Vault-side failure that remains (role/policy rejection, outage) is
+        # a CA problem and stays a retryable CaError.
+        csr = begin
+          OpenSSL::X509::Request.new(csr_pem)
+        rescue OpenSSL::X509::RequestError, ArgumentError, TypeError => e
+          raise CsrError, "malformed CSR PEM: #{e.message}"
+        end
+        raise CsrError, "CSR signature invalid" unless csr.verify(csr.public_key)
+
         data = @pki.sign(csr_pem: csr_pem, ttl_seconds: ttl_seconds, common_name: common_name, sans: sans)
 
         # ca_chain_pem can be either a single ca cert or full chain;

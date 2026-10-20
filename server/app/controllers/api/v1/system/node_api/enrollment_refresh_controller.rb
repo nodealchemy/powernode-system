@@ -29,6 +29,10 @@ module Api
 
             unless result.success?
               Rails.logger.warn("[EnrollmentRefreshController] refresh failed: #{result.error}")
+              if result.transient
+                response.set_header("Retry-After", "30")
+                return render_error("certificate refresh temporarily unavailable", 503)
+              end
               return render_error(result.error, :unprocessable_content)
             end
 

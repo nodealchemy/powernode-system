@@ -65,6 +65,7 @@ module System
         ttl_seconds: ttl_seconds,
         common_name: common_name
       )
+      verify_issued_common_name!(issued[:cert_pem], common_name)
 
       cert_record = ::System::NodeCertificate.create!(
         node_instance: node_instance,
@@ -86,10 +87,12 @@ module System
         ca_chain_pem: issued[:ca_chain_pem] || ::System::InternalCaService.ca_chain_pem,
         node_instance: node_instance
       )
-    rescue ::System::InternalCaService::CaError, ::System::InternalCaService::CsrError => e
+    rescue ::System::InternalCaService::CsrError => e
       failure("CSR/CA failure: #{e.message}")
+    rescue ::System::InternalCaService::CaError => e
+      failure("CSR/CA failure: #{e.message}", transient: true)
     rescue ::ActiveRecord::RecordInvalid => e
-      failure("certificate persistence failed: #{e.record.errors.full_messages.join('; ')}")
+      failure("certificate persistence failed: #{e.record.errors.full_messages.join('; ')}", transient: true)
     end
 
     # One transaction around the whole enrolment: the token is row-locked and
@@ -230,9 +233,14 @@ module System
     # lets the CSR's CN win, and the node then 401s on every mTLS call).
     # Raised INSIDE the enrolment transaction, so the token is not consumed.
     def verify_issued_common_name!(cert_pem, expected)
-      cn = OpenSSL::X509::Certificate.new(cert_pem.to_s).subject.to_a.find { |name, _v, _t| name == "CN" }&.[](1)
-      return if cn.to_s == expected.to_s
+      cns = OpenSSL::X509::Certificate.new(cert_pem.to_s).subject.to_a.select { |name, _v, _t| name == "CN" }
+      return if cns.size == 1 && cns.first[1] == expected.to_s
 
+      # Permanent until an operator fixes the CA role, so it stays a retryable
+      # 503 (fail closed, key not consumed) but is logged at ERROR under a
+      # distinct, greppable event name so it can be alerted on.
+      Rails.logger.error("[system.enrollment.issued_cn_mismatch] expected=#{expected} " \
+                         "issued_cn_count=#{cns.size} (check the CA role: use_csr_common_name must be false)")
       raise ::System::InternalCaService::CaError,
             "issued certificate CN does not match the intended subject (check the CA role: use_csr_common_name must be false)"
     rescue OpenSSL::X509::CertificateError
