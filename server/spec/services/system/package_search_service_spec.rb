@@ -64,6 +64,11 @@ RSpec.describe System::PackageSearchService do
 
     context "architecture canonicalization (cross-kind)" do
       before do
+        # The amd64 <-> x86_64 mapping lives on the platform-wide canonical
+        # NodeArchitecture rows. Tests load the schema without migrations, so
+        # materialise them explicitly (the account bootstrap, skipped in specs
+        # by default, used to do this as a side effect).
+        ::System::NodeArchitecture.ensure_canonical_seed!
         # Canonical "amd64" is "amd64" on apt and "x86_64" on rpm. Filter
         # input is canonical; query must match BOTH kind-specific values.
         pkg(apt_repo, "nginx",   architecture: "amd64")
