@@ -61,5 +61,9 @@ RSpec.describe "Provider capability discovery (F4-06)" do
     it "excludes :ips, matching its structurally-declined IP operations" do
       expect(adapter_for(described_class).supports?(:ips)).to be false
     end
+
+    it "does not advertise :images (the image API is retired)" do
+      expect(adapter_for(described_class).supports?(:images)).to be false
+    end
   end
 end

@@ -776,9 +776,6 @@ module System
         { success: true, volume_id: name, size_gb: disk.dig("properties", "diskSizeGB") }
       end
 
-      # Azure managed-disk SKUs are platform-fixed (not region-discoverable).
-      # Returning the canonical set so the catalog ingestion has stable rows.
-
       # Map a cloud-side power state string (e.g. "PowerState/running") to a
       # platform status. Status keys come from AZURE_STATUS_MAP. Anything not
       # in the map falls back to "unknown" — the platform-wide convention
@@ -788,6 +785,8 @@ module System
         AZURE_STATUS_MAP[provider_status.to_s] || "unknown"
       end
 
+      # Azure managed-disk SKUs are platform-fixed (not region-discoverable).
+      # Returning the canonical set so the catalog ingestion has stable rows.
       def list_volume_types(_region)
         [
           { cloud_id: "Standard_LRS",     name: "Standard HDD",    iops: nil,   throughput_mbps: nil },

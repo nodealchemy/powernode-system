@@ -118,7 +118,7 @@ module System
       # (DHCP / ipconfig0 on the instance instead). Declared here so
       # services can discover it up front (F4-06).
       def capabilities
-        %i[instances volumes images sync]
+        %i[instances volumes sync]
       end
 
       # ----------------------------------------------------------------

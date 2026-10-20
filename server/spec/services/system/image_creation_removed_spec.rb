@@ -39,10 +39,15 @@ RSpec.describe "retired image-creation paths" do
   describe "provider image API" do
     let(:image_methods) { %i[create_image get_image delete_image] }
 
+    # Every registered adapter, not BaseProvider.descendants: descendants
+    # depends on load order when eager_load is off.
+    let(:adapters) do
+      System::Providers::Registry::PROVIDER_CLASSES.values.map(&:constantize)
+    end
+
     it "is gone from BaseProvider and every adapter" do
-      providers = [ System::Providers::BaseProvider ] +
-                  System::Providers::BaseProvider.descendants
-      expect(providers.size).to be > 5
+      providers = [ System::Providers::BaseProvider ] + adapters
+      expect(adapters.size).to be > 5
       providers.each do |klass|
         image_methods.each do |m|
           expect(klass.instance_methods(false)).not_to include(m), "#{klass}##{m} still defined"
@@ -52,9 +57,12 @@ RSpec.describe "retired image-creation paths" do
 
     it "does not declare an :images capability" do
       expect(System::Providers::BaseProvider::CAPABILITIES).not_to include(:images)
-      System::Providers::BaseProvider.descendants.each do |klass|
-        consts = klass.const_defined?(:CAPABILITIES) ? klass::CAPABILITIES : []
-        expect(consts).not_to include(:images), "#{klass} still declares :images"
+      adapters.each do |klass|
+        # Assert on the live #capabilities output: a subclass override is not
+        # visible through the inherited CAPABILITIES constant.
+        caps = klass.allocate.capabilities
+        expect(caps).not_to include(:images), "#{klass}#capabilities still declares :images"
+        expect(klass.allocate.supports?(:images)).to be(false), "#{klass}#supports?(:images) is true"
       end
     end
 

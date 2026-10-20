@@ -764,13 +764,6 @@ module System
         end
       end
 
-      def global_operations_client
-        @global_operations_client ||= Google::Cloud::Compute::V1::GlobalOperations::Rest::Client.new do |config|
-          config.credentials = gcp_credentials
-          apply_gcp_timeout(config)
-        end
-      end
-
       def gcp_credentials
         # GCP credentials are a service-account JSON blob in secret_key.
         # If absent, we fall back to Google's "Application Default Credentials"
@@ -803,12 +796,6 @@ module System
       def wait_for_regional_operation(operation, timeout: 120)
         poll_operation(timeout: timeout) do
           region_operations_client.get(project: project_id, region: gcp_region, operation: operation.name)
-        end
-      end
-
-      def wait_for_global_operation(operation, timeout: 120)
-        poll_operation(timeout: timeout) do
-          global_operations_client.get(project: project_id, operation: operation.name)
         end
       end
 

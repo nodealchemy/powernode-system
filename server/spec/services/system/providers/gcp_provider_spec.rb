@@ -35,17 +35,15 @@ RSpec.describe System::Providers::GcpProvider do
     end
   end
 
-  # Behavior guard for the DRY extraction: the three wait_for_* helpers now
+  # Behavior guard for the DRY extraction: the wait_for_* helpers now
   # share one poll_operation loop, differing only in their get() call. Each
   # must still return on :DONE and raise on the first operation error.
   describe "operation polling helpers (share #poll_operation)" do
     let(:region_operations_client) { double("Google RegionOperations Client") }
-    let(:global_operations_client) { double("Google GlobalOperations Client") }
     let(:operation) { double("Operation", name: "op-123") }
 
     before do
       allow(provider).to receive(:region_operations_client).and_return(region_operations_client)
-      allow(provider).to receive(:global_operations_client).and_return(global_operations_client)
       allow(provider).to receive(:project_id).and_return("test-project")
     end
 
@@ -59,8 +57,7 @@ RSpec.describe System::Providers::GcpProvider do
 
     {
       wait_for_operation: :zone_operations_client,
-      wait_for_regional_operation: :region_operations_client,
-      wait_for_global_operation: :global_operations_client
+      wait_for_regional_operation: :region_operations_client
     }.each do |method, client_name|
       context "##{method}" do
         let(:client) { send(client_name) }
