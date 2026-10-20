@@ -34,28 +34,16 @@ module Federation
     end
 
     class << self
-      # The platform's own version — read once at boot, cached. Falls
-      # back to "0.0.0" if neither VERSION file exists (test/dev edge).
+      # The platform's own version as federation speaks it: the plain X.Y.Z
+      # core of Powernode::Version.current (derived from release tags). Never
+      # a prerelease string or a bare sha: a peer that cannot parse what we
+      # send would mark us incompatible.
       def current_platform_version
-        @current_platform_version ||= read_version_file
+        ::Powernode::Version.core_version
       end
 
       def negotiate(local_version: current_platform_version, remote_version:)
         new(local_version: local_version, remote_version: remote_version).negotiate
-      end
-
-      private
-
-      def read_version_file
-        candidates = []
-        if defined?(::Rails) && ::Rails.root
-          candidates << ::Rails.root.join("VERSION")
-          candidates << ::Rails.root.join("..", "VERSION")
-        end
-        candidates.each do |path|
-          return ::File.read(path).strip if ::File.exist?(path) && ::File.read(path).strip.length.positive?
-        end
-        "0.0.0"
       end
     end
 
@@ -115,14 +103,13 @@ module Federation
       end
     end
 
-    # Returns [major, minor, patch] or nil if unparseable.
+    # Returns [major, minor, patch] or nil if unparseable. Only the X.Y.Z core
+    # is compared: "0.3.0-dev.12+abc" parses as [0, 3, 0]; a bare sha is nil.
+    SEMVER_CORE = /\A(\d+)\.(\d+)(?:\.(\d+))?(?:[-+].*)?\z/
+
     def parse_semver(str)
-      return nil if str.empty?
-      parts = str.split(".")
-      return nil if parts.size < 2
-      [ parts[0].to_i, parts[1].to_i, parts[2].to_i ]
-    rescue ::StandardError
-      nil
+      m = SEMVER_CORE.match(str)
+      m && [ m[1].to_i, m[2].to_i, m[3].to_i ]
     end
   end
 end

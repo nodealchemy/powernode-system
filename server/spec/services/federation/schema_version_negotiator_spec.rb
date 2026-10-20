@@ -8,9 +8,22 @@ require "rails_helper"
 # default > implicit N-1) and the implicit-rule edge cases.
 RSpec.describe ::Federation::SchemaVersionNegotiator, type: :service do
   describe ".current_platform_version" do
-    it "reads the VERSION file" do
-      version = described_class.current_platform_version
-      expect(version).to match(/\A\d+\.\d+\.\d+/)
+    it "is the plain X.Y.Z core of Powernode::Version.current" do
+      allow(Powernode::Version).to receive(:current).and_return("0.3.0-dev.12+abc1234")
+      Powernode::Version.instance_variable_set(:@version_parts, nil)
+      described_class.instance_variable_set(:@current_platform_version, nil)
+      expect(described_class.current_platform_version).to eq("0.3.0")
+    ensure
+      Powernode::Version.instance_variable_set(:@version_parts, nil)
+      described_class.instance_variable_set(:@current_platform_version, nil)
+    end
+
+    it "never sends a prerelease string or a bare sha" do
+      expect(described_class.current_platform_version).to match(/\A\d+\.\d+\.\d+\z/)
+    end
+
+    it "does not read a VERSION file" do
+      expect(described_class.private_methods(false)).not_to include(:read_version_file)
     end
   end
 
@@ -23,6 +36,18 @@ RSpec.describe ::Federation::SchemaVersionNegotiator, type: :service do
     end
 
     context "implicit N-1 rule" do
+      it "is compatible for a dev build vs the next patch (compares major.minor.patch only)" do
+        result = described_class.negotiate(local_version: "0.3.0-dev.12+abc", remote_version: "0.3.1")
+        expect(result.status).to eq("compatible")
+        expect(result.source).to eq("implicit")
+      end
+
+      it "is incompatible for a bare sha (unparseable)" do
+        result = described_class.negotiate(local_version: "0.3.1", remote_version: "abc1234")
+        expect(result.status).to eq("incompatible")
+        expect(result.notes).to match(/unparseable/)
+      end
+
       it "is compatible when same major + same minor" do
         result = described_class.negotiate(local_version: "0.3.1", remote_version: "0.3.0")
         expect(result.status).to eq("compatible")
