@@ -562,13 +562,10 @@ RSpec.describe System::BootstrapToken, type: :model do
       expect(AuditLog.where(action: "system.bootstrap_token.revoked", resource_id: [ k1.id, k3.id ]).count).to eq(2)
     end
 
-    it "K1 then K2, K2 enrols: a surviving K1 is revoked and unrevealable" do
-      k2, _ = mint
-      # K1 exists alongside K2 (as a legacy row would, bypassing issue!'s revoke-on-mint).
-      k1 = described_class.create!(node: node, node_instance: instance, intended_subject: instance.id,
-                                   token_hash: Digest::SHA256.hexdigest("k1"), expires_at: 1.hour.from_now,
-                                   purpose: "operator_key", created_by: user, sealed_plaintext: "k1-plain")
-      expect(k1.reveal!(by: user)).to eq("k1-plain")
+    it "K1 (operator key) then K2 (platform seed), K2 enrols: K1 is revoked and unrevealable" do
+      k1, _ = mint
+      expect(k1.reveal!(by: user)).to be_present
+      k2, _ = mint(purpose: "cloud_seed")
 
       k2.consume!
 
@@ -584,13 +581,63 @@ RSpec.describe System::BootstrapToken, type: :model do
       expect(bound.reload).to be_usable
     end
 
-    it "rolls the sibling revocation back with a failed audit write" do
+    it "rolls the consume back when the SIBLING revoke's audit write fails (only that action fails)" do
       k1, _ = mint
       k2, _ = mint(purpose: "cloud_seed")
-      allow(AuditLog).to receive(:log_action).and_raise(StandardError, "audit down")
+      allow(AuditLog).to receive(:log_action).and_call_original
+      allow(AuditLog).to receive(:log_action).with(hash_including(action: "system.bootstrap_token.revoked"))
+                                             .and_raise(StandardError, "audit down")
       expect { k2.consume! }.to raise_error(described_class::AuditFailure)
-      expect(k1.reload).to be_usable
       expect(k2.reload).not_to be_consumed
+      expect(k1.reload).to be_usable
+      expect(k1.sealed_plaintext).to be_present
+      expect(AuditLog.where(action: "system.bootstrap_token.consumed", resource_id: k2.id)).to be_empty
+    end
+
+    describe "concurrency" do
+      it "refuses a mint on an instance that enrolled after the caller loaded it (F2: lock + re-check in the transaction)" do
+        loaded = System::NodeInstance.find(instance.id)
+        instance.update_columns(mtls_subject: "CN=just-enrolled")
+        expect { described_class.issue!(node: node, node_instance: loaded, intended_subject: loaded.id,
+                                        purpose: "operator_key", created_by: user) }
+          .to raise_error(described_class::InstanceNotAvailable, /enrolled/)
+        expect(described_class.where(node_instance_id: instance.id)).to be_empty
+      end
+
+      it "does not apply the instance re-check to non-sealed purposes (a restarted VM may re-enrol)" do
+        instance.update_columns(mtls_subject: "CN=enrolled")
+        expect { mint(purpose: "cloud_seed") }.not_to raise_error
+      end
+
+      it "the partial unique index admits only one open operator key per instance, even if a stale read hides the prior" do
+        first, _ = mint
+        allow(described_class).to receive(:open_for_instance).and_return([])
+        expect { mint }.to raise_error(described_class::InstanceNotAvailable)
+        expect(described_class.where(node_instance_id: instance.id, purpose: "operator_key", consumed_at: nil,
+                                     revoked_at: nil).count).to eq(1)
+        expect(first.reload).to be_usable
+      end
+
+      it "an EXPIRED but open prior is revoked by a re-mint, so the index never blocks it" do
+        first, _ = mint
+        first.update_columns(expires_at: 1.minute.ago)
+        second, _ = mint
+        expect(first.reload).to be_revoked
+        expect(second.reload).to be_usable
+      end
+
+      it "an index lets a consumed or revoked operator key coexist with a fresh one" do
+        first, _ = mint
+        first.consume!
+        expect { mint }.not_to raise_error
+      end
+
+      it "locks sibling rows in id order" do
+        a, _ = mint(purpose: "cloud_seed")
+        b, _ = mint(purpose: "netboot")
+        expect(described_class.open_for_instance(instance.id).map(&:id)).to eq([ a.id, b.id ].sort)
+        expect(described_class.where(node_instance_id: instance.id).lock.order(:id).to_sql).to include("ORDER BY")
+      end
     end
   end
 

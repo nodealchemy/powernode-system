@@ -104,7 +104,21 @@ module System
         # ONE usable operator key per instance: minting a new one revokes any
         # earlier unconsumed key for it (audited, sealed copy purged), so an old
         # key can never be recovered or redeemed alongside the new one.
+        #
+        # LOCK ORDER (everywhere): instance row first, then token rows in id
+        # order. Mint takes it here; NodeEnrollmentService#enroll! locks the
+        # instance before the token it consumes, and consume! then takes the
+        # sibling rows with open_for_instance (ORDER BY id). One order cannot
+        # deadlock; enroll! also rescues ActiveRecord::Deadlocked as a safety net.
+        # The re-check under the instance lock closes the window between the
+        # caller's guard and this insert: an instance that enrolled meanwhile
+        # refuses the mint. The partial unique index is the final backstop.
         if SEALED_PURPOSES.include?(purpose.to_s) && node_instance
+          node_instance.lock!
+          if (why = instance_refusal(node_instance))
+            raise InstanceNotAvailable, why
+          end
+
           open_for_instance(node_instance.id, purpose: purpose.to_s).each { |prior| prior.revoke!(by: created_by) }
         end
         token = create!(
@@ -121,6 +135,10 @@ module System
         token.send(:write_audit!, :issued)
       end
       [ token, plaintext ]
+    rescue ActiveRecord::RecordNotUnique
+      # Lost a concurrent mint for the same instance (one open operator key per
+      # instance, enforced by a partial unique index). Static message.
+      raise InstanceNotAvailable, "another key was issued for this instance at the same time"
     end
 
     # Unconsumed, unrevoked keys bound to an instance (expired ones included:
@@ -129,7 +147,7 @@ module System
     def self.open_for_instance(node_instance_id, purpose: nil)
       scope = where(node_instance_id: node_instance_id, consumed_at: nil, revoked_at: nil)
       scope = scope.where(purpose: purpose) if purpose
-      scope.lock.to_a
+      scope.order(:id).lock.to_a
     end
 
     # Why a key cannot be issued for, or revealed on, this instance - or nil.
@@ -245,6 +263,9 @@ module System
     # The key cannot be revealed: not an operator key, no sealed copy, or no
     # longer usable. The message is static and carries no token material.
     class NotRevealable < StandardError; end
+    # A key cannot be issued for this instance right now: it is claimed,
+    # enrolled, running or finished, or another mint won the race. Static message.
+    class InstanceNotAvailable < StandardError; end
     # The audit row for a key operation could not be written. Key operations
     # FAIL CLOSED: the surrounding transaction rolls back. The message is static
     # (no token material, no underlying error text).
