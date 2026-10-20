@@ -1371,6 +1371,35 @@ RSpec.describe System::Providers::ProxmoxProvider do
     end
   end
 
+  # PVE addresses a volume as /nodes/{node}/storage/{storage}/content/{volume},
+  # where {volume} is the volid ("storage:path"). The old path put the whole
+  # encoded volid where {storage} belongs and omitted {volume}, which PVE does
+  # not route to the content-delete endpoint.
+  describe "#delete_volume" do
+    let(:volid) { "pve1-data:100/vm-100-disk-0.qcow2" }
+
+    before do
+      allow(client).to receive(:get).with("/api2/json/nodes").and_return(
+        [ { "node" => "pve1", "status" => "online" } ]
+      )
+    end
+
+    it "DELETEs /nodes/{node}/storage/{storage}/content/{volid}" do
+      expect(client).to receive(:delete)
+        .with("/api2/json/nodes/pve1/storage/pve1-data/content/pve1-data%3A100%2Fvm-100-disk-0.qcow2")
+        .and_return(nil)
+
+      result = provider.delete_volume(volid)
+      expect(result).to include(success: true, volume_id: volid)
+    end
+
+    it "treats a 404 as already deleted" do
+      allow(client).to receive(:delete).and_raise(System::Providers::Proxmox::Client::NotFoundError.new("gone"))
+
+      expect(provider.delete_volume(volid)).to include(success: true, message: "already deleted")
+    end
+  end
+
   describe "#terminate_instance" do
     it "issues stop best-effort, then DELETEs with purge + destroy-unreferenced-disks" do
       allow(client).to receive(:post).and_return("UPID:pve1:stop")

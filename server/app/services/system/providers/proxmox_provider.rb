@@ -850,9 +850,12 @@ module System
         c = require_client!
         # volume_id format: "<storage>:<path>" — we need to figure out which node
         # to call. Storage-with-shared=1 is reachable from any node, so use
-        # the first online node.
+        # the first online node. The endpoint is
+        # /nodes/{node}/storage/{storage}/content/{volume}, with {volume} the
+        # full volid (as the ISO delete does).
         node = first_online_node!(c)
-        c.delete("/api2/json/nodes/#{node}/storage/#{encode_volid(volume_id)}/content")
+        storage = volume_id.to_s.split(":", 2).first
+        c.delete("/api2/json/nodes/#{node}/storage/#{storage}/content/#{encode_volid(volume_id)}")
         { success: true, volume_id: volume_id }
       rescue Proxmox::Client::NotFoundError
         { success: true, volume_id: volume_id, message: "already deleted" }
