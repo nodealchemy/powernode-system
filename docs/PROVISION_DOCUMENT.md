@@ -231,7 +231,7 @@ worker's `SystemSeedCleanupJob` (every minute, `post_no_retry`, 45s timeout) cal
 `worker_api/seed_cleanup/sweep`, which is fenced by the kill switch and the
 control-plane role, takes at most 5 rows per tick, stops starting new rows after a
 15s budget, and leases each row (compare-and-set on `next_attempt_at`) before its
-provider call so overlapping sweeps never double-process. Failures retry with
+provider call (with a lease token, so a sweep whose lease expired cannot overwrite the new owner's write-back) and visits accounts oldest-due-row first. Proxmox calls use 5s connect / 8s read timeouts and a 20s task wait cap, so one item stays well under the 3-minute lease. Failures retry with
 backoff (5 attempts); each outcome writes a `system.enrollment_seed.cleanup` audit row:
 
 - GCP: the `user-data` metadata item is removed (live edit, other items kept).
@@ -240,7 +240,8 @@ backoff (5 attempts); each outcome writes a `system.enrollment_seed.cleanup` aud
   task awaited). Snippet transport deletes `cicustom`, then regenerates the
   attached cloud-init drive (`PUT .../cloudinit`, a CD media swap on a running VM,
   not a restart) and only then removes the snippets; a failed regenerate stays
-  awaiting_stop. Once cleared, D12 does not re-write the neutral seed on start. A VM that never stops within 14 days is
+  awaiting_stop. D12 writes nothing on start for an enrolled VM whose seed was cleared
+  or whose detach is queued (awaiting_stop); a VM that is not enrolled still gets a fresh key. A VM that never stops within 14 days is
   left to the start policy above.
 - AWS and OpenStack: no-op, recorded with a note (their user-data cannot change
   on a running instance; the start policy covers restarts). Azure is not covered

@@ -62,6 +62,18 @@ RSpec.describe "Rack::Attack throttling for POST /api/v1/system/node_api/enroll"
     expect(response).to have_http_status(:too_many_requests)
   end
 
+  it "counts //enroll, enroll.xml and enroll.txt against the same cap (any format, squeezed slashes)" do
+    hdr = { "Content-Type" => "application/json" }
+    body = { bootstrap_token: "k", csr_pem: "x" }.to_json
+    post "/api/v1/system/node_api//enroll", params: body, headers: hdr
+    post "/api/v1/system/node_api/enroll.xml", params: body, headers: hdr
+    post "/api/v1/system/node_api/enroll.txt", params: body, headers: hdr
+    expect(response).not_to have_http_status(:too_many_requests)
+
+    enroll
+    expect(response).to have_http_status(:too_many_requests)
+  end
+
   it "does not count another IP against the cap" do
     3.times { enroll }
     post "/api/v1/system/node_api/enroll",
@@ -80,7 +92,17 @@ RSpec.describe "Rack::Attack throttling for POST /api/v1/system/node_api/enroll"
     expect(safelist.matched_by?(req.call("/api/v1/system/node_api/enroll/", "POST"))).to be(false)
     expect(safelist.matched_by?(req.call("/api/v1/system/node_api/claim.json", "POST"))).to be(false)
     expect(safelist.matched_by?(req.call("/api/v1/system/node_api/claim/", "POST"))).to be(false)
+    %w[//enroll enroll.xml enroll.txt enroll.json/ ].each do |tail|
+      expect(safelist.matched_by?(req.call("/api/v1/system/node_api/#{tail}", "POST"))).to be(false), tail
+    end
+    %w[//claim claim.xml claim.txt].each do |tail|
+      expect(safelist.matched_by?(req.call("/api/v1/system/node_api/#{tail}", "POST"))).to be(false), tail
+    end
     expect(safelist.matched_by?(req.call("/api/v1/system/node_api/enroll/refresh", "POST"))).to be(true)
+    expect(safelist.matched_by?(req.call("/api/v1/system/node_api/enroll/refresh.json", "POST"))).to be(true)
+    expect(safelist.matched_by?(req.call("/api/v1/system//node_api/tasks", "GET"))).to be(true)
+    expect(safelist.matched_by?(req.call("/api/v1/system/worker_api/fleet/reconcile.json", "POST"))).to be(true)
+    expect(safelist.matched_by?(req.call("/api/v1/system/federation_api/ping", "GET"))).to be(true)
     expect(safelist.matched_by?(req.call("/api/v1/system/node_api/tasks", "GET"))).to be(true)
   end
 end
