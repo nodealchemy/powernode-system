@@ -4,20 +4,25 @@ require "rails_helper"
 require "json-schema"
 
 RSpec.describe System::ProvisioningDocument do
-  def make_cert(cn)
+  # self-signed CA by default; ca: false drops basicConstraints CA:TRUE;
+  # issuer: signs with another key (=> not self-signed).
+  def make_cert(cn, ca: true, issuer: nil)
     key = OpenSSL::PKey::EC.generate("prime256v1")
     cert = OpenSSL::X509::Certificate.new
     cert.version = 2
     cert.serial = rand(1..1_000_000)
-    cert.subject = cert.issuer = OpenSSL::X509::Name.parse("/CN=#{cn}")
+    cert.subject = OpenSSL::X509::Name.parse("/CN=#{cn}")
+    cert.issuer = issuer ? OpenSSL::X509::Name.parse("/CN=#{issuer}") : cert.subject
     cert.public_key = key
     cert.not_before = 1.hour.ago
     cert.not_after = 1.day.from_now
-    cert.sign(key, OpenSSL::Digest.new("SHA256"))
+    ef = OpenSSL::X509::ExtensionFactory.new(cert, cert)
+    cert.add_extension(ef.create_extension("basicConstraints", ca ? "CA:TRUE" : "CA:FALSE", true))
+    cert.sign(issuer ? OpenSSL::PKey::EC.generate("prime256v1") : key, OpenSSL::Digest.new("SHA256"))
     cert
   end
 
-  let(:intermediate) { make_cert("intermediate") }
+  let(:intermediate) { make_cert("intermediate", issuer: "root") }
   let(:root) { make_cert("root") }
   let(:chain) { intermediate.to_pem + root.to_pem }
   let(:instance) { instance_double(System::NodeInstance, id: "0198f3a2-7b1c-7d2e-9a4f-1234567890ab") }
@@ -66,6 +71,25 @@ RSpec.describe System::ProvisioningDocument do
     it "refuses an unparseable CA" do
       bad = "-----BEGIN CERTIFICATE-----\nZZZZ\n-----END CERTIFICATE-----"
       expect { render(ca_pem: bad) }.to raise_error(described_class::RenderError, /not parseable/)
+    end
+
+    it "refuses a pinned (last) certificate that is not a self-signed CA" do
+      expect { render(ca_pem: root.to_pem + intermediate.to_pem) }
+        .to raise_error(described_class::RenderError, /self-signed CA/)
+      expect { render(ca_pem: make_cert("leaf", ca: false).to_pem) }
+        .to raise_error(described_class::RenderError, /self-signed CA/)
+    end
+
+    it "accepts an anchor-last bundle [intermediate, root]" do
+      expect { render(ca_pem: intermediate.to_pem + root.to_pem) }.not_to raise_error
+    end
+
+    it "refuses out-of-range ports, spaces and control characters in the server URL" do
+      ["https://p.example.test:99999", "https://p.example.test:0", "https://p.example.test/a b",
+       "https://p.example.test/\n", "https://p_x.example.test"].each do |bad|
+        expect { render(server: bad) }.to raise_error(described_class::RenderError), bad
+      end
+      expect { render(server: "https://p.example.test:8443/base") }.not_to raise_error
     end
 
     it "refuses a non-https or credentialed server" do

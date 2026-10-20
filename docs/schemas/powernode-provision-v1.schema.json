@@ -2,17 +2,29 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://powernode.org/schemas/powernode-provision-v1.schema.json",
   "title": "powernode-provision document v1",
-  "description": "One document for every provisioning channel (USB file, cloud-init/NoCloud/config-drive, provider metadata, PXE pickup). Emitted by System::ProvisioningDocument, parsed strictly by agent/internal/identity.ParseProvisionDocument.",
+  "description": "One document for every provisioning channel (USB file, cloud-init/NoCloud/config-drive, provider metadata, PXE pickup). Emitted by System::ProvisioningDocument, parsed strictly by agent/internal/identity.ParseProvisionDocument. Duplicate keys, case-variant keys (e.g. \"CA_FINGERPRINT\"), nulls and nested values are INVALID even though a generic JSON Schema validator cannot express that; the agent rejects them.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "server", "instance_id", "key", "ca_fingerprint", "issued_at", "expires_at", "purpose"],
+  "required": [
+    "version",
+    "server",
+    "instance_id",
+    "key",
+    "ca_fingerprint",
+    "issued_at",
+    "expires_at",
+    "purpose"
+  ],
   "properties": {
-    "version": { "const": 1 },
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
     "server": {
       "type": "string",
-      "pattern": "^https://[^\\s@/]+(/[^\\s]*)?$",
+      "pattern": "^https://([A-Za-z0-9.-]+|\\[[0-9A-Fa-f:.]+\\])(:[0-9]{1,5})?(/[\\x21-\\x7e]*)?$",
       "maxLength": 2048,
-      "description": "Platform base URL. https only, no credentials."
+      "description": "Platform base URL. https only, no credentials, no spaces; port, if present, 1..65535 (not expressible here)."
     },
     "instance_id": {
       "type": "string",
@@ -28,15 +40,24 @@
     "ca_fingerprint": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$",
-      "description": "ALWAYS REQUIRED. sha256 of the DER of the LAST certificate of the configured CA chain. Enforced on the enrolment connection: the server's verified chain must contain a certificate with this fingerprint."
+      "description": "ALWAYS REQUIRED. sha256 of the DER of the LAST certificate of the configured CA chain, which must be a self-signed CA. Enforced on the enrolment connection."
     },
     "ca_pem": {
       "type": "string",
       "maxLength": 65536,
-      "description": "Optional CA chain (PEM). If present, one certificate in it MUST match ca_fingerprint."
+      "description": "Optional CA chain (PEM, printable ASCII). Ordered ANCHOR-LAST. If present, one certificate in it MUST match ca_fingerprint.",
+      "pattern": "^[\\x09\\x0a\\x0d\\x20-\\x7e]*$"
     },
-    "issued_at": { "type": "string", "format": "date-time" },
-    "expires_at": { "type": "string", "format": "date-time" },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 date-time."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 date-time."
+    },
     "purpose": {
       "type": "string",
       "pattern": "^[a-z0-9_.-]{1,64}$"

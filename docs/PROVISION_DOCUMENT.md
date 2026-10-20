@@ -14,13 +14,22 @@ strict parser.
 | Field | Meaning |
 |---|---|
 | `version` | integer `1` |
-| `server` | platform base URL, `https` only, no credentials, max 2048 |
+| `server` | platform base URL: `https`, DNS name or `[IPv6]` host, optional `:port` (1..65535), optional printable path; no credentials, spaces or control characters, max 2048. The Go, Ruby and schema rules are the same regex |
 | `instance_id` | NodeInstance uuid |
 | `key` | single-use bootstrap token (plaintext), printable, no whitespace, max 512 |
 | `ca_fingerprint` | **always required.** `sha256:<64 lowercase hex>` of the DER of the **last** certificate of the configured CA chain |
-| `ca_pem` | optional CA chain (PEM, max 64 KiB). If present, one certificate in it must match `ca_fingerprint` |
-| `issued_at`, `expires_at` | ISO8601; `expires_at` after `issued_at` |
+| `ca_pem` | optional CA chain (printable PEM, max 64 KiB), ordered **anchor-last**. If present, one certificate in it must match `ca_fingerprint` |
+| `issued_at`, `expires_at` | RFC 3339 date-time; `expires_at` after `issued_at` |
 | `purpose` | `[a-z0-9_.-]{1,64}` |
+
+## Strictness
+
+Keys are exact and case-sensitive. Duplicate keys, case-variant keys
+(`CA_FINGERPRINT`), `null`, nested objects/arrays, and `1.0`/`"1"` as the
+version are all rejected (the agent tokenises the JSON; a generic schema
+validator cannot express this). Any rejection of a v1 document is **terminal**:
+the resolver stops and refuses to enrol, it never falls through to a weaker
+source.
 
 ## The pin
 
@@ -31,6 +40,31 @@ equals the pin. A mismatch refuses the connection; the key is never sent and
 never logged. A v1 document without a pin is refused at parse time. The pin
 is also accepted (optional) from legacy sources: `CA_FINGERPRINT=` (KEY=VALUE),
 `powernode.ca_fingerprint` (cmdline), `ca_fingerprint` (fw-cfg / legacy JSON).
+
+**Bundle ordering and what is pinned.** The CA bundle is ordered anchor-last and
+the pinned (last) certificate must be a self-signed CA (`basicConstraints
+CA:TRUE`, issuer == subject, valid self-signature); the renderer raises
+`RenderError` otherwise. On the agent, self-signed CAs in `ca_pem` are the trust
+anchors and every other certificate in it is an intermediate, so a server that
+sends only its leaf still validates when its intermediates are in `ca_pem`
+(otherwise the server must send them). Hostname, validity and server-auth key
+usage are verified as usual.
+
+**Pinning a public root (for example ISRG Root X1) gives weak protection**: any
+certificate any public CA issues under that root satisfies the pin. Use a
+private CA for real protection.
+
+**One pin, every source.** The first pin seen from any source is enforced on
+whichever source finally supplies the key: a pinless legacy source (cmdline,
+KEY=VALUE, fw-cfg) never overrides a pinned v1 document, even if it is earlier
+in precedence.
+
+**After enrolment.** The pin is persisted next to the PKI material
+(`ca-pin`, alongside `ca-bundle.crt`). With no `ca_pem` (pin-only) the
+verified-chain certificate that matched the pin is saved as the CA bundle, so
+the mTLS transport can load. Every reconnect (`transport.LoadFromPKIDir`) and
+cert rotation enforce the persisted pin on top of the bundle; a malformed pin
+file is an error, never a silent downgrade.
 
 Expiry is not checked against the device clock (no RTC/NTP at first boot); the
 server enforces token expiry.
@@ -61,3 +95,7 @@ v1 and is never downgraded to a legacy shape. New writers emit v1 JSON only.
 
 Not yet pin-aware on the agent: the claim poll uses the pin when present
 (`ClaimStrategy.httpClient`) but legacy writers above do not yet emit one.
+
+The claim flow (`/node_api/claim` polling) is not expressed by v1: a v1
+document always carries a key. `ClaimStrategy` enforces a pin when one is
+present on its identity and ignores its `HTTPClient` test override then.

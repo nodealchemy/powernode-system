@@ -2,7 +2,6 @@
 
 require "json"
 require "openssl"
-require "uri"
 
 module System
   # Renders the powernode-provision v1 document: the single JSON shape every
@@ -21,7 +20,9 @@ module System
     VERSION = 1
     DEFAULT_TTL = 1.hour
     CERT_RE = /-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----/m
-    SERVER_CONFIG_SETTING = "system.ci_builder.enroll_platform_url"
+    # https, host (DNS name or [IPv6]), optional :port (range checked in code),
+    # optional printable path. Mirrors agent/internal/identity/provision.go.
+    SERVER_RE = %r{\Ahttps://(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::(?<port>[0-9]{1,5}))?(?:/[\x21-\x7e]*)?\z}
 
     class RenderError < StandardError; end
 
@@ -69,6 +70,11 @@ module System
         fp = ::Security::CaFingerprint.of_pem(last)
         raise RenderError, "configured CA chain is not parseable: refusing to render" if fp.nil?
 
+        # The agent trusts the pinned certificate as the anchor of the chain it
+        # builds, so it MUST be a self-signed CA (a cross-signed or leaf cert
+        # can never be matched by the agent's chain building).
+        raise RenderError, "the last certificate of the CA chain must be a self-signed CA (bundle is ordered anchor-last)" unless self_signed_ca?(last)
+
         fp
       end
 
@@ -83,19 +89,25 @@ module System
         ::System::PhysicalEnrollmentService.platform_url
       end
 
+      def self_signed_ca?(pem)
+        cert = ::OpenSSL::X509::Certificate.new(pem)
+        bc = cert.extensions.find { |e| e.oid == "basicConstraints" }
+        cert.issuer == cert.subject && bc&.value.to_s.start_with?("CA:TRUE") && cert.verify(cert.public_key)
+      rescue ::OpenSSL::X509::CertificateError
+        false
+      end
+
       def certificates(chain)
         chain.scan(CERT_RE).map(&:strip)
       end
 
+      # Same rule as the agent (provision.go serverRe) and the JSON Schema.
       def validated_server(url)
-        uri = URI.parse(url.to_s)
-        unless uri.is_a?(URI::HTTPS) && uri.host.present? && uri.userinfo.nil? && url.to_s.match?(/\A[\x21-\x7e]{1,2048}\z/)
-          raise RenderError, "server must be an https URL with a host and no credentials"
-        end
+        m = SERVER_RE.match(url.to_s)
+        raise RenderError, "server must be a plain https URL (host, optional port and path, no credentials, no spaces)" if m.nil? || url.to_s.length > 2048
+        raise RenderError, "server port out of range" if m[:port] && !(1..65_535).cover?(m[:port].to_i)
 
         url.to_s
-      rescue URI::InvalidURIError
-        raise RenderError, "server is not a valid URL"
       end
     end
   end
