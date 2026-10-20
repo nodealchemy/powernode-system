@@ -26,6 +26,11 @@ module System
     def render_for_instance(instance:, image_base:, ttl:, purpose:)
       raise ArgumentError, "instance: required" unless instance.is_a?(::System::NodeInstance)
 
+      # Preflight BEFORE minting: a missing CA / platform_url / image_base must not
+      # leave a dead token or an "issued" audit row behind.
+      ::System::NetbootService.preflight!
+      resolved_image_base = resolve_image_base(image_base)
+
       token, plaintext = ::System::BootstrapToken.issue!(
         node: instance.node,
         node_instance: instance,
@@ -37,7 +42,7 @@ module System
       script = ::System::NetbootService.render_ipxe_script(
         instance: instance,
         bootstrap_token: plaintext,
-        image_base: resolve_image_base(image_base),
+        image_base: resolved_image_base,
         ca_pem_url: ca_pem_url
       )
 
@@ -68,9 +73,13 @@ module System
         "#{platform_url}/.well-known/powernode/images"
     end
 
+    # One source of truth with NetbootService: the configured enrolment platform
+    # URL. No placeholder fallback; an unset URL refuses the render.
     def platform_url
-      ENV["POWERNODE_PLATFORM_URL"] ||
-        (Rails.env.production? ? "https://platform.local" : "http://localhost:3000")
+      url = ::System::PhysicalEnrollmentService.platform_url.to_s.chomp("/")
+      raise ::System::NetbootService::NetbootError, "platform_url required: configure the platform URL for PXE enrolment" if url.blank?
+
+      url
     end
 
     # Optional override of where the agent fetches the CA PEM. Default (nil) is

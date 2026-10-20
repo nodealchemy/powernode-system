@@ -59,6 +59,24 @@ module System
     # @raise [System::ProvisioningDocument::RenderError] when no usable CA is
     #   configured: the CA pin is ALWAYS emitted, never optional
     # @return [String] rendered iPXE script
+    # http(s), no whitespace/control chars, quotes, `$` or backslash: the value is
+    # pasted into an iPXE imgargs line.
+    CA_PEM_URL_RE = %r{\Ahttps?://[^\s\x00-\x1f\x7f"'$\\]+\z}
+
+    # Resolves and validates what every PXE render needs, WITHOUT side effects, so
+    # callers can run it before minting a token. Returns [platform_url,
+    # ca_fingerprint].
+    # @raise [System::ProvisioningDocument::RenderError] no usable CA / bad URL
+    # @raise [NetbootError] no platform_url
+    def self.preflight!(platform_url: nil, ca_pem: nil)
+      platform_url = (platform_url.presence || ::System::PhysicalEnrollmentService.platform_url).to_s.chomp("/")
+      raise NetbootError, "platform_url required: configure the platform URL for PXE enrolment" if platform_url.blank?
+
+      ::System::ProvisioningDocument.validate_server!(platform_url)
+      ca_pem = ca_pem.presence || ::System::ProvisioningDocument.configured_ca_pem
+      [platform_url, ::System::ProvisioningDocument.fingerprint_for(ca_pem)]
+    end
+
     def self.render_ipxe_script(instance:, bootstrap_token:, image_base:,
                                 ca_pem_url: nil, platform_url: nil, ca_pem: nil)
       new.render_ipxe_script(
@@ -78,12 +96,10 @@ module System
       raise NetbootError, "image_base required" if image_base.blank?
       raise NetbootError, "iPXE template missing at #{IPXE_TEMPLATE_PATH}" unless File.exist?(IPXE_TEMPLATE_PATH)
 
-      platform_url = (platform_url.presence || ::System::PhysicalEnrollmentService.platform_url).to_s.chomp("/")
-      raise NetbootError, "platform_url required: configure the platform URL for PXE enrolment" if platform_url.blank?
-
-      ca_pem = ca_pem.presence || ::System::ProvisioningDocument.configured_ca_pem
-      # Raises RenderError without a usable self-signed CA: no pin-less script.
-      ca_fingerprint = ::System::ProvisioningDocument.fingerprint_for(ca_pem)
+      platform_url, ca_fingerprint = self.class.preflight!(platform_url: platform_url, ca_pem: ca_pem)
+      if ca_pem_url.present? && !CA_PEM_URL_RE.match?(ca_pem_url)
+        raise NetbootError, "ca_pem_url must be an http(s) URL without whitespace, quotes or '$'"
+      end
 
       template_src = File.read(IPXE_TEMPLATE_PATH)
       bind_ctx = IpxeRenderContext.new(

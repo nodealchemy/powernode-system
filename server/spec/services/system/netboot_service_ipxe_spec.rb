@@ -63,6 +63,34 @@ RSpec.describe System::NetbootService, ".render_ipxe_script" do
       expect { render }.to raise_error(System::NetbootService::NetbootError, /platform_url/)
     end
 
+    it "refuses a non-https platform_url" do
+      expect { render(platform_url: "http://platform.example.test") }
+        .to raise_error(System::ProvisioningDocument::RenderError, /https/)
+    end
+
+    it "refuses a platform_url that could inject cmdline arguments" do
+      expect { render(platform_url: "https://p.example.test powernode.x=1") }
+        .to raise_error(System::ProvisioningDocument::RenderError)
+    end
+
+    [
+      "https://ca.example/a b.pem",
+      "https://ca.example/a$b.pem",
+      "https://ca.example/a\"b.pem",
+      "https://ca.example/a'b.pem",
+      "https://ca.example/a\nb.pem",
+      "file:///etc/passwd",
+      "ftp://ca.example/ca.pem"
+    ].each do |bad|
+      it "refuses ca_pem_url #{bad.inspect}" do
+        expect { render(ca_pem_url: bad) }.to raise_error(System::NetbootService::NetbootError, /ca_pem_url/)
+      end
+    end
+
+    it "allows a plain http ca_pem_url (the pin authenticates the bytes)" do
+      expect(render(ca_pem_url: "http://ca.example/ca.pem")).to include("powernode.ca_pem_url=http://ca.example/ca.pem ")
+    end
+
     it "embeds an explicit ca_pem_url override" do
       script = render(ca_pem_url: "https://example/.well-known/powernode-ca.pem")
       expect(script).to include("powernode.ca_pem_url=https://example/.well-known/powernode-ca.pem")

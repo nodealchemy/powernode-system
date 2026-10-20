@@ -73,6 +73,31 @@ RSpec.describe System::BootstrapService do
       expect(result.script).to be_nil
     end
 
+    it "mints no token and writes no audit row when no CA is configured" do
+      stub_enroll_settings(ca: nil)
+      expect {
+        result = described_class.render_for_instance(instance: instance)
+        expect(result.ok?).to be false
+      }.not_to change { [System::BootstrapToken.count, System::FleetEvent.where(kind: "system.bootstrap_issued").count] }
+    end
+
+    it "mints no token and writes no audit row when no platform_url is configured" do
+      stub_enroll_settings(ca: self_signed_ca_pem, url: nil)
+      expect {
+        result = described_class.render_for_instance(instance: instance)
+        expect(result.ok?).to be false
+        expect(result.error).to match(/platform_url/)
+      }.not_to change { [System::BootstrapToken.count, System::FleetEvent.where(kind: "system.bootstrap_issued").count] }
+    end
+
+    it "derives the default image_base from PhysicalEnrollmentService.platform_url, not ENV or a placeholder" do
+      stub_enroll_settings(ca: self_signed_ca_pem, url: "https://enroll.example.test")
+      allow(ENV).to receive(:[]).with("POWERNODE_PLATFORM_URL").and_return("https://env.example.test")
+      result = described_class.render_for_instance(instance: instance)
+      expect(result.script).to include("kernel https://enroll.example.test/.well-known/powernode/images/")
+      expect(result.script).not_to include("platform.local")
+    end
+
     it "honors a custom ttl" do
       result = described_class.render_for_instance(instance: instance, ttl: 10.minutes)
       token = System::BootstrapToken.find(result.token_id)

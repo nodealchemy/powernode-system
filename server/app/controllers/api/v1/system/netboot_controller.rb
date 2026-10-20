@@ -30,7 +30,7 @@ module Api
           return render_not_found("CA") if pem.blank?
 
           response.set_header("Cache-Control", "public, max-age=300")
-          render plain: "#{pem}\n", content_type: "application/x-pem-file"
+          render plain: pem, content_type: "application/x-pem-file"
         end
 
         # GET /api/v1/system/netboot/:instance_id/script.ipxe

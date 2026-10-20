@@ -5,7 +5,7 @@ require "rails_helper"
 # Golden Eclipse Block H2 — NetbootController request spec.
 RSpec.describe "Api::V1::System::NetbootController", type: :request do
   # Assembled at runtime so the fixture never looks like a real PEM key to secret scanners.
-  KEY_LABEL = "PRIVATE" + " KEY"
+  def key_label = "PRIVATE" + " KEY"
 
   def fake_pem_block(label, body)
     "-----BEGIN #{label}-----\n#{body}\n-----END #{label}-----\n"
@@ -35,10 +35,28 @@ RSpec.describe "Api::V1::System::NetbootController", type: :request do
 
     it "serves only certificate blocks even if the setting carries other PEM blocks" do
       ca = self_signed_ca_pem
-      stub_enroll_settings(ca: ca + fake_pem_block(KEY_LABEL, "not-a-real-key-body"))
+      stub_enroll_settings(ca: ca + fake_pem_block(key_label, "not-a-real-key-body"))
       get "/api/v1/system/netboot/ca.pem"
       expect(response.body).not_to include("PRIVATE KEY")
       expect(response.body).to include("BEGIN CERTIFICATE")
+    end
+
+    it "serves no key material when the bundle is malformed (a key block inside a cert span)" do
+      ca = self_signed_ca_pem
+      evil = "-----BEGIN CERTIFICATE-----\nAAAA\n" + fake_pem_block(key_label, "not-a-real-key-body") +
+             "-----END CERTIFICATE-----\n"
+      stub_enroll_settings(ca: evil + ca)
+      get "/api/v1/system/netboot/ca.pem"
+      expect(response).to have_http_status(:ok)
+      expect(response.body).not_to include("not-a-real-key-body")
+      expect(response.body).not_to include("PRIVATE KEY")
+      expect(response.body.strip).to eq(ca.strip)
+    end
+
+    it "returns 404 when the bundle has no parseable, self-signed CA" do
+      stub_enroll_settings(ca: "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")
+      get "/api/v1/system/netboot/ca.pem"
+      expect(response).to have_http_status(:not_found)
     end
 
     it "returns 404 when no CA is configured" do

@@ -83,11 +83,27 @@ module System
           ENV["POWERNODE_ENROLL_CA_PEM"].presence
       end
 
-      # Only the CERTIFICATE blocks of the configured CA, newline-joined ("" when
-      # none). Used by the public netboot ca.pem route: no other PEM block is
-      # ever served.
+      # The CA certificates, re-serialised from parsed X509 objects ("" when there
+      # is no usable CA). Anything that does not parse as a certificate is
+      # dropped, so a malformed bundle (e.g. a key block inside a lazy-regex
+      # CERTIFICATE span) can never leak key material. Served only when
+      # fingerprint_for succeeds (a self-signed CA anchors the chain). Used by
+      # the public netboot ca.pem route.
       def configured_ca_certificates_pem
-        certificates(configured_ca_pem.to_s).join("\n")
+        pem = configured_ca_pem.to_s
+        fingerprint_for(pem)
+        certificates(pem).filter_map do |blob|
+          ::OpenSSL::X509::Certificate.new(blob).to_pem
+        rescue ::OpenSSL::X509::CertificateError
+          nil
+        end.join
+      rescue RenderError
+        ""
+      end
+
+      # Public wrapper over the shared https-server rule. Raises RenderError.
+      def validate_server!(url)
+        validated_server(url)
       end
 
       private
