@@ -106,6 +106,14 @@ func InteractiveResolver() *Resolver {
 // ca_fingerprint from ANY source is enforced on whichever source wins; the
 // resolver collects it from the LOCAL sources (see Resolve).
 //
+// Operator-approved refinements (design memory:image-distribution-model):
+// a BOOT identity.cfg holding a KEY makes provider metadata and the media scan
+// ineligible (no probe, no mount), so a per-instance image is never overridden
+// by a spoofed metadata server or a stick; a keyless claim BOOT keeps metadata
+// eligible only when it carries a pin to enforce on it. Effective order:
+// cmdline/fw-cfg/staged, metadata (BOOT has no KEY, and a pin if it exists),
+// media (BOOT has no KEY), BOOT key, console, claim, /etc.
+//
 // Why the order is safe despite metadata ranking above media and BOOT:
 //
 //   - Metadata is unauthenticated (169.254.169.254 over HTTP, spoofable on
@@ -186,9 +194,33 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 		}
 		localPins = append(localPins, p)
 	}
+	var gate *bootGate // BOOT file state, read once, only if a gated source is reached
+	bootGateOf := func() bootGate {
+		if gate == nil {
+			g := bootGate{}
+			for _, s := range r.Strategies {
+				if bk, ok := s.(*BootKeyStrategy); ok {
+					g = bk.gate(ctx)
+					break
+				}
+			}
+			gate = &g
+		}
+		return *gate
+	}
 	for _, s := range r.Strategies {
 		_, isCloud := s.(*CloudStrategy)
 		_, isMedia := s.(*MediaScanStrategy)
+		if first == nil && (isCloud || isMedia) {
+			// Operator-approved refinements of the fixed order: a BOOT KEY
+			// makes metadata and the media scan ineligible (no probes, no
+			// mount), and a keyless claim BOOT keeps metadata eligible only
+			// when it carries a pin to enforce on it.
+			g := bootGateOf()
+			if g.hasKey || (isCloud && g.exists && g.pin == "") {
+				continue
+			}
+		}
 		if refused != nil && isCloud {
 			continue // a refused network source is not retried on another cloud
 		}

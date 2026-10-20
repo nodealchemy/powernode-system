@@ -73,6 +73,17 @@ the first non-empty key wins and a later source never overrides it:
 7. console prompt (initramfs only)
 8. claim poll (blocks until an operator confirms)
 
+**Operator-approved refinements of this order.** (a) A BOOT `identity.cfg`
+holding a `KEY` (pinned or not) makes provider metadata and the media scan
+ineligible: they are not consulted at all (no probes, no mounts), so a
+per-instance image is never overridden by a spoofed metadata server or a
+stick, and bare-metal devices with a BOOT file skip the probe delay. (b) A
+SERVER-only claim BOOT (no `KEY`) keeps metadata eligible only if the file
+carries a pin; a pinless one skips metadata too. A keyless BOOT never blocks
+the stick, and with no BOOT file a stick wins as before. Effective order:
+cmdline / fw-cfg / staged, metadata (rules above), media (BOOT has no KEY),
+BOOT key, console, claim, `/etc`.
+
 `/etc/identity.cfg` remains a legacy fallback behind all eight. A BOOT
 `identity.cfg` with `SERVER` (and optionally `ID`) but no `KEY` is not a key; it
 only drives the claim poll (8) and may carry a pin.

@@ -91,29 +91,6 @@ func TestBootKeyStrategy(t *testing.T) {
 	}
 }
 
-func TestMetadataBeatsBootKey(t *testing.T) {
-	m := &fakeMeta{data: metaKV}
-	r := &Resolver{Strategies: []Strategy{
-		&CloudStrategy{Client: m},
-		bootCfg(t, "SERVER=https://boot\nID=boot-uuid\nKEY=boot-key\n"),
-	}}
-	id, err := r.Resolve(context.Background())
-	if err != nil || id.InstanceUUID != "meta-uuid" {
-		t.Fatalf("first non-empty key wins: %v %v", id, err)
-	}
-}
-
-func TestBootPinEnforcedOnMetadataWinner(t *testing.T) {
-	r := &Resolver{Strategies: []Strategy{
-		&CloudStrategy{Client: &fakeMeta{data: metaKV}},
-		bootCfg(t, "SERVER=https://boot\nID=boot-uuid\nKEY=boot-key\nCA_FINGERPRINT="+pinA+"\n"),
-	}}
-	id, err := r.Resolve(context.Background())
-	if err != nil || id.InstanceUUID != "meta-uuid" || id.CAFingerprint != pinA {
-		t.Fatalf("a pin from any source is enforced on the winner: %v %v", id, err)
-	}
-}
-
 func TestTokenlessBootPinEnforcedOnMetadataWinner(t *testing.T) {
 	r := &Resolver{Strategies: []Strategy{
 		&CloudStrategy{Client: &fakeMeta{data: metaKV}},
@@ -134,18 +111,6 @@ func TestLocalHitNeverProbesMetadata(t *testing.T) {
 	id, err := r.Resolve(context.Background())
 	if err != nil || id.InstanceUUID != "u" || id.CAFingerprint != "" || m.probed() {
 		t.Fatalf("network metadata must neither be consulted nor supply a pin: %v %v probed=%v", id, err, m.probed())
-	}
-}
-
-func TestMetadataRefusalDoesNotVetoBootKey(t *testing.T) {
-	m := &fakeMeta{data: `{"version":1,"garbage":true}`}
-	r := &Resolver{Strategies: []Strategy{
-		&CloudStrategy{Client: m},
-		bootCfg(t, "SERVER=https://boot\nID=boot-uuid\nKEY=boot-key\n"),
-	}}
-	id, err := r.Resolve(context.Background())
-	if err != nil || id.InstanceUUID != "boot-uuid" {
-		t.Fatalf("a spoofed metadata refusal must not veto a local BOOT key: %v %v", id, err)
 	}
 }
 
@@ -185,7 +150,7 @@ func TestStickPinConflictingWithBootPinFailsClosed(t *testing.T) {
 	pki := newTestPKI(t)
 	r := &Resolver{Strategies: []Strategy{
 		mediaWinner(t, pki),
-		bootCfg(t, "SERVER=https://boot\nID=boot-uuid\nKEY=boot-key\nCA_FINGERPRINT="+pinB+"\n"),
+		bootCfg(t, "SERVER=https://boot\nCA_FINGERPRINT="+pinB+"\n"), // keyless: a keyed BOOT would block the stick
 	}}
 	if _, err := r.Resolve(context.Background()); !errors.Is(err, ErrProvisionRefused) {
 		t.Fatalf("stick pin %s vs BOOT pin must refuse: %v", pki.caFP, err)
@@ -268,7 +233,7 @@ func TestMetadataRefusalTerminalOnlyWithoutAnyLocalKey(t *testing.T) {
 	claimBoot := &spyStrategy{err: ErrNotFound}
 	r := &Resolver{Strategies: []Strategy{
 		&CloudStrategy{Client: &fakeMeta{data: refusalDoc}},
-		bootCfg(t, "SERVER=https://boot\n"),
+		bootCfg(t, "SERVER=https://boot\nCA_FINGERPRINT="+pinA+"\n"), // pinned claim BOOT keeps metadata eligible
 		&ClaimStrategy{BootStrategy: claimBoot},
 	}}
 	if _, err := r.Resolve(context.Background()); !errors.Is(err, ErrProvisionRefused) {
@@ -330,5 +295,89 @@ func TestMetadataWinnerSkipsMediaScan(t *testing.T) {
 	}}
 	if id, err := r.Resolve(context.Background()); err != nil || id.InstanceUUID != "meta-uuid" {
 		t.Fatalf("%v %v", id, err)
+	}
+}
+
+// Operator-approved refinements of the fixed order (open questions 1 and 2).
+
+func TestBootKeyBlocksMetadata(t *testing.T) {
+	m := &fakeMeta{data: metaKV}
+	r := &Resolver{Strategies: []Strategy{
+		&CloudStrategy{Client: m},
+		bootCfg(t, "SERVER=https://boot\nID=boot-uuid\nKEY=boot-key\n"),
+	}}
+	id, err := r.Resolve(context.Background())
+	if err != nil || id.InstanceUUID != "boot-uuid" || m.probed() {
+		t.Fatalf("a BOOT key makes metadata ineligible: %v %v probed=%v", id, err, m.probed())
+	}
+}
+
+func TestPinlessClaimBootBlocksMetadata(t *testing.T) {
+	m := &fakeMeta{data: metaKV}
+	r := &Resolver{Strategies: []Strategy{
+		&CloudStrategy{Client: m},
+		bootCfg(t, "SERVER=https://boot\n"),
+	}}
+	r.Resolve(context.Background())
+	if m.probed() {
+		t.Fatal("a pinless SERVER-only BOOT must not probe metadata")
+	}
+}
+
+func TestPinnedClaimBootAllowsMetadata(t *testing.T) {
+	m := &fakeMeta{data: metaKV}
+	r := &Resolver{Strategies: []Strategy{
+		&CloudStrategy{Client: m},
+		bootCfg(t, "SERVER=https://boot\nCA_FINGERPRINT="+pinA+"\n"),
+	}}
+	id, err := r.Resolve(context.Background())
+	if err != nil || !m.probed() || id.InstanceUUID != "meta-uuid" || id.CAFingerprint != pinA {
+		t.Fatalf("%v %v probed=%v", id, err, m.probed())
+	}
+}
+
+func TestNoBootAllowsMetadata(t *testing.T) {
+	m := &fakeMeta{data: metaKV}
+	r := &Resolver{Strategies: []Strategy{
+		&CloudStrategy{Client: m},
+		&BootKeyStrategy{Path: filepath.Join(t.TempDir(), "absent.cfg")},
+	}}
+	if id, err := r.Resolve(context.Background()); err != nil || id.InstanceUUID != "meta-uuid" {
+		t.Fatalf("%v %v", id, err)
+	}
+}
+
+func TestBootKeyBlocksStickScan(t *testing.T) {
+	m := newFakeMachine(t)
+	m.addDisk("sdb", fakeDisk{removable: true, parts: []string{"sdb1"}})
+	m.media["sdb1"] = vfatWith(docFor(newTestPKI(t), idA, "2026-10-20T10:00:00Z"))
+	r := &Resolver{Strategies: []Strategy{
+		m.strategy(),
+		bootCfg(t, "SERVER=https://boot\nID=boot-uuid\nKEY=boot-key\n"),
+	}}
+	id, err := r.Resolve(context.Background())
+	if err != nil || id.InstanceUUID != "boot-uuid" || len(m.calls) != 0 || len(m.devOrder()) != 0 {
+		t.Fatalf("%v %v mounts=%v sniffs=%v", id, err, m.calls, m.devOrder())
+	}
+}
+
+func TestNoBootStickWins(t *testing.T) {
+	pki := newTestPKI(t)
+	r := &Resolver{Strategies: []Strategy{
+		mediaWinner(t, pki),
+		&BootKeyStrategy{Path: filepath.Join(t.TempDir(), "absent.cfg")},
+	}}
+	if id, err := r.Resolve(context.Background()); err != nil || id.InstanceUUID != idA {
+		t.Fatalf("%v %v", id, err)
+	}
+}
+
+func TestClaimBootStillScansStick(t *testing.T) {
+	r := &Resolver{Strategies: []Strategy{
+		mediaWinner(t, newTestPKI(t)),
+		bootCfg(t, "SERVER=https://boot\n"),
+	}}
+	if id, err := r.Resolve(context.Background()); err != nil || id.InstanceUUID != idA {
+		t.Fatalf("a keyless BOOT does not block the stick: %v %v", id, err)
 	}
 }

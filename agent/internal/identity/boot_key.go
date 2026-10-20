@@ -54,3 +54,25 @@ func (s *BootKeyStrategy) DiscoverPin(ctx context.Context) (string, error) {
 	}
 	return id.CAFingerprint, nil
 }
+
+// bootGate is what the BOOT file says about which other sources are eligible.
+type bootGate struct {
+	hasKey bool   // a complete key: metadata and the media scan are ineligible
+	pin    string // a pin on a keyless (claim) BOOT file
+	exists bool   // the file holds a usable identity.cfg (SERVER at least)
+}
+
+// gate reads the BOOT file once for the resolver's eligibility decisions. A
+// read error or refusal yields the zero gate: the refusal itself is raised,
+// terminally, when the strategy runs.
+func (s *BootKeyStrategy) gate(ctx context.Context) bootGate {
+	id, err := s.read(ctx)
+	if err != nil || id == nil {
+		return bootGate{}
+	}
+	return bootGate{
+		exists: true,
+		hasKey: id.InstanceUUID != "" && id.BootstrapToken != "" && id.PlatformURL != "",
+		pin:    id.CAFingerprint,
+	}
+}
