@@ -3,8 +3,13 @@ package identity
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 // CmdlineStrategy reads identity from kernel command-line parameters. The
@@ -14,12 +19,25 @@ import (
 //	powernode.instance_uuid=<uuid>
 //	powernode.bootstrap_token=<token>
 //	powernode.platform_url=https://platform.example.com
-//	powernode.ca_pem_url=https://platform.example.com/.well-known/powernode-ca.pem
+//	powernode.ca_fingerprint=sha256:<64 hex>
+//	powernode.ca_pem_url=https://platform.example.com/api/v1/system/netboot/ca.pem
+//
+// ca_pem_url is fetched only when a well-formed ca_fingerprint pin is also on
+// the cmdline, and the bytes are accepted only if a certificate in them matches
+// that pin (checkPEMMatchesPin): the pin authenticates the content, so the
+// transport need not be authenticated. A mismatch is terminal
+// (ErrProvisionRefused). The inline powernode.ca_pem (a PEM cannot survive
+// iPXE imgargs / the kernel cmdline, since it has newlines) is still read but
+// DEPRECATED, same one-release window as the other legacy sources (see
+// provision.go).
 //
 // Reference: Golden Eclipse plan M3 iPXE chainload flow.
 type CmdlineStrategy struct {
 	// Path defaults to /proc/cmdline; overridable for tests.
 	Path string
+	// Client fetches powernode.ca_pem_url. Injectable for tests; nil means a
+	// short-timeout default client.
+	Client *http.Client
 }
 
 func (s *CmdlineStrategy) Name() string { return "kernel-cmdline" }
@@ -47,14 +65,62 @@ func (s *CmdlineStrategy) Discover(ctx context.Context) (*Identity, error) {
 	if err != nil {
 		return nil, err
 	}
+	caPEM := params["powernode.ca_pem"]
+	if caURL := params["powernode.ca_pem_url"]; caURL != "" {
+		if pin == "" {
+			return nil, refuse("ca_pem_url without a ca_fingerprint pin: refusing to fetch an unauthenticated trust anchor")
+		}
+		fetched, err := s.fetchCA(ctx, caURL, pin)
+		if err != nil {
+			return nil, err
+		}
+		caPEM = fetched
+	}
 	return &Identity{
 		InstanceUUID:   uuid,
 		BootstrapToken: params["powernode.bootstrap_token"],
 		PlatformURL:    params["powernode.platform_url"],
-		CABundlePEM:    params["powernode.ca_pem"],
+		CABundlePEM:    caPEM,
 		CAFingerprint:  pin,
 		CloudProvider:  "kernel-cmdline",
 	}, nil
+}
+
+// fetchCA downloads the CA PEM (capped at provisionMaxCAPEM) and returns it
+// only if it matches pin. Content problems are terminal refusals; a transport
+// failure is a plain error (nothing was accepted).
+func (s *CmdlineStrategy) fetchCA(ctx context.Context, rawURL, pin string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return "", refuse("ca_pem_url must be an http(s) URL")
+	}
+	client := s.Client
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", refuse("ca_pem_url: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch ca_pem_url: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetch ca_pem_url: status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, provisionMaxCAPEM+1))
+	if err != nil {
+		return "", fmt.Errorf("fetch ca_pem_url: %w", err)
+	}
+	if len(body) > provisionMaxCAPEM || !printable(string(body), true) {
+		return "", refuse("ca_pem_url body too large or not printable")
+	}
+	if err := checkPEMMatchesPin(body, pin); err != nil {
+		return "", refuse("ca_pem_url: %v", err)
+	}
+	return string(body), nil
 }
 
 // parseCmdline parses /proc/cmdline-style space-separated key=value pairs.
