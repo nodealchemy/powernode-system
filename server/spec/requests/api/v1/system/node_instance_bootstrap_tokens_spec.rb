@@ -171,6 +171,70 @@ RSpec.describe "Api::V1::System::NodeInstanceBootstrapTokens", type: :request do
     end
   end
 
+  describe "POST (create) with include_provisioning_document" do
+    let(:ca_pem) { self_signed_ca_pem }
+
+    before { stub_enroll_settings(ca: ca_pem) }
+
+    it "returns the provisioning document v1 beside the key, matching the token and instance" do
+      post_create({ include_provisioning_document: true })
+
+      expect(response).to have_http_status(:created)
+      doc = JSON.parse(data["provisioning_document"])
+      expect(doc).to include(
+        "version" => 1,
+        "instance_id" => instance.id,
+        "key" => data["token"],
+        "purpose" => "operator_key",
+        "server" => "https://platform.example.test"
+      )
+      expect(doc["expires_at"]).to eq(System::BootstrapToken.find(data["bootstrap_token"]["id"]).expires_at.utc.iso8601)
+      expect(doc["ca_fingerprint"]).to eq(System::ProvisioningDocument.fingerprint_for(ca_pem))
+    end
+
+    it "omits the document unless asked" do
+      post_create
+      expect(data).not_to have_key("provisioning_document")
+    end
+
+    it "never persists or serves the document: index and audit rows hold neither key nor document" do
+      post_create({ include_provisioning_document: true })
+      plaintext = data["token"]
+      get base_path, headers: auth_headers_for(manager)
+      expect(response.body).not_to include(plaintext)
+      expect(response.body).not_to include("provisioning_document")
+      expect(AuditLog.where(action: "system.bootstrap_token.issued").map { |a| a.metadata.to_json }.join).not_to include("version")
+    end
+
+    it "refuses with 409 and no key once the instance is claimed" do
+      instance.update_columns(claimed_at: Time.current, claim_code: "ABCD-1234")
+      expect { post_create({ include_provisioning_document: true }) }.not_to change { System::BootstrapToken.count }
+      expect(response).to have_http_status(:conflict)
+      expect(response.body).not_to include("provisioning_document")
+    end
+
+    it "fails closed (no key minted) when no CA is configured" do
+      stub_enroll_settings(ca: nil)
+      expect { post_create({ include_provisioning_document: true }) }.not_to change { System::BootstrapToken.count }
+      expect(response).to have_http_status(:unprocessable_content)
+      expect(response.body).not_to include("provisioning_document")
+    end
+
+    it "does not log the key or the document" do
+      io = StringIO.new
+      capture = ActiveSupport::Logger.new(io)
+      originals = [ Rails, ActionController::Base, ActiveRecord::Base ].map { |k| [ k, k.logger ] }
+      originals.each { |k, orig| k.logger = ActiveSupport::BroadcastLogger.new(*[ orig, capture ].compact) }
+      begin
+        post_create({ include_provisioning_document: true })
+      ensure
+        originals.each { |k, orig| k.logger = orig }
+      end
+      expect(io.string).not_to include(data["token"])
+      expect(io.string).not_to include("ca_fingerprint")
+    end
+  end
+
   describe "GET (index)" do
     let!(:minted) { System::BootstrapToken.issue!(node: node, node_instance: instance, intended_subject: instance.id,
                                                   purpose: "operator_key", created_by: manager) }

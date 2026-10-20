@@ -47,6 +47,12 @@ module Api
           ttl = requested_ttl
           return if performed?
 
+          want_document = ActiveModel::Type::Boolean.new.cast(params[:include_provisioning_document])
+          # Fail closed BEFORE minting: a dry render with a placeholder key proves
+          # the CA/server configuration can produce a document, so no key is
+          # minted that the operator could then not package.
+          return if want_document && !document_renderable?
+
           token, plaintext = ::System::BootstrapToken.issue!(
             node: @node,
             node_instance: @instance,
@@ -55,12 +61,23 @@ module Api
             ttl: ttl,
             created_by: current_user
           )
-          render_success(
-            data: { bootstrap_token: serialize(token), token: plaintext },
-            status: :created
-          )
+          payload = { bootstrap_token: serialize(token), token: plaintext }
+          if want_document
+            # One-shot, like the key: rendered from the mint-time plaintext,
+            # returned in this response only; never stored or logged.
+            payload[:provisioning_document] = ::System::ProvisioningDocument.render(
+              instance: @instance, key: plaintext, purpose: "operator_key", expires_at: token.expires_at
+            )
+          end
+          render_success(data: payload, status: :created)
         rescue ::System::BootstrapToken::InstanceNotAvailable => e
           render_error("A bootstrap key cannot be issued: #{e.message}.", status: :conflict)
+        rescue ::System::ProvisioningDocument::RenderError
+          # Not reachable after the pre-flight unless config changed mid-request.
+          # The key is never returned: revoke it (audited) so it cannot linger.
+          token&.revoke!(by: current_user)
+          render_error("Provisioning document could not be rendered; the key was revoked.",
+                       status: :unprocessable_content)
         rescue ::System::BootstrapToken::AuditFailure
           render_error("Bootstrap key was not issued: the audit record could not be written.",
                        status: :service_unavailable)
@@ -98,6 +115,17 @@ module Api
           @token = instance_tokens.find(params[:id])
         rescue ActiveRecord::RecordNotFound
           render_not_found("Bootstrap token")
+        end
+
+        def document_renderable?
+          ::System::ProvisioningDocument.render(
+            instance: @instance, key: "not-a-real-enrol-key", purpose: "operator_key"
+          )
+          true
+        rescue ::System::ProvisioningDocument::RenderError => e
+          # RenderError messages never carry a key.
+          render_error("Provisioning document cannot be generated: #{e.message}.", status: :unprocessable_content)
+          false
         end
 
         # nil ttl_seconds takes the model's 24h operator default. Anything that
