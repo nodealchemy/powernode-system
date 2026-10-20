@@ -146,6 +146,20 @@ RSpec.describe System::NodeEnrollmentService do
       expect(ev.source).to eq("node_enrollment_service")
     end
 
+    it "rejects a revoked operator key and does not consume or enrol" do
+      record, plaintext = System::BootstrapToken.issue!(
+        node: node, node_instance: instance, intended_subject: instance.id, purpose: "operator_key"
+      )
+      record.revoke!
+
+      result = described_class.enroll!(bootstrap_token_plaintext: plaintext, csr_pem: csr_pem)
+
+      expect(result.success?).to be false
+      expect(result.error).to match(/invalid or expired/)
+      expect(record.reload.consumed_at).to be_nil
+      expect(System::NodeCertificate.where(node_instance: instance)).to be_empty
+    end
+
     it "consumes the bootstrap token" do
       described_class.enroll!(
         bootstrap_token_plaintext: token_plaintext, csr_pem: csr_pem,

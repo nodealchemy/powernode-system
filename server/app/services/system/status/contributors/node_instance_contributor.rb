@@ -266,6 +266,12 @@ module System
                                    now: now)
           end
 
+          if token.revoked_at.present?
+            return CONDITION.build(type: ENROLLED, status: false, reason: "EnrollmentTokenRevoked",
+                                   message: "the bootstrap token was revoked unconsumed; the agent cannot enrol",
+                                   evidence: evidence.merge("revoked_at" => token.revoked_at.iso8601), now: now)
+          end
+
           return nil unless token_expired?(token, now)
 
           CONDITION.build(type: ENROLLED, status: false, reason: "EnrollmentTokenExpired",
@@ -275,7 +281,7 @@ module System
 
         def enrollment_pending?(record)
           token = record.enrollment_token
-          token.present? && token.consumed_at.nil? && !token_expired?(token, Time.current)
+          token.present? && token.consumed_at.nil? && token.revoked_at.nil? && !token_expired?(token, Time.current)
         end
 
         def token_expired?(token, now)

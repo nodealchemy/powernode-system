@@ -29,6 +29,17 @@ RSpec.describe "Api::V1::System::NodeApi::Enrollment", type: :request do
   let(:token_plaintext) { token_pair[1] }
 
   describe "POST /api/v1/system/node_api/enroll" do
+    it "refuses a revoked token with 4xx and issues no certificate" do
+      token_pair[0].revoke!
+
+      post "/api/v1/system/node_api/enroll",
+           params: { bootstrap_token: token_plaintext, csr_pem: csr_pem, agent_version: "0.1.0" }
+
+      expect(response).to have_http_status(:unauthorized).or have_http_status(:unprocessable_content)
+      expect(response.body).not_to include("BEGIN CERTIFICATE")
+      expect(token_pair[0].reload.consumed_at).to be_nil
+    end
+
     it "returns cert + chain + instance_id with body params" do
       post "/api/v1/system/node_api/enroll",
            params: { bootstrap_token: token_plaintext, csr_pem: csr_pem, agent_version: "0.1.0" }

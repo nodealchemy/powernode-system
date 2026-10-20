@@ -223,10 +223,11 @@ RSpec.describe System::Status::Contributors::NodeInstanceContributor do
   end
 
   describe "Enrolled" do
-    def token!(consumed: false, expires_at: 1.hour.from_now)
+    def token!(consumed: false, revoked: false, expires_at: 1.hour.from_now)
       token, = System::BootstrapToken.issue!(node: node, intended_subject: "spec-subject")
       token.update!(expires_at: expires_at)
       token.update!(consumed_at: Time.current) if consumed
+      token.revoke! if revoked
       token
     end
 
@@ -256,6 +257,14 @@ RSpec.describe System::Status::Contributors::NodeInstanceContributor do
       expect(condition(record, "Enrolled")["status"]).to be(false)
       expect(condition(record, "Enrolled")["reason"]).to eq("EnrollmentTokenExpired")
       expect(verdict(record)).to eq(Platform::ComponentStatus::DEGRADED)
+    end
+
+    it "goes false when the token was revoked unconsumed" do
+      record = instance!(status: "running", last_heartbeat_at: Time.current,
+                         enrollment_token: token!(revoked: true))
+
+      expect(condition(record, "Enrolled")["status"]).to be(false)
+      expect(condition(record, "Enrolled")["reason"]).to eq("EnrollmentTokenRevoked")
     end
 
     it "is omitted for an instance that was never issued a token" do
