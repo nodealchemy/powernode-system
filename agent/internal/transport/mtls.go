@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/enroll"
+	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 )
 
 // Client wraps an http.Client built from on-disk mTLS material.
@@ -95,17 +95,20 @@ func LoadFromPKIDir(platformURL string, paths enroll.PKIPaths) (*Client, error) 
 	if err != nil {
 		return nil, fmt.Errorf("read ca bundle: %w", err)
 	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, errors.New("ca bundle has no parseable certs")
+	pin, err := enroll.LoadPin(paths)
+	if err != nil {
+		return nil, err
 	}
+	// With a persisted pin (pin-only or pinned enrolment) EVERY reconnect
+	// enforces it on top of the bundle; the bundle may hold extra certs.
+	tlsCfg, err := identity.PinnedTLSConfig(caPEM, pin, platformURL)
+	if err != nil {
+		return nil, fmt.Errorf("ca bundle/pin: %w", err)
+	}
+	tlsCfg.Certificates = []tls.Certificate{cert}
 
 	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			RootCAs:      pool,
-			MinVersion:   tls.VersionTLS13,
-		},
+		TLSClientConfig: tlsCfg,
 		// Bounds "the server accepted the connection and then never answered".
 		//
 		// 10s was right for the JSON control plane and WRONG for blobs. The

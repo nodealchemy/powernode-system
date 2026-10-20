@@ -156,7 +156,7 @@ func TestPinMismatchRefusesAndMatchEnrols(t *testing.T) {
 	defer srv.Close()
 
 	get := func(caPEM, pin string) error {
-		cfg, err := PinnedTLSConfig([]byte(caPEM), pin)
+		cfg, err := PinnedTLSConfig([]byte(caPEM), pin, srv.URL)
 		if err != nil {
 			return err
 		}
@@ -179,7 +179,7 @@ func TestPinMismatchRefusesAndMatchEnrols(t *testing.T) {
 	if err := get("", pki.caFP); err == nil {
 		t.Fatal("pin without a trusting root was accepted")
 	}
-	if _, err := PinnedTLSConfig([]byte(pki.caPEM), "bogus"); err == nil {
+	if _, err := PinnedTLSConfig([]byte(pki.caPEM), "bogus", srv.URL); err == nil {
 		t.Fatal("malformed pin accepted")
 	}
 }

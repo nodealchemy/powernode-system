@@ -3,7 +3,9 @@ package enroll
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -18,10 +20,13 @@ import (
 // a private key (held in memory + on disk), the platform-issued cert + CA
 // chain, and metadata identifying the instance.
 type EnrolledIdentity struct {
-	Keypair       *Keypair
-	CertPEM       []byte
-	CAChainPEM    []byte
-	CABundlePEM   []byte // platform's TLS verification chain (from identity)
+	Keypair     *Keypair
+	CertPEM     []byte
+	CAChainPEM  []byte
+	CABundlePEM []byte // platform's TLS verification chain (from identity, or the pin-matched cert)
+	// CAFingerprint is the enforced pin; persisted so reconnects and cert
+	// rotation keep enforcing it.
+	CAFingerprint string
 	InstanceID    string
 	MTLSSubject   string
 	NotAfter      time.Time
@@ -54,6 +59,9 @@ type Client struct {
 	// AgentVersion is reported back to the platform so operators can
 	// correlate boot events with agent releases.
 	AgentVersion string
+	// BaseRoots is the trust store used when there is no CABundlePEM (pin-only);
+	// nil means the system roots. Overridable for tests.
+	BaseRoots *x509.CertPool
 	// HTTPClient is overridable for tests; nil means build-on-demand
 	// using the supplied CABundlePEM.
 	HTTPClient *http.Client
@@ -174,11 +182,23 @@ func (c *Client) Enroll(ctx context.Context, req EnrollRequest) (*EnrolledIdenti
 		notAfter = time.Time{}
 	}
 
+	// Pin-only enrolment (no ca_pem): persist the verified-chain certificate
+	// that matched the pin as the CA bundle, so post-enrolment TLS has an
+	// anchor to load and the pin keeps being enforced on top of it.
+	bundle := c.CABundlePEM
+	if len(bundle) == 0 && c.CAFingerprint != "" {
+		bundle = c.pinnedBundle(resp)
+		if len(bundle) == 0 {
+			return nil, errors.New("enroll: no certificate in the verified chain matches the pin")
+		}
+	}
+
 	return &EnrolledIdentity{
 		Keypair:       kp,
 		CertPEM:       []byte(er.Data.CertPEM),
 		CAChainPEM:    []byte(er.Data.CAChainPEM),
-		CABundlePEM:   c.CABundlePEM,
+		CABundlePEM:   bundle,
+		CAFingerprint: c.CAFingerprint,
 		InstanceID:    er.Data.InstanceID,
 		MTLSSubject:   er.Data.MTLSSubject,
 		NotAfter:      notAfter,
@@ -191,7 +211,7 @@ func (c *Client) Enroll(ctx context.Context, req EnrollRequest) (*EnrolledIdenti
 // CABundlePEM. This is the security-critical bit: the agent will refuse
 // to talk to a platform that doesn't chain up to the bundled CA.
 func (c *Client) buildHTTPClient() (*http.Client, error) {
-	cfg, err := identity.PinnedTLSConfig(c.CABundlePEM, c.CAFingerprint)
+	cfg, err := identity.PinnedTLSConfigWithBase(c.CABundlePEM, c.CAFingerprint, c.PlatformURL, c.BaseRoots)
 	if err != nil {
 		return nil, err
 	}
@@ -202,4 +222,21 @@ func (c *Client) buildHTTPClient() (*http.Client, error) {
 			ResponseHeaderTimeout: 10 * time.Second,
 		},
 	}, nil
+}
+
+// pinnedBundle re-verifies the peer chain the response arrived on and returns
+// the pin-matching certificate as PEM (nil on any failure).
+func (c *Client) pinnedBundle(resp *http.Response) []byte {
+	if resp == nil || resp.TLS == nil {
+		return nil
+	}
+	v, err := identity.NewPinVerifier(nil, c.CAFingerprint, c.PlatformURL, c.BaseRoots)
+	if err != nil {
+		return nil
+	}
+	matched, err := v.Verify(resp.TLS.PeerCertificates)
+	if err != nil {
+		return nil
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: matched.Raw})
 }

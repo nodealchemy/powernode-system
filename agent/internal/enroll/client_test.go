@@ -412,3 +412,43 @@ func TestClient_Enroll_PinEnforced(t *testing.T) {
 		t.Fatalf("error leaks the key: %v", err)
 	}
 }
+
+// Pin-only enrolment (no ca_pem): trusts the supplied base roots, captures the
+// verified-chain cert that matched the pin as the CA bundle, and Save persists
+// bundle + pin so post-enrolment TLS stays pinned.
+func TestClient_Enroll_PinOnly_PersistsBundleAndPin(t *testing.T) {
+	srv := fakePlatformTLS(t, "tok")
+	defer srv.Close()
+	base := x509.NewCertPool()
+	base.AddCert(srv.Certificate())
+
+	c := &Client{PlatformURL: srv.URL, CAFingerprint: pinOf(srv), BaseRoots: base}
+	id, err := c.Enroll(context.Background(), EnrollRequest{BootstrapToken: "tok", Subject: "s"})
+	if err != nil {
+		t.Fatalf("pin-only enrol: %v", err)
+	}
+	if len(id.CABundlePEM) == 0 || id.CAFingerprint != pinOf(srv) {
+		t.Fatalf("bundle/pin not captured: bundle=%d pin=%q", len(id.CABundlePEM), id.CAFingerprint)
+	}
+	paths := PathsUnder(t.TempDir())
+	if err := Save(id, paths); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(paths.CABundle); err != nil || len(b) == 0 {
+		t.Fatalf("ca bundle not persisted: %v", err)
+	}
+	if got := ReadPin(paths); got != pinOf(srv) {
+		t.Fatalf("pin not persisted: %q", got)
+	}
+}
+
+func TestReadPin_AbsentOrMalformedIsEmpty(t *testing.T) {
+	paths := PathsUnder(t.TempDir())
+	if ReadPin(paths) != "" {
+		t.Fatal("absent pin file should read empty")
+	}
+	os.WriteFile(filepath.Join(paths.Dir, "ca-pin"), []byte("garbage"), 0o644)
+	if ReadPin(paths) != "" {
+		t.Fatal("malformed pin should read empty")
+	}
+}

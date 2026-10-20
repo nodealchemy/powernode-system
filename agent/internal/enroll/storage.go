@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
+
+	"github.com/nodealchemy/powernode-system/agent/internal/identity"
 )
 
 // Two filesystem layouts host the agent's mTLS material:
@@ -87,6 +90,7 @@ type PKIPaths struct {
 	Key      string // private key (PEM)
 	Cert     string // leaf cert (PEM)
 	CAChain  string // platform's issuing chain (PEM)
+	CAPin    string // "sha256:<hex>" pin enforced on every TLS connection to the platform
 	CABundle string // platform's TLS verification chain (PEM, from boot identity)
 	Meta     string // small JSON sidecar with InstanceID, NotAfter, etc.
 }
@@ -98,6 +102,7 @@ func PathsUnder(dir string) PKIPaths {
 		Cert:     filepath.Join(dir, "node.crt"),
 		CAChain:  filepath.Join(dir, "ca-chain.crt"),
 		CABundle: filepath.Join(dir, "ca-bundle.crt"),
+		CAPin:    filepath.Join(dir, "ca-pin"),
 		Meta:     filepath.Join(dir, "meta.json"),
 	}
 }
@@ -129,6 +134,12 @@ func Save(id *EnrolledIdentity, paths PKIPaths) error {
 	}
 	if len(id.CABundlePEM) > 0 {
 		if err := writeFileAtomic(paths.CABundle, id.CABundlePEM, 0o644); err != nil {
+			return err
+		}
+	}
+
+	if id.CAFingerprint != "" {
+		if err := writeFileAtomic(paths.CAPin, []byte(id.CAFingerprint+"\n"), 0o644); err != nil {
 			return err
 		}
 	}
@@ -190,4 +201,36 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 		return fmt.Errorf("close %s: %w", path, err)
 	}
 	return os.Rename(tmpName, path)
+}
+
+// ReadPin returns the persisted CA pin ("sha256:<hex>"), or "" when absent or
+// malformed.
+func ReadPin(paths PKIPaths) string {
+	data, err := os.ReadFile(paths.CAPin)
+	if err != nil {
+		return ""
+	}
+	pin := strings.TrimSpace(string(data))
+	if !identity.ValidFingerprint(pin) {
+		return ""
+	}
+	return pin
+}
+
+// LoadPin is the fail-closed reader used by every post-enrolment TLS path: an
+// absent pin file means "no pin" (legacy enrolment), but a PRESENT file that is
+// unreadable or malformed is an error, never a silent downgrade to no pin.
+func LoadPin(paths PKIPaths) (string, error) {
+	data, err := os.ReadFile(paths.CAPin)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read ca pin: %w", err)
+	}
+	pin := strings.TrimSpace(string(data))
+	if !identity.ValidFingerprint(pin) {
+		return "", errors.New("ca pin file is malformed")
+	}
+	return pin, nil
 }

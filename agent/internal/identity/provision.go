@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -42,18 +43,19 @@ var (
 	purposeRe     = regexp.MustCompile(`^[a-z0-9_.-]{1,64}$`)
 )
 
-// provisionDoc uses pointers so a missing field is distinguishable from an
-// empty one. Unknown keys are rejected by DisallowUnknownFields.
-type provisionDoc struct {
-	Version       *int    `json:"version"`
-	Server        *string `json:"server"`
-	InstanceID    *string `json:"instance_id"`
-	Key           *string `json:"key"`
-	CAFingerprint *string `json:"ca_fingerprint"`
-	CAPEM         *string `json:"ca_pem"`
-	IssuedAt      *string `json:"issued_at"`
-	ExpiresAt     *string `json:"expires_at"`
-	Purpose       *string `json:"purpose"`
+// ErrProvisionRefused marks a refusal that is TERMINAL: a powernode-provision
+// v1 document (or a pin) was present but invalid. The Resolver must stop and
+// refuse to enrol rather than fall through to a weaker source.
+var ErrProvisionRefused = errors.New("provision refused")
+
+func refuse(format string, a ...any) error {
+	return fmt.Errorf("%w: "+format, append([]any{ErrProvisionRefused}, a...)...)
+}
+
+// provisionFields are the exact, case-sensitive keys of v1.
+var provisionFields = map[string]bool{
+	"version": true, "server": true, "instance_id": true, "key": true,
+	"ca_fingerprint": true, "ca_pem": true, "issued_at": true, "expires_at": true, "purpose": true,
 }
 
 // ValidFingerprint reports whether s is a well-formed "sha256:<64 lowercase hex>" pin.
@@ -100,106 +102,144 @@ func printable(s string, allowWhitespace bool) bool {
 	return true
 }
 
+// serverRe is the shared server-URL rule (mirrored in the Ruby renderer and
+// the JSON Schema): https, host (DNS name or [IPv6]), optional :port, optional
+// printable path. The port range is checked in code.
+var serverRe = regexp.MustCompile(`^https://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?(/[\x21-\x7e]*)?$`)
+
 func checkServerURL(s string) error {
-	if len(s) == 0 || len(s) > provisionMaxURL || !printable(s, false) {
-		return errors.New("server: empty, too long or not printable")
+	if len(s) > provisionMaxURL {
+		return errors.New("server: too long")
 	}
-	u, err := url.Parse(s)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
-		return errors.New("server: must be an https URL with a host and no credentials")
+	m := serverRe.FindStringSubmatch(s)
+	if m == nil {
+		return errors.New("server: must be a plain https URL (host, optional port and path, no credentials, no spaces)")
+	}
+	if p := strings.TrimPrefix(m[2], ":"); p != "" {
+		n, _ := strconv.Atoi(p)
+		if n < 1 || n > 65535 {
+			return errors.New("server: port out of range")
+		}
 	}
 	return nil
 }
 
-// ParseProvisionDocument strictly parses a powernode-provision v1 document.
-// ca_fingerprint is required: a document without a pin is refused. Errors
-// never contain the key.
-func ParseProvisionDocument(raw []byte) (*Identity, error) {
-	if len(raw) > provisionMaxDocBytes {
-		return nil, errors.New("provision document: too large")
-	}
+// decodeStrict walks the top-level object token by token so that duplicate
+// keys, case-variant keys, nulls, nested values and a non-literal-1 version
+// are rejected (encoding/json would silently take the last duplicate and match
+// keys case-insensitively). Error text never contains a value.
+func decodeStrict(raw []byte) (map[string]string, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	var d provisionDoc
-	if err := dec.Decode(&d); err != nil {
-		return nil, fmt.Errorf("provision document: %w", sanitizeJSONErr(err))
+	dec.UseNumber()
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, refuse("document must be a JSON object")
 	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, errors.New("provision document: trailing data")
-	}
-
-	if d.Version == nil || *d.Version != 1 {
-		return nil, errors.New("provision document: version must be 1")
-	}
-	for name, p := range map[string]*string{
-		"server": d.Server, "instance_id": d.InstanceID, "key": d.Key,
-		"ca_fingerprint": d.CAFingerprint, "issued_at": d.IssuedAt,
-		"expires_at": d.ExpiresAt, "purpose": d.Purpose,
-	} {
-		if p == nil || *p == "" {
-			return nil, fmt.Errorf("provision document: %s is required", name)
+	vals := map[string]string{}
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return nil, refuse("invalid JSON")
+		}
+		key, ok := kt.(string)
+		if !ok {
+			return nil, refuse("invalid JSON")
+		}
+		if !provisionFields[key] {
+			return nil, refuse("unknown field %q", key)
+		}
+		if _, dup := vals[key]; dup {
+			return nil, refuse("duplicate field %q", key)
+		}
+		vt, err := dec.Token()
+		if err != nil {
+			return nil, refuse("invalid JSON")
+		}
+		switch v := vt.(type) {
+		case string:
+			if key == "version" {
+				return nil, refuse("version must be the integer 1")
+			}
+			vals[key] = v
+		case json.Number:
+			if key != "version" || v.String() != "1" {
+				return nil, refuse("field %q has the wrong type or value", key)
+			}
+			vals[key] = "1"
+		default: // null, bool, nested object/array
+			return nil, refuse("field %q has the wrong type", key)
 		}
 	}
-	if err := checkServerURL(*d.Server); err != nil {
-		return nil, fmt.Errorf("provision document: %w", err)
+	if _, err := dec.Token(); err != nil { // closing brace
+		return nil, refuse("invalid JSON")
 	}
-	if !uuidRe.MatchString(*d.InstanceID) {
-		return nil, errors.New("provision document: instance_id must be a uuid")
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, refuse("trailing data")
 	}
-	if len(*d.Key) > provisionMaxKey || !printable(*d.Key, false) || strings.ContainsAny(*d.Key, " \t") {
-		return nil, errors.New("provision document: key malformed")
+	return vals, nil
+}
+
+// ParseProvisionDocument strictly parses a powernode-provision v1 document.
+// ca_fingerprint is required: a document without a pin is refused. Every error
+// wraps ErrProvisionRefused and never contains the key.
+func ParseProvisionDocument(raw []byte) (*Identity, error) {
+	if len(raw) > provisionMaxDocBytes {
+		return nil, refuse("document too large")
 	}
-	if !ValidFingerprint(*d.CAFingerprint) {
-		return nil, errors.New(`provision document: ca_fingerprint must be "sha256:<64 lowercase hex>"`)
+	v, err := decodeStrict(raw)
+	if err != nil {
+		return nil, err
 	}
-	if !purposeRe.MatchString(*d.Purpose) {
-		return nil, errors.New("provision document: purpose malformed")
+	if v["version"] != "1" {
+		return nil, refuse("version must be 1")
 	}
-	issued, err1 := time.Parse(time.RFC3339, *d.IssuedAt)
-	expires, err2 := time.Parse(time.RFC3339, *d.ExpiresAt)
+	for _, name := range []string{"server", "instance_id", "key", "ca_fingerprint", "issued_at", "expires_at", "purpose"} {
+		if v[name] == "" {
+			return nil, refuse("%s is required", name)
+		}
+	}
+	if err := checkServerURL(v["server"]); err != nil {
+		return nil, refuse("%v", err)
+	}
+	if !uuidRe.MatchString(v["instance_id"]) {
+		return nil, refuse("instance_id must be a uuid")
+	}
+	if len(v["key"]) > provisionMaxKey || !printable(v["key"], false) || strings.ContainsAny(v["key"], " \t") {
+		return nil, refuse("key malformed")
+	}
+	if !ValidFingerprint(v["ca_fingerprint"]) {
+		return nil, refuse(`ca_fingerprint must be "sha256:<64 lowercase hex>"`)
+	}
+	if !purposeRe.MatchString(v["purpose"]) {
+		return nil, refuse("purpose malformed")
+	}
+	issued, err1 := time.Parse(time.RFC3339, v["issued_at"])
+	expires, err2 := time.Parse(time.RFC3339, v["expires_at"])
 	if err1 != nil || err2 != nil {
-		return nil, errors.New("provision document: issued_at/expires_at must be ISO8601")
+		return nil, refuse("issued_at/expires_at must be RFC 3339")
 	}
 	if !expires.After(issued) {
-		return nil, errors.New("provision document: expires_at must be after issued_at")
+		return nil, refuse("expires_at must be after issued_at")
 	}
 	// Expiry is deliberately NOT checked against the local clock: a device
 	// booting without RTC/NTP would reject every valid document. The server
 	// enforces token expiry.
 
 	id := &Identity{
-		InstanceUUID:   *d.InstanceID,
-		BootstrapToken: *d.Key,
-		PlatformURL:    *d.Server,
-		CAFingerprint:  *d.CAFingerprint,
+		InstanceUUID:   v["instance_id"],
+		BootstrapToken: v["key"],
+		PlatformURL:    v["server"],
+		CAFingerprint:  v["ca_fingerprint"],
 	}
-	if d.CAPEM != nil && *d.CAPEM != "" {
-		if len(*d.CAPEM) > provisionMaxCAPEM || !printable(*d.CAPEM, true) {
-			return nil, errors.New("provision document: ca_pem too large or not printable")
+	if ca := v["ca_pem"]; ca != "" {
+		if len(ca) > provisionMaxCAPEM || !printable(ca, true) {
+			return nil, refuse("ca_pem too large or not printable")
 		}
-		if err := checkPEMMatchesPin([]byte(*d.CAPEM), *d.CAFingerprint); err != nil {
-			return nil, fmt.Errorf("provision document: ca_pem: %w", err)
+		if err := checkPEMMatchesPin([]byte(ca), v["ca_fingerprint"]); err != nil {
+			return nil, refuse("ca_pem: %v", err)
 		}
-		id.CABundlePEM = *d.CAPEM
+		id.CABundlePEM = ca
 	}
 	return id, nil
-}
-
-// sanitizeJSONErr keeps decoder errors but guarantees no field value is echoed.
-func sanitizeJSONErr(err error) error {
-	var ute *json.UnmarshalTypeError
-	if errors.As(err, &ute) {
-		return fmt.Errorf("field %q has the wrong type", ute.Field)
-	}
-	var se *json.SyntaxError
-	if errors.As(err, &se) {
-		return errors.New("invalid JSON")
-	}
-	// DisallowUnknownFields: `json: unknown field "x"` - the name only.
-	if strings.HasPrefix(err.Error(), "json: unknown field") {
-		return err
-	}
-	return errors.New("invalid JSON")
 }
 
 func checkPEMMatchesPin(caPEM []byte, pin string) error {
@@ -215,12 +255,44 @@ func checkPEMMatchesPin(caPEM []byte, pin string) error {
 	return errors.New("no certificate matches ca_fingerprint")
 }
 
-// PinnedTLSConfig builds the enrolment/claim TLS config. caPEM may be empty
-// (system roots are used); pin may be empty only for the deprecated legacy
-// sources that never carried one. When pin is set it is ALWAYS enforced: the
-// verified chain must contain a certificate whose DER sha256 equals it, or the
-// handshake fails.
-func PinnedTLSConfig(caPEM []byte, pin string) (*tls.Config, error) {
+func selfSignedCA(c *x509.Certificate) bool {
+	return c.IsCA && bytes.Equal(c.RawIssuer, c.RawSubject) && c.CheckSignatureFrom(c) == nil
+}
+
+// PinnedTLSConfig builds the enrolment/claim/post-enrolment TLS config with the
+// system roots as the base when caPEM is empty. See PinnedTLSConfigWithBase.
+func PinnedTLSConfig(caPEM []byte, pin, platformURL string) (*tls.Config, error) {
+	return PinnedTLSConfigWithBase(caPEM, pin, platformURL, nil)
+}
+
+// PinnedTLSConfigWithBase builds the TLS config. caPEM may be empty (base, or
+// the system roots when base is nil, is the trust store); pin may be empty only
+// for the deprecated legacy sources that never carried one.
+//
+// Chain building (pinned): self-signed CA certificates in caPEM are the trust
+// anchors, every other certificate in caPEM is an intermediate (so a leaf-only
+// server still validates). If caPEM holds no self-signed CA (e.g. a persisted
+// bundle that is just the matched pin cert) its certificates are all anchors,
+// as Go does natively. Peer-sent intermediates are usable too.
+//
+// When pin is set it is ALWAYS enforced: the verified chain must contain a
+// certificate whose DER sha256 equals it, or the handshake fails. Verification
+// runs in VerifyConnection (InsecureSkipVerify only disables Go's built-in pass
+// so a custom Intermediates pool can be used; hostname, validity and key usage
+// are still verified by x509.Verify there).
+func PinnedTLSConfigWithBase(caPEM []byte, pin, platformURL string, base *x509.CertPool) (*tls.Config, error) {
+	if pin == "" {
+		return unpinnedTLSConfig(caPEM, base)
+	}
+	v, err := NewPinVerifier(caPEM, pin, platformURL, base)
+	if err != nil {
+		return nil, err
+	}
+	return v.TLSConfig(), nil
+}
+
+func unpinnedTLSConfig(caPEM []byte, base *x509.CertPool) (*tls.Config, error) {
+	// Legacy, unpinned: Go's native verification with the bundle as roots.
 	cfg := &tls.Config{MinVersion: tls.VersionTLS13}
 	if len(caPEM) > 0 {
 		pool := x509.NewCertPool()
@@ -228,24 +300,100 @@ func PinnedTLSConfig(caPEM []byte, pin string) (*tls.Config, error) {
 			return nil, errors.New("CA bundle contains no parseable certificates")
 		}
 		cfg.RootCAs = pool
+	} else if base != nil {
+		cfg.RootCAs = base
 	}
-	if pin == "" {
-		return cfg, nil
-	}
+	return cfg, nil
+}
+
+// PinVerifier verifies a server's presented chain against the trust store and
+// returns the chain certificate that matches the pin.
+type PinVerifier struct {
+	roots, inters *x509.CertPool
+	host, pin     string
+}
+
+// NewPinVerifier builds a verifier. See PinnedTLSConfigWithBase for the chain
+// building rules.
+func NewPinVerifier(caPEM []byte, pin, platformURL string, base *x509.CertPool) (*PinVerifier, error) {
 	if !ValidFingerprint(pin) {
 		return nil, errors.New("ca_fingerprint malformed")
 	}
-	cfg.VerifyConnection = func(cs tls.ConnectionState) error {
-		for _, chain := range cs.VerifiedChains {
-			for _, c := range chain {
-				if CertFingerprint(c) == pin {
-					return nil
-				}
+	// The name to verify is the platform URL's host (an IP literal or DNS
+	// name): ConnectionState.ServerName is empty for IP hosts.
+	u, err := url.Parse(platformURL)
+	if err != nil || u.Hostname() == "" {
+		return nil, errors.New("pinned TLS needs the platform URL host to verify")
+	}
+	v := &PinVerifier{roots: base, inters: x509.NewCertPool(), host: u.Hostname(), pin: pin}
+	if len(caPEM) > 0 {
+		certs, err := parsePEMCerts(caPEM)
+		if err != nil {
+			return nil, errors.New("CA bundle contains no parseable certificates")
+		}
+		var anchors, others []*x509.Certificate
+		for _, c := range certs {
+			if selfSignedCA(c) {
+				anchors = append(anchors, c)
+			} else {
+				others = append(others, c)
 			}
 		}
-		return errors.New("platform certificate chain does not match the pinned ca_fingerprint")
+		if len(anchors) == 0 {
+			anchors, others = others, nil
+		}
+		v.roots = x509.NewCertPool()
+		for _, c := range anchors {
+			v.roots.AddCert(c)
+		}
+		for _, c := range others {
+			v.inters.AddCert(c)
+		}
 	}
-	return cfg, nil
+	return v, nil
+}
+
+// Verify builds and verifies a chain from the peer certificates (hostname,
+// validity, server-auth usage) and returns the chain certificate whose DER
+// sha256 equals the pin.
+func (v *PinVerifier) Verify(peers []*x509.Certificate) (*x509.Certificate, error) {
+	if len(peers) == 0 {
+		return nil, errors.New("no peer certificate to verify")
+	}
+	opts := x509.VerifyOptions{
+		Roots: v.roots, DNSName: v.host, Intermediates: v.inters.Clone(),
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	for _, c := range peers[1:] {
+		opts.Intermediates.AddCert(c)
+	}
+	chains, err := peers[0].Verify(opts)
+	if err != nil {
+		return nil, err
+	}
+	for _, chain := range chains {
+		for _, c := range chain {
+			if CertFingerprint(c) == v.pin {
+				return c, nil
+			}
+		}
+	}
+	return nil, errors.New("platform certificate chain does not match the pinned ca_fingerprint")
+}
+
+// TLSConfig returns a TLS 1.3 client config that enforces the verifier.
+// InsecureSkipVerify only disables Go's built-in pass so a custom
+// Intermediates pool can be used; Verify does the real verification.
+func (v *PinVerifier) TLSConfig() *tls.Config {
+	return &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		ServerName:         v.host,
+		InsecureSkipVerify: true, //nolint:gosec // verified in VerifyConnection
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			_, err := v.Verify(cs.PeerCertificates)
+			return err
+		},
+	}
 }
 
 // legacyPin validates an optional pin carried by a legacy source.
@@ -254,7 +402,7 @@ func legacyPin(v string) (string, error) {
 		return "", nil
 	}
 	if !ValidFingerprint(v) {
-		return "", errors.New("ca_fingerprint malformed")
+		return "", refuse("ca_fingerprint malformed")
 	}
 	return v, nil
 }

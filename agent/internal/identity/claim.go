@@ -204,7 +204,8 @@ func (s *ClaimStrategy) poll(ctx context.Context, client *http.Client, url strin
 }
 
 func (s *ClaimStrategy) httpClient(boot *Identity) *http.Client {
-	if s.HTTPClient != nil {
+	// The test override cannot bypass a pin.
+	if s.HTTPClient != nil && boot.CAFingerprint == "" {
 		return s.HTTPClient
 	}
 
@@ -212,7 +213,7 @@ func (s *ClaimStrategy) httpClient(boot *Identity) *http.Client {
 	if boot.CAFingerprint != "" {
 		// A pin from any source is enforced; a bad pin/CA yields a client that
 		// can never connect rather than one that silently drops the pin.
-		if cfg, err := PinnedTLSConfig([]byte(boot.CABundlePEM), boot.CAFingerprint); err == nil {
+		if cfg, err := PinnedTLSConfig([]byte(boot.CABundlePEM), boot.CAFingerprint, boot.PlatformURL); err == nil {
 			return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: cfg}}
 		}
 		return &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{

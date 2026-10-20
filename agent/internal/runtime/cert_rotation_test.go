@@ -340,3 +340,40 @@ func TestCheckAndRotateBadResponseRejected(t *testing.T) {
 
 // testCtx is a small helper to keep test signatures terse.
 func testCtx() context.Context { return context.Background() }
+
+// Rotation rewrites the PKI dir; the persisted CA pin must survive it,
+// otherwise every post-rotation reconnect silently loses pin enforcement.
+func TestCheckAndRotatePreservesCAPin(t *testing.T) {
+	dir := t.TempDir()
+	notBefore := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	notAfter := notBefore.Add(10 * 24 * time.Hour)
+	paths := writePKIFiles(t, dir, "subj", notBefore, notAfter)
+	pin := "sha256:" + strings.Repeat("ab", 32)
+	if err := os.WriteFile(paths.CAPin, []byte(pin+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newNotBefore := notBefore.Add(8 * 24 * time.Hour)
+	newCertPEM, _ := mintCert(t, "subj", newNotBefore, newNotBefore.Add(10*24*time.Hour))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]any{
+			"cert_pem": string(newCertPEM), "ca_chain_pem": string(newCertPEM), "instance_id": "i",
+			"mtls_subject": "subj", "not_after": newNotBefore.Add(10 * 24 * time.Hour).Format(time.RFC3339), "certificate_id": "c2",
+		}})
+	}))
+	defer srv.Close()
+	swap := transport.NewSwappableClient(&transport.Client{Client: srv.Client(), PlatformURL: srv.URL})
+	r, _ := NewCertRotator(&CertRotator{
+		PKIPaths: paths, PlatformURL: srv.URL, Transport: swap, Subject: "subj", AgentVersion: "t",
+		Now: func() time.Time { return notBefore.Add(8 * 24 * time.Hour) },
+		BuildTransport: func(string, enroll.PKIPaths) (*transport.Client, error) {
+			return &transport.Client{Client: srv.Client(), PlatformURL: srv.URL}, nil
+		},
+	})
+	if err := r.CheckAndRotate(testCtx()); err != nil {
+		t.Fatal(err)
+	}
+	if got := enroll.ReadPin(paths); got != pin {
+		t.Fatalf("pin lost across rotation: %q", got)
+	}
+}

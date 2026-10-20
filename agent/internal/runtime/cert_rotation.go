@@ -237,6 +237,11 @@ func (r *CertRotator) rotate(ctx context.Context) error {
 	// (from disk) rather than expecting the rotation response to
 	// re-include it — the bundle doesn't change during a rotation.
 	caBundle, _ := os.ReadFile(r.PKIPaths.CABundle)
+	// The CA pin must survive rotation (fail closed on a malformed pin file).
+	pin, err := enroll.LoadPin(r.PKIPaths)
+	if err != nil {
+		return fmt.Errorf("rotation: %w", err)
+	}
 
 	notAfter, _ := time.Parse(time.RFC3339, er.Data.NotAfter)
 	id := &enroll.EnrolledIdentity{
@@ -244,6 +249,7 @@ func (r *CertRotator) rotate(ctx context.Context) error {
 		CertPEM:       []byte(er.Data.CertPEM),
 		CAChainPEM:    []byte(er.Data.CAChainPEM),
 		CABundlePEM:   caBundle,
+		CAFingerprint: pin,
 		InstanceID:    er.Data.InstanceID,
 		MTLSSubject:   er.Data.MTLSSubject,
 		NotAfter:      notAfter,

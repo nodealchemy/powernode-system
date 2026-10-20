@@ -227,11 +227,12 @@ func (o *Orchestrator) enroll(ctx context.Context, ident *identity.Identity, pat
 	if ident.BootstrapToken == "" {
 		return errors.New("identity has no BootstrapToken (cert exists on disk? if so, fast-path should have skipped enroll)")
 	}
-	if len(ident.CABundlePEM) == 0 {
-		return errors.New("identity has no CABundlePEM (platform CA chain)")
+	if len(ident.CABundlePEM) == 0 && ident.CAFingerprint == "" {
+		return errors.New("identity has no CABundlePEM (platform CA chain) and no ca_fingerprint")
 	}
 	o.EnrollClient.PlatformURL = ident.PlatformURL
 	o.EnrollClient.CABundlePEM = []byte(ident.CABundlePEM)
+	o.EnrollClient.CAFingerprint = ident.CAFingerprint
 	o.EnrollClient.AgentVersion = o.AgentVersion
 
 	enrolled, err := o.EnrollClient.Enroll(ctx, enroll.EnrollRequest{

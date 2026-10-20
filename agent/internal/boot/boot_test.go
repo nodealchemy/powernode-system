@@ -2,8 +2,14 @@ package boot
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -212,4 +218,40 @@ type enrollClientStub = enrollClientReal
 // sync with the canonical PKI layout.
 func pathsForTest(dir string) enroll.PKIPaths {
 	return enroll.PathsUnder(dir)
+}
+
+// The initramfs `powernode-agent boot` path: a pinned identity with NO ca_pem
+// must enrol (pin carried into the client, pin-only allowed) and persist both
+// the matched CA and the pin; a wrong pin must refuse.
+func TestOrchestratorEnroll_CarriesPinAndAllowsPinOnly(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"data":{"cert_pem":"c","ca_chain_pem":"ca","instance_id":"i","mtls_subject":"i","not_after":"2030-01-01T00:00:00Z","certificate_id":"x"}}`))
+	}))
+	defer srv.Close()
+	base := x509.NewCertPool()
+	base.AddCert(srv.Certificate())
+	sum := sha256.Sum256(srv.Certificate().Raw)
+	pin := "sha256:" + hex.EncodeToString(sum[:])
+
+	run := func(pin string) (enroll.PKIPaths, error) {
+		paths := enroll.PathsUnder(t.TempDir())
+		o := &Orchestrator{EnrollClient: &enroll.Client{BaseRoots: base}}
+		err := o.enroll(context.Background(), &identity.Identity{
+			InstanceUUID: "i", BootstrapToken: "tok", PlatformURL: srv.URL, CAFingerprint: pin,
+		}, paths)
+		return paths, err
+	}
+	paths, err := run(pin)
+	if err != nil {
+		t.Fatalf("pin-only boot enrol: %v", err)
+	}
+	if enroll.ReadPin(paths) != pin {
+		t.Fatal("pin not persisted by the boot path")
+	}
+	if b, _ := os.ReadFile(paths.CABundle); len(b) == 0 {
+		t.Fatal("CA bundle not persisted by the boot path")
+	}
+	if _, err := run("sha256:" + strings.Repeat("0", 64)); err == nil {
+		t.Fatal("boot path enrolled against a mismatched pin")
+	}
 }

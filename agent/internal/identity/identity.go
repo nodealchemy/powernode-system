@@ -131,25 +131,57 @@ func (r *Resolver) Resolve(ctx context.Context) (*Identity, error) {
 		defer cancel()
 	}
 
-	var lastErr error
+	var (
+		lastErr error
+		first   *Identity // first usable identity, by strategy precedence
+		pin     string    // first pin seen from ANY source
+	)
 	for _, s := range r.Strategies {
+		if first != nil {
+			// A pinless hit was already found: keep scanning ONLY to collect a
+			// pin (and to let a refused v1 document stop us). Never run a
+			// strategy that blocks or polls (claim), and never let a later
+			// source replace the identity that supplied the key.
+			if _, isClaim := s.(*ClaimStrategy); isClaim {
+				continue
+			}
+		}
 		id, err := s.Discover(ctx)
 		if err != nil {
+			if errors.Is(err, ErrProvisionRefused) {
+				// TERMINAL: a v1 document / pin was present but invalid. Do
+				// not fall through to a weaker source.
+				return nil, fmt.Errorf("strategy %s: %w", s.Name(), err)
+			}
 			if errors.Is(err, ErrNotFound) {
 				continue
 			}
-			// Non-NotFound error: log + try next strategy.
+			// Non-NotFound error: remember + try next strategy.
 			lastErr = fmt.Errorf("strategy %s: %w", s.Name(), err)
 			continue
 		}
 		if id == nil || id.InstanceUUID == "" {
 			continue
 		}
-		if id.Architecture == "" {
-			id.Architecture = runtime.GOARCH
+		if pin == "" {
+			pin = id.CAFingerprint
 		}
-		id.DiscoveredAt = time.Now().UTC()
-		return id, nil
+		if first == nil {
+			first = id
+			if pin != "" {
+				break // pinned hit: nothing more to learn
+			}
+		}
+	}
+	if first != nil {
+		if first.CAFingerprint == "" {
+			first.CAFingerprint = pin // a pinless source never overrides a pin
+		}
+		if first.Architecture == "" {
+			first.Architecture = runtime.GOARCH
+		}
+		first.DiscoveredAt = time.Now().UTC()
+		return first, nil
 	}
 
 	if lastErr != nil {
