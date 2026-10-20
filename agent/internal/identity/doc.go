@@ -10,21 +10,21 @@
 // DefaultResolver tries these in order and the first to return an identity
 // wins; a strategy with nothing to offer returns ErrNotFound:
 //
-//  1. CmdlineStrategy       — powernode.<key>=<value> kernel command-line params
-//  2. FwCfgStrategy         — QEMU virtio-fw-cfg blobs (libvirt/QEMU providers)
-//  3. LocalIdentityStrategy — /run/powernode/identity.cfg, the NoCloud cicustom
-//     identity staged pre-pivot on Proxmox uefi_disk builders
-//  4. ClaimStrategy         — a device flashed from a generic disk image: its
-//     BootIdentityStrategy reads /boot/identity.cfg, and without a bootstrap
-//     token it polls /api/v1/system/node_api/claim until an operator confirms
-//  5. CloudStrategy         — cloud metadata, once each through
-//     AwsMetadataClient, GcpMetadataClient, AzureMetadataClient and
-//     DigitalOceanMetadataClient
-//  6. LocalIdentityStrategy — /etc/identity.cfg, the legacy bare-metal fallback
+//  1. CmdlineStrategy       - kernel command-line params / PXE single-fetch pickup
+//  2. FwCfgStrategy         - QEMU virtio-fw-cfg blobs
+//  3. LocalIdentityStrategy - /run/powernode/identity.cfg, the staged NoCloud /
+//     config-drive document
+//  4. CloudStrategy         - provider metadata user-data (AWS, GCP, Azure,
+//     DigitalOcean/OpenStack clients)
+//  5. MediaScanStrategy     - powernode-provision.cfg on attached drives
+//  6. BootKeyStrategy       - the KEY in /boot/identity.cfg
+//  7. ConsolePromptStrategy - masked console prompt (InteractiveResolver only)
+//  8. ClaimStrategy         - claim poll, driven by the BOOT SERVER/ID
 //
-// The no-network strategies run before the cloud probes so a local or
-// physical node does not wait on metadata services that are not there. The
-// comment on DefaultResolver records why each one sits where it does.
+// followed by LocalIdentityStrategy on /etc/identity.cfg, the legacy fallback.
+// The first non-empty key wins; a ca_fingerprint from any source is enforced
+// on the winner. The comment on DefaultResolver records why this order is
+// safe (metadata is unauthenticated) and PROVISION_DOCUMENT.md documents it.
 //
 // # Key types
 //

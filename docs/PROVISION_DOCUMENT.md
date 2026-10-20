@@ -61,11 +61,40 @@ whichever source finally supplies the key: a pinless legacy source (cmdline,
 KEY=VALUE, fw-cfg) never overrides a pinned v1 document, even if it is earlier
 in precedence.
 
-**Network sources never veto.** After a pinless local hit the resolver keeps
-scanning only LOCAL sources (files, fw-cfg, cmdline) for a pin or a refused v1
-document. Cloud metadata (unauthenticated, spoofable on L2) is not consulted
-then, so it can neither supply a pin nor refuse a local identity. Before any
-hit, a cloud source's refusal is still terminal.
+**Source precedence.** The agent tries eight key sources in this fixed order;
+the first non-empty key wins and a later source never overrides it:
+
+1. kernel cmdline / PXE single-fetch pickup
+2. virtio fw-cfg
+3. staged NoCloud / config-drive document (`/run/powernode/identity.cfg`)
+4. provider metadata user-data (AWS, GCP, Azure, OpenStack, DigitalOcean)
+5. media-scan provisioning file (USB, cidata, extra disks)
+6. the `KEY` in the BOOT `identity.cfg`
+7. console prompt (initramfs only)
+8. claim poll (blocks until an operator confirms)
+
+`/etc/identity.cfg` remains a legacy fallback behind all eight. A BOOT
+`identity.cfg` with `SERVER` (and optionally `ID`) but no `KEY` is not a key; it
+only drives the claim poll (8) and may carry a pin.
+
+**Network sources never veto, and never pin.** Provider metadata (169.254.169.254
+over HTTP) is unauthenticated and spoofable on L2, so it is consulted only while
+no key has been found, never after one, and:
+
+- Once any source has supplied a key, the resolver keeps scanning only LOCAL
+  sources (files, fw-cfg, cmdline, the BOOT file) for a pin or a refused v1
+  document. Metadata, the media scan, the console prompt and the claim poll are
+  not run then, so none of them can supply a pin or refuse a local identity (a
+  removable stick can neither veto an identity nor attach its own pin).
+- When metadata wins over media or BOOT (positions 4 over 5 and 6), a pin in the
+  BOOT file is still enforced on it and replaces any pin the metadata document
+  asserts, so a spoofed server cannot attach its own CA to a pinned device; the
+  enrolment fails closed instead.
+- A v1 refusal from metadata is terminal, with one exception: a BOOT `KEY` is
+  still tried, so a spoofed refusal cannot veto a local identity. The media
+  scan, console prompt, claim poll and legacy fallback are not tried after it.
+- On a node with no earlier key the provider probes (about 1.5 s each, up to
+  ~6 s off-cloud) run before the media scan, BOOT key and prompt.
 
 **After enrolment.** The pin is persisted next to the PKI material
 (`ca-pin`, alongside `ca-bundle.crt`). With no `ca_pem` (pin-only) the
