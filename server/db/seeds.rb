@@ -110,6 +110,7 @@ ext_seeds = File.expand_path("seeds", __dir__)
 # Keep prose OUT of the %w[] literal below: it does not honour `#`, so a comment
 # line becomes one array element per word.
 SYSTEM_SEED_FILES = %w[
+  fleet_operator_agent.rb
   fleet_autonomy_agent.rb
   system_concierge_agent.rb
   system_runtime_manager_agent.rb

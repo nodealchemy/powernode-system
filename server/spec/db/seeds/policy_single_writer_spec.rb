@@ -91,10 +91,10 @@ RSpec.describe "declared intervention policies have ONE writer (ruling 7)" do
       .pluck(:action_category, :policy).to_h
   end
 
-  it "runs twelve agent seeds from the orchestrator (the ten rewritten, the Concierge and the reference shape)" do
-    expect(agent_seeds.size).to eq(12), agent_seeds.inspect
+  it "runs thirteen agent seeds from the orchestrator (the ten rewritten, the Concierge, the reference shape and the roster's Fleet Operator)" do
+    expect(agent_seeds.size).to eq(13), agent_seeds.inspect
     expect(agent_seeds).to include("fleet_autonomy_agent.rb", "system_supply_chain_manager_agent.rb",
-                                   "system_concierge_agent.rb")
+                                   "system_concierge_agent.rb", "fleet_operator_agent.rb")
   end
 
   # HIER-P3: the boot this models is CORE seeds then EXTENSION seeds, because

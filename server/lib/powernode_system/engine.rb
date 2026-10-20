@@ -967,6 +967,50 @@ module PowernodeSystem
       end
     end
 
+    # The Fleet Operator joins core's canonical-agent roster (a registry; core
+    # declares only its own three and names none of ours). The roster feeds the
+    # seed (db/seeds/fleet_operator_agent.rb), the committed Claude Code
+    # skeletons and the assembler, so a system-enabled install exports four.
+    # to_prepare for the same reason as the domains above: Ai::Agents::
+    # CanonicalRoster is a reloadable core constant. Tier `standard` is the
+    # floor for read-only/inspect runs; a mutating run is raised to
+    # reasoning/high by the assembler (skill hints and verb risk), not by this
+    # row. The domain ceiling is the domains registered above.
+    initializer "powernode_system.register_roster_agents" do
+      config.to_prepare do
+        next unless defined?(::Ai::Agents::CanonicalRoster) && defined?(::Ai::Skills::Contract)
+
+        ::Ai::Agents::CanonicalRoster.register(
+          "fleet-operator",
+          {
+            name: "Fleet Operator",
+            agent_type: "monitor",
+            tier: "standard",
+            description: "Operates the running Powernode fleet: nodes, instances, capacity, storage, networking, " \
+                         "ingress, runtimes, disk images, packages and CVEs — inspects live state and takes " \
+                         "operational actions through the platform's gated verbs. Every deploy is handed to it.",
+            domains: ::Ai::Skills::Contract.domains_for("extensions/system"),
+            role: { code: false, shell: false, server_grant: true,
+                    duty: "Act only through the platform's gated verbs; report a parked action, never work around it." },
+            charter: ::Ai::Agents::CanonicalRoster.assembly_charter(
+              identity: "You are the **Fleet Operator**: you operate the running fleet and take every deploy " \
+                        "handed to you, sensing live state first and acting through the platform's gated verbs.",
+              duty: "act only through the platform's gated verbs; a parked action is reported with its request id " \
+                    "and left parked, never worked around."
+            ),
+            posture: {
+              trust: { tier: "monitored", overall: 0.74,
+                       dimensions: { reliability: 0.70, cost_efficiency: 0.70, safety: 0.85, quality: 0.70, speed: 0.70 } },
+              chain_approvers: [ "*" ]
+            }
+          },
+          owner: "extensions/system"
+        )
+      rescue StandardError => e
+        Rails.logger.error "[PowernodeSystem] Could not register roster agents: #{e.message}"
+      end
+    end
+
     # HIER-P2F (the HIER-P1B open question) — register this extension's
     # policy-domain table with core's Claude-export seam.
     #
