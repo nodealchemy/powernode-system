@@ -53,6 +53,17 @@ routes:
      only (the origin is prepended server-side), so an untested client method would
      rot before it had a caller."
 
+  "POST /api/v1/system/nodes/:param/node_instances/:param/out_of_band_exec":
+    "MCP-only: system_out_of_band_exec. The REST action is the same gated executor
+     (System::Executors::OutOfBandExec, require_approval by default) the verb uses;
+     running a free-form SSH command from the control plane is an operator-agent
+     break-glass path, deliberately given no console button."
+  "GET /api/v1/system/nodes/:param/node_instances/:param/bootstrap_tokens":
+    "#index has no caller: the console mints (POST, mintOperatorKey) and revokes
+     (DELETE, revokeOperatorKey) an instance's operator key from nodesApi.ts, and
+     the plaintext is shown once at mint, so there is no list view to fill. The
+     listing is the metadata-only read for the operator-agent / API surface."
+
   # ---- single-row reads whose collection already ships the row ---------------
   "GET /api/v1/system/sdwan/networks/:param/peers/:param":
     "#show has no caller: the UI lists a network's peers and then edits (PUT) or
