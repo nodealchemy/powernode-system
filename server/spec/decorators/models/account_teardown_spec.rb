@@ -44,4 +44,37 @@ RSpec.describe "System extension account teardown" do
     expect(User.exists?(agent_user.id)).to be true
     expect(System::Node.exists?(node.id)).to be true
   end
+
+  it "refuses (changing nothing) while a shared package repository was created by one of its users" do
+    account = create(:account)
+    user = create(:user, account: account)
+    repo = create(:system_package_repository, account: nil, created_by: user, visibility: "shared")
+
+    expect(account.destroy).to be false
+    expect(account.errors[:base].join).to match(/shared system package repositories .*created_by_id.*reassign/i)
+    expect(User.exists?(user.id)).to be true
+
+    repo.update_columns(created_by_id: create(:user, account: create(:account)).id)
+    expect { account.destroy! }.not_to raise_error
+    expect(System::PackageRepository.exists?(repo.id)).to be true
+  end
+
+  it "refuses while the account's package repositories still have module links" do
+    account = create(:account)
+    repo = create(:system_package_repository, account: account)
+    allow(System::PackageModuleLink).to receive(:where).and_call_original
+    allow(System::PackageModuleLink).to receive(:where).with(package_repository_id: anything)
+                                                       .and_return(instance_double(ActiveRecord::Relation, exists?: true))
+
+    expect(account.destroy).to be false
+    expect(account.errors[:base]).to include("Cannot delete account with package repositories that still have module links")
+    expect(System::PackageRepository.exists?(repo.id)).to be true
+  end
+
+  it "unlinks a node instance ops hold from a user instead of blocking the user's removal" do
+    account = create(:account)
+    user = create(:user, account: account)
+    expect(User.reflect_on_association(:system_ops_held_node_instances).options[:dependent]).to eq(:nullify)
+    expect { user.destroy! }.not_to raise_error
+  end
 end

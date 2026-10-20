@@ -29,17 +29,27 @@ end
 # the account's environments, instead of discovering it mid-cascade when the
 # environment's own restrict_with_error fires. Only this extension's own
 # associations: core's (projects) are destroyed first by the teardown itself.
-# `covers:` tells the FK coverage spec that every column of these tables is
-# safe because the teardown refuses while such rows exist.
+# `covers:` names the EXACT columns the guard checks (the environment FK), for
+# the FK coverage spec; other columns of those tables are covered separately.
 system_fleet_reflections = lambda do
   Ai::Environment.reflect_on_all_associations.select do |r|
     r.options[:dependent] == :restrict_with_error && r.options[:class_name].to_s.start_with?("System::")
   end
 end
 
-Account.register_teardown_guard(:system_environment_fleet,
-                                covers: system_fleet_reflections.call.map { |r| [ r.klass.table_name, "*" ] }) do |account|
+# The guard checks each table by its account_id AND its environment FK.
+# outbound_certificate_id is listed too: a federation peer row in the account
+# refuses the teardown, so its certificate reference never gets as far as a delete.
+system_fleet_covers = system_fleet_reflections.call.flat_map do |r|
+  [ [ r.klass.table_name, "account_id" ], [ r.klass.table_name, r.foreign_key ] ]
+end
+system_fleet_covers << %w[system_federation_peers outbound_certificate_id]
+
+Account.register_teardown_guard(:system_environment_fleet, covers: system_fleet_covers) do |account|
   system_fleet_reflections.call
-                          .select { |r| r.klass.where(r.foreign_key => Ai::Environment.where(account_id: account.id).select(:id)).exists? }
+                          .select do |r|
+    envs = Ai::Environment.where(account_id: account.id).select(:id)
+    r.klass.where(account_id: account.id).or(r.klass.where(r.foreign_key => envs)).exists?
+  end
                           .map { |r| "Cannot delete account with existing #{r.name.to_s.humanize.downcase} in its environments" }
 end

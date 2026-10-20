@@ -132,3 +132,13 @@ Account.class_eval do
   # declares `has_many :file_objects, class_name: "FileManagement::Object"`,
   # so no additional decorator association is needed here.
 end
+
+# Pre-flight for Account teardown: a package repository that a module is linked
+# to has an ON DELETE RESTRICT foreign key (and a restrict_with_error), which
+# would otherwise fire mid-cascade. Refuse up front while the account's
+# repositories still have module links.
+Account.register_teardown_guard(:system_package_module_links,
+                                covers: [ %w[system_package_module_links package_repository_id] ]) do |account|
+  linked = System::PackageModuleLink.where(package_repository_id: System::PackageRepository.where(account_id: account.id).select(:id))
+  "Cannot delete account with package repositories that still have module links" if linked.exists?
+end

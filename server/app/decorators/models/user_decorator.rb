@@ -18,6 +18,8 @@ User.class_eval do
            class_name: "Sdwan::AccessGrant", foreign_key: "granted_by_id", dependent: :nullify
   has_many :system_sdwan_access_grants,
            class_name: "Sdwan::AccessGrant", foreign_key: "user_id", dependent: :destroy
+  has_many :system_ops_held_node_instances,
+           class_name: "System::NodeInstance", foreign_key: "ops_hold_by_id", dependent: :nullify
   has_many :system_approved_sdwan_route_leaks,
            class_name: "Sdwan::RouteLeak", foreign_key: "approved_by_id", dependent: :nullify
 end
