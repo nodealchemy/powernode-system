@@ -3,7 +3,6 @@
   "slug": "system",
   "description": "Operator-side execution of System:: operations: cloud provisioning, SSH command execution, module build/commit, volume management, PXE/netboot.",
   "icon": "server",
-  "version": "0.1.0",
   "author": "Everett C. Haimes III",
   "homepage": "https://powernode.org",
   "feature_flag": "system_mode",

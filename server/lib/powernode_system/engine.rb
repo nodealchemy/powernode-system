@@ -85,7 +85,6 @@ module PowernodeSystem
         Powernode::ExtensionRegistry.register(
           slug: "system",
           engine: PowernodeSystem::Engine,
-          version: defined?(PowernodeSystem::VERSION) ? PowernodeSystem::VERSION : nil,
           features_module: defined?(PowernodeSystem::Features) ? PowernodeSystem::Features : nil,
           capabilities: [ :kubernetes_deploy ],
           # Contribute behavior to core through generic seams without core ever naming System::.

@@ -2,6 +2,8 @@
 
 Gem::Specification.new do |spec|
   spec.name        = "powernode_system"
+  # Bundler requires a literal. scripts/release.sh is the ONLY writer of this value
+  # (stamped from the release tag); never edit it by hand.
   spec.version     = "0.1.0"
   spec.authors     = ["Everett C. Haimes III"]
   spec.summary     = "Powernode Infrastructure Extension"
