@@ -118,9 +118,17 @@ func versionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print agent version + build info",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("powernode-agent %s\n", Version)
-			fmt.Printf("commit:    %s\n", GitCommit)
-			fmt.Printf("built:     %s\n", BuildDate)
+			fmt.Print(versionText())
 		},
 	}
+}
+
+// versionText is the `version` output. Version stays date-sha12 (consumers
+// parse it); the platform release the module was built with is its own line.
+func versionText() string {
+	out := fmt.Sprintf("powernode-agent %s\ncommit:    %s\nbuilt:     %s\n", Version, GitCommit, BuildDate)
+	if PlatformVersion != "" {
+		out += fmt.Sprintf("platform:  %s\n", PlatformVersion)
+	}
+	return out
 }
