@@ -491,7 +491,18 @@ if [ "$needs_parent" = "1" ]; then
   # clone is deepened to the tag with --shallow-exclude (a partial, tree-less
   # fetch first, a plain one if the remote refuses filters). If both fail N=0.
   build_short_sha="$(printf '%s' "$core_source_sha" | cut -c1-7)"
-  remote_refs="$(git -C /tmp/parent ls-remote --heads --tags origin 2>/dev/null || true)"
+  # A failed ls-remote must FAIL the build: silently stamping 0.0.0-dev would
+  # ship a version federation peers treat as incompatible.
+  # (An unknown core sha means the clone itself is broken and is already
+  # recorded as such in the provenance above; only a KNOWN sha with an
+  # unreachable remote is fatal here.)
+  if ! remote_refs="$(git -C /tmp/parent ls-remote --heads --tags origin 2>/dev/null)"; then
+    if [ "$core_source_sha" != "unknown" ]; then
+      echo "[stage-1.5] FATAL: git ls-remote against the core remote failed; cannot derive the build version" >&2
+      exit 1
+    fi
+    remote_refs=""
+  fi
   all_tags="$(printf '%s\n' "$remote_refs" | awk '$2 ~ /^refs\/tags\// { t=$2; sub("^refs/tags/","",t); sub("\\^\\{\\}$","",t); print t }' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n -u || true)"
   build_tag="$(printf '%s\n' "$remote_refs" | awk -v s="$core_source_sha" '$1==s && $2 ~ /^refs\/tags\// { t=$2; sub("^refs/tags/","",t); sub("\\^\\{\\}$","",t); print t }' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 || true)"
   master_sha="$(printf '%s\n' "$remote_refs" | awk '$2=="refs/heads/master" {print $1}' | head -1)"
@@ -1438,10 +1449,9 @@ case "$MODULE" in
     # Version stays human-readable and sorts by build; GitCommit carries the
     # exact ref. Both, because a sha alone cannot be compared for "at or past".
     agent_version_str="${agent_build_date%T*}-${agent_source_sha:0:12}"
-    # A release build stamps the plain X.Y.Z from the tag instead.
-    if [ "${build_release:-false}" = "true" ] && [ -n "${build_version:-}" ]; then
-      agent_version_str="$build_version"
-    fi
+    # The date-sha12 stamp is kept for EVERY build: the agent builds from the
+    # system tip (not the platform tag) and SmbRotationPreflight::STAMPED_VERSION
+    # parses exactly this shape. The platform release rides in a separate field.
     echo "[stage-1.5] stamping agent version=${agent_version_str} commit=${agent_source_sha}"
 
     echo "[stage-1.5] cross-compiling powernode-agent for amd64…"
@@ -1450,6 +1460,7 @@ case "$MODULE" in
       /usr/local/go/bin/go build -trimpath \
         -ldflags "-s -w \
           -X main.Version=${agent_version_str} \
+          -X main.PlatformVersion=${build_version:-} \
           -X main.GitCommit=${agent_source_sha} \
           -X main.BuildDate=${agent_build_date}" \
         -o /tmp/powernode-agent ./cmd/powernode-agent )
@@ -1468,6 +1479,7 @@ case "$MODULE" in
       /usr/local/go/bin/go build -trimpath \
         -ldflags "-s -w \
           -X main.Version=${agent_version_str} \
+          -X main.PlatformVersion=${build_version:-} \
           -X main.GitCommit=${agent_source_sha} \
           -X main.BuildDate=${agent_build_date}" \
         -o /tmp/powernode-acme ./cmd/powernode-acme )

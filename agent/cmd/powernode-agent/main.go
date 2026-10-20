@@ -50,6 +50,9 @@ var (
 	Version   = "dev"
 	GitCommit = "unknown"
 	BuildDate = "unknown"
+	// PlatformVersion is the core platform release (X.Y.Z, or a -dev/-rc
+	// string) the module was built with. Version stays date-sha12.
+	PlatformVersion = ""
 )
 
 // The claim flow reports the build's version too; Version is final here (set

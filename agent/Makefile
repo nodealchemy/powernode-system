@@ -9,7 +9,8 @@
 #   vet          go vet ./...
 #   clean        rm -rf dist/
 
-VERSION    ?= $(shell git describe --tags --always --dirty --match '[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || echo dev)
+# Same shape as the module build's agent stamp (date-sha12); cosmetic for local builds.
+VERSION    ?= $(shell echo $$(date -u +%Y-%m-%d)-$$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown))
 GIT_COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 

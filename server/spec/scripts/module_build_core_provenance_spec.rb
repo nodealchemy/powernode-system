@@ -88,6 +88,9 @@ RSpec.describe "module build core-source provenance" do
           File.write(File.join(parent_dir, "README"), "core\n")
           git.call("add", "-A")
           git.call("commit", "-q", "-m", "core commit")
+          # The build-identity block (version derivation) needs a reachable origin.
+          system("git", "clone", "-q", "--bare", parent_dir, File.join(root, "origin.git"), out: File::NULL, err: File::NULL)
+          git.call("remote", "add", "origin", File.join(root, "origin.git"))
           `git -C #{parent_dir} rev-parse HEAD`.strip
         when :empty_repo
           # `git clone --depth 1` of an EMPTY remote exits 0 (only a warning),

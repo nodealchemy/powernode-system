@@ -38,7 +38,7 @@ RSpec.describe "stage15.sh build-identity version derivation" do
   # Builds a bare origin and runs the shipped block against a --depth 1 clone
   # of `checkout` (a branch name). `setup` receives a work tree to commit into.
   # Returns [status, parsed BUILD_INFO hash, output].
-  def run_derivation(root, branch:, filter: true)
+  def run_derivation(root, branch:, filter: true, break_origin: false)
     origin = File.join(root, "origin.git")
     work   = File.join(root, "work")
     system("git", "init", "-q", "--bare", "-b", "master", origin)
@@ -56,6 +56,7 @@ RSpec.describe "stage15.sh build-identity version derivation" do
     system("git", "clone", "-q", "--depth", "1", "--branch", branch, "file://#{origin}", parent,
            out: File::NULL, err: File::NULL)
     sha = git(parent, "rev-parse", "HEAD")
+    git(parent, "remote", "set-url", "origin", "file://#{root}/gone.git") if break_origin
 
     block = extract_block(stage15_script, "build identity (BUILD_INFO.json)")
               .gsub("/tmp/parent", File.join(root, "parent"))
@@ -157,6 +158,31 @@ RSpec.describe "stage15.sh build-identity version derivation" do
       end
       expect(status).to be_success, out
       expect(info).to include("version" => "0.2.0", "tag" => "0.2.0", "release" => false)
+    end
+  end
+
+  it "fails the build loudly when ls-remote cannot reach the remote (never stamps 0.0.0-dev)" do
+    Dir.mktmpdir("s15v") do |root|
+      status, info, out, = run_derivation(root, branch: "master", break_origin: true) do |w|
+        commit(w, "c1")
+        git(w, "tag", "0.2.0")
+      end
+      expect(status).not_to be_success
+      expect(out).to match(/FATAL.*ls-remote/i)
+      expect(info).to be_nil
+    end
+  end
+
+  describe "agent stamp" do
+    let(:src) { File.read(stage15_script) }
+
+    it "keeps the date-sha12 stamp for every build (SmbRotationPreflight::STAMPED_VERSION)" do
+      expect(src).not_to match(/agent_version_str="\$build_version"/)
+      expect(src).to match(/agent_version_str="\$\{agent_build_date%T\*\}-\$\{agent_source_sha:0:12\}"/)
+    end
+
+    it "carries the platform release in a separate field on both binaries" do
+      expect(src.scan("-X main.PlatformVersion=${build_version:-}").size).to eq(2)
     end
   end
 end
