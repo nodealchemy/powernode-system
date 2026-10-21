@@ -877,3 +877,15 @@ func TestLogTail_OrdinaryBase64LookingOutputInAnUncutStreamIsUntouched(t *testin
 		t.Fatalf("got:\n%.300s", got)
 	}
 }
+
+func TestLogTail_CertificateBodyAndEndOfOutputSurviveAnUncutStream(t *testing.T) {
+	cert := strings.Repeat("M", 63) + "x\n" + strings.Repeat("I", 63) + "x\n" + "-----END " + "CERTIFICATE-----\nafter\n"
+	if got, want := logTail([]byte(cert), []byte("ok")), "stdout: "+strings.TrimSpace(cert)+"\nstderr: ok"; got != want {
+		t.Fatalf("a certificate body is not key material, got:\n%.300s", got)
+	}
+
+	hex := "deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567\n-----END OF OUTPUT-----\ndone\n"
+	if got, want := logTail([]byte(hex), []byte("ok")), "stdout: "+strings.TrimSpace(hex)+"\nstderr: ok"; got != want {
+		t.Fatalf("a hex line before END OF OUTPUT must survive, got:\n%.300s", got)
+	}
+}

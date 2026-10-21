@@ -494,7 +494,7 @@ func logTail(stdout, stderr []byte) string {
 	return "stdout: " + tailBytes(removeKeyBlocks(stdout), logTailMaxBytes) + "\nstderr: " + tailBytes(removeKeyBlocks(stderr), logTailStderrMaxBytes)
 }
 
-// hasEndFooterLine: some line of text is a PEM END footer.
+// hasEndFooterLine: some line of text is a PRIVATE KEY END footer.
 func hasEndFooterLine(text string) bool {
 	for _, line := range strings.Split(text, "\n") {
 		if pemEndLineRe.MatchString(strings.TrimSpace(line)) {
@@ -563,9 +563,11 @@ var (
 	// The window's first line is a FRAGMENT (the cut landed mid-line): any
 	// length of base64 alphabet, including none, can be the end of a body line.
 	pemFragmentRe = regexp.MustCompile(`^[A-Za-z0-9+/=]*$`)
-	// The four-dash form is restricted to PRIVATE KEY like pemFooterRe, so a
-	// log banner ("---- END OF BUILD LOG ----") is never taken for a footer.
-	pemEndLineRe = regexp.MustCompile(`^(?:-----END[A-Z0-9 ]*-----|---- END [A-Z0-9 ]*PRIVATE KEY ----)$`)
+	// A line that is, by itself, a PRIVATE KEY END footer (pemFooterRe's forms,
+	// anchored to the line). Certificates, public keys and banners such as
+	// "-----END OF OUTPUT-----" or "---- END OF BUILD LOG ----" are never taken
+	// for the footer of a key body.
+	pemEndLineRe = regexp.MustCompile(`^(?:-----END[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|---- END [A-Z0-9 ]*PRIVATE KEY ----)$`)
 )
 
 // removeKeyBlocks replaces every headed private-key block in the stream with

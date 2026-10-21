@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "../../../support/git_popen3_routing"
 require "shellwords"
 
 # IMP-1e5db5e6aefb — the GitOps clone/pull verifies the git host's identity.
@@ -20,6 +21,8 @@ require "shellwords"
 #
 # The ssh/keyscan boundary (Open3) is stubbed; nothing here reaches a network.
 RSpec.describe System::Gitops::RepoSyncService, "host key verification" do
+  include GitPopen3Routing
+  before { route_popen3_through_capture3! }
   let(:account) { create(:account) }
   let(:vault_path) { "secret/data/powernode/gitops/#{SecureRandom.hex(6)}" }
   let(:vault_payload) { { ssh_key: "KEYBODY-#{SecureRandom.hex(4)}" } }

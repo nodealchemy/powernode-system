@@ -53,4 +53,28 @@ RSpec.describe System::Gitops::RepoSyncService, "stale secret directories" do
 
     expect(described_class.sync!(repository)).to be_ok
   end
+
+  describe "the git timeout" do
+    subject(:service) { described_class.new(repository) }
+
+    it "kills a git exec that outlives CLONE_TIMEOUT_SEC and raises a timeout error" do
+      stub_const("System::Gitops::RepoSyncService::CLONE_TIMEOUT_SEC", 1)
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect { service.send(:capture_git, "sleep", "30", chdir: Dir.tmpdir) }
+        .to raise_error(described_class::GitTimeoutError)
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 10
+    end
+
+    it "still returns output, error and status for a git exec inside the limit" do
+      out, _err, status = service.send(:capture_git, "echo", "hi", chdir: Dir.tmpdir)
+
+      expect(out.strip).to eq("hi")
+      expect(status).to be_success
+    end
+
+    it "sweeps only secrets dirs older than the git timeout plus a margin" do
+      expect(described_class::STALE_SECRETS_AGE).to be > described_class::CLONE_TIMEOUT_SEC.seconds
+    end
+  end
 end

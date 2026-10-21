@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "../../../support/git_popen3_routing"
 
 # Guards the Vault-credential boundary for GitOps repository sync.
 #
@@ -24,6 +25,8 @@ require "rails_helper"
 #
 # NEVER contacts a real Vault server: `token:` short-circuits the AppRole login.
 RSpec.describe System::Gitops::RepoSyncService do
+  include GitPopen3Routing
+  before { route_popen3_through_capture3! }
   let(:account) { create(:account) }
   let(:vault_path) { "secret/data/powernode/gitops/#{SecureRandom.hex(6)}" }
 

@@ -53,6 +53,9 @@ module System
       # hub-backend module ships git + openssh-client via its package_spec).
       class GitUnavailableError < StandardError; end
 
+      # A git exec outlived CLONE_TIMEOUT_SEC and was killed.
+      class GitTimeoutError < StandardError; end
+
       HOST_KEY_MISMATCH_REASON    = "host_key_mismatch"
       HOST_KEY_UNAVAILABLE_REASON = "host_key_unavailable"
       GIT_UNAVAILABLE_REASON = "git_unavailable"
@@ -68,7 +71,8 @@ module System
       CLONE_TIMEOUT_SEC = 60
       # A per-call secrets dir older than this is the remains of a sync that was
       # killed (SIGKILL, OOM) between writing the key and its cleanup.
-      STALE_SECRETS_AGE = 30.minutes
+      # It must outlive any live sync, so it is the git timeout plus a margin.
+      STALE_SECRETS_AGE = CLONE_TIMEOUT_SEC.seconds + 5.minutes
 
       def self.sync!(repository)
         new(repository).sync!
@@ -115,6 +119,9 @@ module System
       rescue GitUnavailableError => e
         Rails.logger.error("[Gitops::RepoSync] #{@repository.id}: #{GIT_UNAVAILABLE_REASON}: #{e.message}")
         Result.new(ok?: false, reason: GIT_UNAVAILABLE_REASON, error: "#{GIT_UNAVAILABLE_REASON}: #{e.message}")
+      rescue GitTimeoutError => e
+        Rails.logger.error("[Gitops::RepoSync] #{@repository.id}: git_timeout: #{e.message}")
+        Result.new(ok?: false, reason: "git_timeout", error: "git_timeout: #{e.message}")
       rescue UnsupportedRemoteError => e
         Rails.logger.warn("[Gitops::RepoSync] #{@repository.id}: #{UNSUPPORTED_REMOTE_REASON}: #{e.message}")
         Result.new(ok?: false, reason: UNSUPPORTED_REMOTE_REASON, error: "#{UNSUPPORTED_REMOTE_REASON}: #{e.message}")
@@ -173,12 +180,38 @@ module System
       # (a missing work tree / cwd also raises ENOENT and must not read as a
       # missing binary — hence the cwd check).
       def capture_git(*cmd, chdir:)
-        Open3.capture3(*cmd, chdir: chdir)
+        run_with_timeout(cmd, chdir)
       rescue Errno::ENOENT
         raise unless File.directory?(chdir)
 
         raise GitUnavailableError,
               "the `git` binary was not found on PATH; install git (and openssh-client) on the hub-backend host"
+      end
+
+      # Open3.capture3 with a deadline: CLONE_TIMEOUT_SEC bounds every git exec,
+      # and an exec that outlives it is killed (TERM, then KILL) and reported
+      # as GitTimeoutError rather than hanging the sync worker.
+      def run_with_timeout(cmd, chdir)
+        Open3.popen3(*cmd, chdir: chdir) do |stdin, stdout, stderr, wait_thr|
+          stdin.close
+          out_reader = Thread.new { stdout.read }
+          err_reader = Thread.new { stderr.read }
+          unless wait_thr.join(CLONE_TIMEOUT_SEC)
+            kill_git(wait_thr)
+            raise GitTimeoutError, "git did not finish within #{CLONE_TIMEOUT_SEC}s and was killed"
+          end
+          [ out_reader.value, err_reader.value, wait_thr.value ]
+        end
+      end
+
+      def kill_git(wait_thr)
+        Process.kill("TERM", wait_thr.pid)
+        return if wait_thr.join(2)
+
+        Process.kill("KILL", wait_thr.pid)
+        wait_thr.join(2)
+      rescue Errno::ESRCH
+        nil
       end
 
       def run_git!(*args, cwd:)
