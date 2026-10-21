@@ -218,10 +218,18 @@ module System
         end
       end
 
+      # Each signal is sent only while the exec is still alive: once it is
+      # reaped its pid (and so its process-group id) may be reused by an
+      # unrelated group. The alive? check narrows that race but cannot close
+      # it: a microsecond window remains between the check and the kill, and
+      # an ESRCH from a group that vanished in it is rescued below.
       def kill_git(wait_thr)
         pgid = -wait_thr.pid
+        return unless wait_thr.alive?
+
         Process.kill("TERM", pgid)
         return if wait_thr.join(2)
+        return unless wait_thr.alive?
 
         Process.kill("KILL", pgid)
         wait_thr.join(2)

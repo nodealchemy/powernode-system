@@ -106,6 +106,38 @@ RSpec.describe System::Gitops::RepoSyncService, "stale secret directories" do
       expect(status).to be_success
     end
 
+    describe "kill_git and a reaped exec" do
+      # A reaped pid's group id can be reused by an unrelated process group,
+      # so a signal is sent only while the exec is still alive.
+      let(:wait_thr) { instance_double(Process::Waiter, pid: 4_000_001) }
+
+      it "sends no signal when the exec has already exited" do
+        allow(wait_thr).to receive(:alive?).and_return(false)
+        allow(wait_thr).to receive(:join).and_return(wait_thr)
+        expect(Process).not_to receive(:kill)
+
+        service.send(:kill_git, wait_thr)
+      end
+
+      it "sends no KILL when the exec exited after TERM, even if the join timed out" do
+        allow(wait_thr).to receive(:alive?).and_return(true, false)
+        allow(wait_thr).to receive(:join).and_return(nil)
+        expect(Process).to receive(:kill).with("TERM", -4_000_001).once
+        expect(Process).not_to receive(:kill).with("KILL", anything)
+
+        service.send(:kill_git, wait_thr)
+      end
+
+      it "still escalates to KILL when the exec survives TERM" do
+        allow(wait_thr).to receive(:alive?).and_return(true)
+        allow(wait_thr).to receive(:join).and_return(nil)
+        expect(Process).to receive(:kill).with("TERM", -4_000_001).ordered
+        expect(Process).to receive(:kill).with("KILL", -4_000_001).ordered
+
+        service.send(:kill_git, wait_thr)
+      end
+    end
+
     it "sweeps only secrets dirs older than the git timeout plus a margin" do
       expect(described_class::STALE_SECRETS_AGE).to be > described_class::CLONE_TIMEOUT_SEC.seconds
     end
