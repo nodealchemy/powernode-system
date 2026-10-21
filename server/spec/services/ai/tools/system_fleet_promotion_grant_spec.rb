@@ -56,7 +56,8 @@ RSpec.describe Ai::Tools::SystemFleetTool, "promotion grants" do
 
     audit = AuditLog.where(account_id: account.id, action: "ai.promotion_grant.used").sole
     expect(audit.metadata).to include("module_id" => mod.id, "version_id" => v1.id, "environment_slug" => "ops",
-                                      "ai_agent_id" => agent.id)
+                                      "ai_agent_id" => agent.id, "target_environment_id" => ops.id,
+                                      "driving_user_id" => operator.id, "call_origin" => "mcp_oauth")
     expect(promote.dig(:data, :pending)).to be(true) # max_uses spent
   end
 
