@@ -10,17 +10,41 @@ RSpec.describe "System extension account teardown" do
     expect(Account.teardown_guards).to include(:system_environment_fleet)
   end
 
+  # These examples create their rows and assert on them: a missing factory is a LOUD
+  # failure (FactoryBot::KeyError), never a skip, and each asserts the rows existed first.
   it "removes system rows owned by the account and unlinks a shared row's creator" do
     account = create(:account)
     user = create(:user, account: account)
-    log = create(:system_task_log, account: account) if FactoryBot.factories.registered?(:system_task_log)
-    version = create(:system_node_module_version, created_by: user) if FactoryBot.factories.registered?(:system_node_module_version)
-    skip "no system factories available" unless log || version
+    repo = create(:system_package_repository, account: account)
+    version = create(:system_node_module_version, created_by: user)
+    expect(System::PackageRepository.exists?(repo.id)).to be true
+    expect(System::NodeModuleVersion.find(version.id).created_by_id).to eq(user.id)
 
     expect { account.destroy! }.not_to raise_error
 
-    expect(System::TaskLog.exists?(log.id)).to be false if log
-    expect(System::NodeModuleVersion.find(version.id).created_by_id).to be_nil if version
+    expect(System::PackageRepository.exists?(repo.id)).to be false
+    expect(System::NodeModuleVersion.find(version.id).created_by_id).to be_nil
+  end
+
+  it "records a platform-scoped audit trail for the signing keys it destroys" do
+    account = create(:account)
+    create(:user, account: account)
+    pub = Base64.strict_encode64(SecureRandom.random_bytes(32))
+    peer_key = System::PeerCapabilitySigningKey.create!(account: account, handle: "acct-teardown-p", public_key_b64: pub)
+    constellation_key = Sdwan::ConstellationSigningKey.create!(account: account, handle: "acct-teardown-c", public_key_b64: pub)
+    expect(account.system_peer_capability_signing_keys.count).to eq(1)
+
+    account.destroy!
+
+    expect(System::PeerCapabilitySigningKey.exists?(peer_key.id)).to be false
+    revoked = AuditLog.where(account_id: nil, action: "account.teardown_key_revoked")
+    expect(revoked.pluck(:resource_type, :resource_id)).to include(
+      [ "System::PeerCapabilitySigningKey", peer_key.id ], [ "Sdwan::ConstellationSigningKey", constellation_key.id ]
+    )
+    destroyed = AuditLog.where(account_id: nil, action: "account.destroyed").last
+    expect(destroyed.metadata["revoked_records"].map { |e| e["model"] }).to include(
+      "System::PeerCapabilitySigningKey", "Sdwan::ConstellationSigningKey"
+    )
   end
 
   it "removes a disk image webhook owned by the account together with the account" do
@@ -74,7 +98,13 @@ RSpec.describe "System extension account teardown" do
   it "unlinks a node instance ops hold from a user instead of blocking the user's removal" do
     account = create(:account)
     user = create(:user, account: account)
+    instance = create(:system_node_instance, account: account)
+    instance.update_columns(ops_hold_by_id: user.id, ops_hold_at: Time.current)
+    expect(System::NodeInstance.find(instance.id).ops_hold_by_id).to eq(user.id)
     expect(User.reflect_on_association(:system_ops_held_node_instances).options[:dependent]).to eq(:nullify)
+
     expect { user.destroy! }.not_to raise_error
+
+    expect(System::NodeInstance.find(instance.id).ops_hold_by_id).to be_nil
   end
 end

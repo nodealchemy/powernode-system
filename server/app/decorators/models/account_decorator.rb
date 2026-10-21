@@ -142,3 +142,7 @@ Account.register_teardown_guard(:system_package_module_links,
   linked = System::PackageModuleLink.where(package_repository_id: System::PackageRepository.where(account_id: account.id).select(:id))
   "Cannot delete account with package repositories that still have module links" if linked.exists?
 end
+
+# Key-bearing rows the account teardown audit records (ids only, never material).
+%i[system_peer_capability_signing_keys system_sdwan_constellation_signing_keys
+   system_sdwan_membership_credentials].each { |assoc| Account.register_teardown_key_source(assoc) }
