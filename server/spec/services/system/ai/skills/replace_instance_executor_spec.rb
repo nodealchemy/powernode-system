@@ -144,7 +144,10 @@ RSpec.describe System::Ai::Skills::ReplaceInstanceExecutor, type: :service do
 
       op = Ai::DeferredOperation.where(account: account).order(:created_at).last
       expect(op.action_category).to eq("system.instance_reap")
-      expect(op.params.dig("principal", "kind")).to be_present
+      # The executor's OWN stamp, not the gate's default: this executor runs
+      # with no user and no agent, which the gate cannot derive a principal
+      # from, so only park_principal_descriptor yields "internal" here.
+      expect(op.params["principal"]).to include("kind" => "internal")
     end
 
     it "parks its own approval on system.instance_reap instead of terminating inline" do

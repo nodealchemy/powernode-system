@@ -19,4 +19,20 @@ RSpec.describe "SDWAN peer destroy — parked principal", type: :request do
     operation = ::Ai::DeferredOperation.where(action_category: "sdwan.peer_delete").order(:created_at).last
     expect(operation.params["principal"]).to include("kind" => "user", "user_id" => user.id)
   end
+
+  # The gate trusts a caller-stamped principal (tools stamp their own). That is
+  # safe on the REST paths only because their gate params are built server-side
+  # from nested/explicit values: a top-level `principal` in the request cannot
+  # reach them.
+  it "ignores a top-level principal key in the request" do
+    peer = create(:sdwan_peer, :hub, account: account, network: network)
+
+    delete "/api/v1/system/sdwan/networks/#{network.id}/peers/#{peer.id}",
+           params: { principal: { kind: "instance", node_instance_id: SecureRandom.uuid } }.to_json,
+           headers: auth_headers_for(user).merge("Content-Type" => "application/json")
+
+    expect(response.status).to be_in([ 200, 202 ]), response.body
+    operation = ::Ai::DeferredOperation.where(action_category: "sdwan.peer_delete").order(:created_at).last
+    expect(operation.params["principal"]).to include("kind" => "user", "user_id" => user.id)
+  end
 end
