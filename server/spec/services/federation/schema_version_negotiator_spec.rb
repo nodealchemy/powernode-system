@@ -48,6 +48,14 @@ RSpec.describe ::Federation::SchemaVersionNegotiator, type: :service do
         expect(result.notes).to match(/unparseable/)
       end
 
+      it "fails closed for the build-info-less FALLBACK version (0.0.0), local or remote" do
+        [ [ "0.0.0", "0.1.2" ], [ "0.1.2", "0.0.0" ], [ "0.0.0-dev.0", "0.1.0" ], [ "0.0.0-dev.0+abc1234", "0.1.0" ] ].each do |local, remote|
+          result = described_class.negotiate(local_version: local, remote_version: remote)
+          expect(result.status).to eq("incompatible"), "#{local} vs #{remote}"
+          expect(result.notes).to match(/unparseable/)
+        end
+      end
+
       it "is compatible when same major + same minor" do
         result = described_class.negotiate(local_version: "0.3.1", remote_version: "0.3.0")
         expect(result.status).to eq("compatible")

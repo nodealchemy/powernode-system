@@ -107,9 +107,16 @@ module Federation
     # is compared: "0.3.0-dev.12+abc" parses as [0, 3, 0]; a bare sha is nil.
     SEMVER_CORE = /\A(\d+)\.(\d+)(?:\.(\d+))?(?:[-+].*)?\z/
 
+    #
+    # 0.0.0 is Powernode::Version::FALLBACK (no BUILD_INFO and no git): an unknown build,
+    # not a version. Treating it as parseable made it "compatible" with 0.1.x peers
+    # (same major, minor delta 1), which fails open; it is unparseable, hence incompatible.
     def parse_semver(str)
       m = SEMVER_CORE.match(str)
-      m && [ m[1].to_i, m[2].to_i, m[3].to_i ]
+      return nil unless m
+
+      parts = [ m[1].to_i, m[2].to_i, m[3].to_i ]
+      parts == [ 0, 0, 0 ] ? nil : parts
     end
   end
 end
