@@ -45,11 +45,13 @@ jest.mock('./features/system/services/api/nodeInstancePeersApi', () => ({
 
 const mockCreate = jest.fn();
 const mockTest = jest.fn();
+const mockDestroy = jest.fn();
 
 jest.mock('./features/system/services/api/providerCredentialsApi', () => ({
   providerCredentialsApi: {
     create: (...args: unknown[]) => mockCreate(...args),
     test: (...args: unknown[]) => mockTest(...args),
+    destroy: (...args: unknown[]) => mockDestroy(...args),
   },
 }));
 
@@ -481,15 +483,17 @@ describe('register() — cloud provider credentials', () => {
     mockRegisterProviderCategoryHandlers.mockReset();
     mockCreate.mockReset();
     mockTest.mockReset();
+    mockDestroy.mockReset();
   });
 
-  it('registers create/test handlers for the cloud category exactly once', () => {
+  it('registers create/test/delete handlers for the cloud category exactly once', () => {
     register();
 
     expect(mockRegisterProviderCategoryHandlers).toHaveBeenCalledTimes(1);
     expect(mockRegisterProviderCategoryHandlers).toHaveBeenCalledWith('cloud', {
       createCredential: expect.any(Function),
       testCredential: expect.any(Function),
+      deleteCredential: expect.any(Function),
     });
   });
 
@@ -506,6 +510,16 @@ describe('register() — cloud provider credentials', () => {
       providerType: 'hetzner',
       credentials: { api_token: 't' },
     });
+  });
+
+  it('deletes through the extension client by credential id', async () => {
+    mockDestroy.mockResolvedValue(undefined);
+    register();
+    const [, handlers] = mockRegisterProviderCategoryHandlers.mock.calls[0];
+
+    await handlers.deleteCredential('cred-9');
+
+    expect(mockDestroy).toHaveBeenCalledWith('cred-9');
   });
 
   it('tests through the extension client', async () => {

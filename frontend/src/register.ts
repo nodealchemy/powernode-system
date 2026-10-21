@@ -217,6 +217,7 @@ export function register(): void {
     createCredential: ({ providerType, credentials }) =>
       providerCredentialsApi.create({ providerId: providerType, providerType, credentials }),
     testCredential: (request) => providerCredentialsApi.test(request),
+    deleteCredential: (credentialId) => providerCredentialsApi.destroy(credentialId),
   });
 
   // Peer operators join the chat @-mention picker through a mention source,
