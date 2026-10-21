@@ -494,9 +494,27 @@ func logTail(stdout, stderr []byte) string {
 	return "stdout: " + tailBytes(removeKeyBlocks(stdout), logTailMaxBytes) + "\nstderr: " + tailBytes(removeKeyBlocks(stderr), logTailStderrMaxBytes)
 }
 
+// hasEndFooterLine: some line of text is a PEM END footer.
+func hasEndFooterLine(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if pemEndLineRe.MatchString(strings.TrimSpace(line)) {
+			return true
+		}
+	}
+	return false
+}
+
 func tailBytes(b []byte, max int) string {
 	if len(b) <= max {
-		return strings.TrimSpace(string(b))
+		text := string(b)
+		// Not window-cut, but the stream may still BEGIN mid-key (the header
+		// was written elsewhere): a leading run of body lines closed by an END
+		// footer is key material. Only a footer anchors it here, so ordinary
+		// base64-looking output is never touched.
+		if hasEndFooterLine(text) {
+			text = dropCutKeyBody(text)
+		}
+		return strings.TrimSpace(text)
 	}
 	return strings.TrimSpace(dropCutKeyBody(string(b[len(b)-max:])))
 }
@@ -742,9 +760,13 @@ func onlyTerminatorFollows(rest []byte) bool {
 	return len(rest) == 0 || string(rest) == "\n" || string(rest) == "\r\n"
 }
 
-// clippedBodyLine: a short remainder counts only after a line of a standard
-// PEM wrap width (RFC 7468 64, OpenSSH 70, MIME 76) and at a base64 length
-// (a multiple of 4), so a final short word after an unwrapped body ("next")
+// pemWrapWidthMax bounds the wrap widths clippedBodyLine accepts: wider than
+// this a "line" is an unwrapped blob, whose last short word is ordinary text.
+const pemWrapWidthMax = 120
+
+// clippedBodyLine: a short remainder counts only after a line of a PEM wrap
+// width (any width of 60 or more: RFC 7468 64, OpenSSH 70, MIME 76, and the
+// 72/80 columns other tools use) and at a base64 length (a multiple of 4), so a final short word after an unwrapped body ("next")
 // is never taken.
 func clippedBodyLine(line []byte, prevWidth int, last bool) bool {
 	if len(line) == 0 || bytes.HasPrefix(line, []byte("Proc-Type:")) || bytes.HasPrefix(line, []byte("DEK-Info:")) {
@@ -758,7 +780,7 @@ func clippedBodyLine(line []byte, prevWidth int, last bool) bool {
 	if len(line) >= 16 {
 		return true
 	}
-	return last && (len(line)%4 == 0 && (prevWidth == 64 || prevWidth == 70 || prevWidth == 76) || len(line)%4 == 2 && prevWidth == 70)
+	return last && (len(line)%4 == 0 && prevWidth >= 60 && prevWidth <= pemWrapWidthMax || len(line)%4 == 2 && prevWidth == 70)
 }
 
 // dropCutKeyBody handles a window whose cut landed inside a PEM body whose

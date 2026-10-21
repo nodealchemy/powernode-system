@@ -168,14 +168,16 @@ func TestLogTail_CutInsideOrdinaryLogLinesIsUntouched(t *testing.T) {
 	}
 }
 
-func TestLogTail_NoCutWindowsAreUnchanged(t *testing.T) {
+func TestLogTail_NoCutWindowsWithoutAKeyFooterAreUnchanged_andFooteredBodyIsRemoved(t *testing.T) {
 	body := syntheticPEMBody(t, 37, 3)
 	stdout := strings.Join(body, "\n") + "\n-----END RSA PRIVATE KEY-----\n"
 	stderr := "warn: something\n"
 
+	// A headerless body closed by an END footer is key material even in an
+	// uncut stream (it begins mid-key): removed through the footer.
 	tail := logTail([]byte(stdout), []byte(stderr))
-	if want := "stdout: " + strings.TrimSpace(stdout) + "\nstderr: " + strings.TrimSpace(stderr); tail != want {
-		t.Fatalf("an uncut window must be served as before, got:\n%s", tail)
+	if want := "stdout: " + wantKeyBodyMarker + "\nstderr: " + strings.TrimSpace(stderr); tail != want {
+		t.Fatalf("a headerless body before an END footer must be removed, got:\n%s", tail)
 	}
 }
 
@@ -840,5 +842,38 @@ func TestLogTail_Clipped70ColumnKeyRemainderIsRemoved(t *testing.T) {
 		if got != "stdout: stage 1\n"+wantKeyBlockMarker+"\nstderr: ok" {
 			t.Fatalf("lines=%d rem=%d got:\n%.300s", c.lines, c.rem, got)
 		}
+	}
+}
+
+func TestLogTail_Clipped72ColumnKeyRemainderIsRemoved(t *testing.T) {
+	// Any wrap width of 60 or more, not just 64/70/76: a base64 remainder at a
+	// multiple of 4 after a full line of that width is the clipped tail.
+	hdr := "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
+	for _, width := range []int{60, 72, 80, 100} {
+		full := strings.Repeat("Q", width-1) + "x"
+		in := "stage 1\n" + hdr + "\n" + full + "\n" + full + "\n" + strings.Repeat("Z", 8) + "\n"
+		got := logTail([]byte(in), []byte("ok"))
+		if got != "stdout: stage 1\n"+wantKeyBlockMarker+"\nstderr: ok" {
+			t.Fatalf("width=%d got:\n%.300s", width, got)
+		}
+	}
+}
+
+func TestLogTail_HeaderlessBodyBeforeAnEndFooterInAnUncutStreamIsRemoved(t *testing.T) {
+	// The stream is not window-cut, but it begins mid-key (an earlier process
+	// wrote the header elsewhere): the body lines through the END footer are
+	// still key material.
+	footer := "-----END RSA " + "PRIVATE KEY-----"
+	body := strings.Repeat("A", 63) + "x\n" + strings.Repeat("B", 63) + "x\n"
+	got := logTail([]byte(body+footer+"\nafter\n"), []byte("ok"))
+	if want := "stdout: " + logTailKeyBodyMarker + "\nafter\nstderr: ok"; got != want {
+		t.Fatalf("got:\n%.300s", got)
+	}
+}
+
+func TestLogTail_OrdinaryBase64LookingOutputInAnUncutStreamIsUntouched(t *testing.T) {
+	in := "digest: " + strings.Repeat("A", 40) + "\nnext line\n"
+	if got, want := logTail([]byte(in), []byte("ok")), "stdout: "+strings.TrimSpace(in)+"\nstderr: ok"; got != want {
+		t.Fatalf("got:\n%.300s", got)
 	}
 }
