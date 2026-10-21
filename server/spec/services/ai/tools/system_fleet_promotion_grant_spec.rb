@@ -69,4 +69,53 @@ RSpec.describe Ai::Tools::SystemFleetTool, "promotion grants" do
     expect(catalog.unknown_subject_ids(account: account, action_category: "release.promote",
                                        ids: [ mod.id, SecureRandom.uuid ]).size).to eq(1)
   end
+
+  # M-1 end to end through the agent-bridge door (Ai::AgentToolBridgeService):
+  # every bridge call runs with `user: agent.creator`, so the creator stands in
+  # for whoever ran the agent. granter_driven_only must key on the REAL
+  # triggering user the door is handed, never on that stand-in.
+  describe "through the agent-bridge door" do
+    let(:runner) { create(:user, account: account, permissions: %w[system.nodes.read]) }
+    let(:creators_agent) { create(:ai_agent, account: account, creator: operator, name: "Release Bot") }
+    let!(:grant) do
+      create(:ai_promotion_grant, account: account, granted_by: operator, agent: creators_agent, environment: ops,
+                                  module_ids: [ mod.id ], granter_driven_only: true)
+    end
+
+    def bridge_promote(driving_user: :none)
+      bridge = if driving_user == :none
+        Ai::AgentToolBridgeService.new(agent: creators_agent, account: account)
+      else
+        Ai::AgentToolBridgeService.new(agent: creators_agent, account: account, driving_user: driving_user)
+      end
+      _json, result = bridge.dispatch_tool_call_capturing(
+        name: "system_promote_module_version",
+        arguments: { module_id: mod.id, environment: "ops", version_id: v1.id }
+      )
+      result
+    end
+
+    it "refuses the grant when someone else runs the granter's agent, and spends nothing" do
+      result = bridge_promote(driving_user: runner)
+
+      expect(result.dig(:data, :pending)).to be(true)
+      expect(grant.reload.uses_count).to eq(0)
+      expect(mod.served_version_for(ops)).to be_nil
+    end
+
+    it "refuses it when the door knows no driver (the creator is only a stand-in)" do
+      expect(bridge_promote.dig(:data, :pending)).to be(true)
+      expect(grant.reload.uses_count).to eq(0)
+    end
+
+    it "honours it when the granter runs the agent, and names the real driver" do
+      result = bridge_promote(driving_user: operator)
+
+      expect(result.dig(:data, :pending)).to be_nil
+      expect(mod.served_version_for(ops)).to eq(v1)
+      audit = AuditLog.where(account_id: account.id, action: "ai.promotion_grant.used").sole
+      expect(audit.metadata).to include("driving_user_id" => operator.id, "driver_known" => true,
+                                        "call_origin" => Ai::Tools::CallOrigin::AGENT_BRIDGE)
+    end
+  end
 end
