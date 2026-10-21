@@ -107,4 +107,13 @@ RSpec.describe "System extension account teardown" do
 
     expect(System::NodeInstance.find(instance.id).ops_hold_by_id).to be_nil
   end
+
+  it "registers its key-operation audit actions and its key sources with the core teardown" do
+    expect(AuditActions.key_operation?(Sdwan::PeerKeyRotationService::AUDIT_ACTION)).to be true
+    expect(AuditActions.key_operation?("system.internal_ca.revoke")).to be true
+    expect(AccountTeardownAudit.key_sources.keys).to include(
+      :system_peer_capability_signing_keys, :system_sdwan_constellation_signing_keys,
+      :system_sdwan_membership_credentials, :system_provider_credentials
+    )
+  end
 end

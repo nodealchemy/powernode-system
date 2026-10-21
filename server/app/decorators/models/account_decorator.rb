@@ -145,4 +145,4 @@ end
 
 # Key-bearing rows the account teardown audit records (ids only, never material).
 %i[system_peer_capability_signing_keys system_sdwan_constellation_signing_keys
-   system_sdwan_membership_credentials].each { |assoc| Account.register_teardown_key_source(assoc) }
+   system_sdwan_membership_credentials system_provider_credentials].each { |assoc| Account.register_teardown_key_source(assoc) }

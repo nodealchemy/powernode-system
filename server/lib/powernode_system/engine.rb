@@ -709,6 +709,15 @@ module PowernodeSystem
             ::Sdwan::PeerKeyRotationService::AUDITED_ACTIONS +
             ::System::Storage::RotatingCredentialSweeper::AUDITED_ACTIONS
         )
+        # The subset that records a key operation: the account teardown re-homes these audit
+        # rows to platform scope (an explicit list, see AuditActions::CORE_KEY_OPERATION_ACTIONS).
+        if ::AuditActions.respond_to?(:register_key_operation_actions)
+          ::AuditActions.register_key_operation_actions(
+            "system",
+            ::Sdwan::PeerKeyRotationService::AUDITED_ACTIONS + ::System::InternalCaService::AUDITED_ACTIONS +
+              ::System::SshHostKeyWriter::AUDITED_ACTIONS
+          )
+        end
       rescue StandardError => e
         Rails.logger.warn "[PowernodeSystem] Could not register audit actions: #{e.message}"
       end
