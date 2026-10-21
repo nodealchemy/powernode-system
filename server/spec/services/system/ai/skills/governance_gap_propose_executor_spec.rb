@@ -176,6 +176,13 @@ RSpec.describe System::Ai::Skills::GovernanceGapProposeExecutor do
         expect(offer.evidence["materialization"]).to include("status" => "pending", "deferred_operation_id" => op.id)
       end
 
+      it "records the agent as the principal on the parked row (IMP-dbf945e7e4db)" do
+        result = executor.execute(gap: binding_gap, fingerprint: fingerprint)
+
+        op = Ai::DeferredOperation.find(result[:data][:materialization][:deferred_operation_id])
+        expect(op.params["principal"]).to include("kind" => "agent", "agent_id" => architect.id)
+      end
+
       it "does not park a second operation while the first is still pending" do
         executor.execute(gap: binding_gap, fingerprint: fingerprint)
         described_class.new(account: account, agent: architect, user: nil).execute(gap: binding_gap, fingerprint: fingerprint)

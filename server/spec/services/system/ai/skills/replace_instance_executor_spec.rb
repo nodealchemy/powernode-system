@@ -137,6 +137,16 @@ RSpec.describe System::Ai::Skills::ReplaceInstanceExecutor, type: :service do
       expect(failed.reload.status).to eq("error")
     end
 
+    # IMP-dbf945e7e4db: the nested reap gate wrote no principal, so the row was
+    # invisible to ParkPrincipal.parked_by_instance and never machine_requested?.
+    it "records who asked on the reap's parked row" do
+      run(reap: true)
+
+      op = Ai::DeferredOperation.where(account: account).order(:created_at).last
+      expect(op.action_category).to eq("system.instance_reap")
+      expect(op.params.dig("principal", "kind")).to be_present
+    end
+
     it "parks its own approval on system.instance_reap instead of terminating inline" do
       result = run(reap: true)
 

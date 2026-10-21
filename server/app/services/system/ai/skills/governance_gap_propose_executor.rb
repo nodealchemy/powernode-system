@@ -225,7 +225,7 @@ module System
           return nil unless spec.is_a?(Hash) && spec["kind"].present?
 
           result = ::System::Governance::GapMaterializer
-                     .new(account: @account, agent: @agent)
+                     .new(account: @account, agent: @agent, principal: park_principal_descriptor)
                      .call(kind: spec["kind"], params: spec.except("kind"), fingerprint: fingerprint, offer: offer)
 
           # The materializer closes the offer itself on an applied write (it is

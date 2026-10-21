@@ -608,7 +608,11 @@ module System
           result = ::Ai::AutonomyGate.evaluate(
             action_category: REAP_ACTION_CATEGORY,
             executor_class: ReapInstanceExecutor.name,
-            params: { instance_id: failed.id, operation_id: operation_id, reason: reason },
+            # Who asked, from this executor's own caller state, so the reap's
+            # parked row is attributable (ParkPrincipal.parked_by_instance).
+            params: ::Ai::Approvals::ParkPrincipal.stamp(
+              { instance_id: failed.id, operation_id: operation_id, reason: reason }, park_principal_descriptor
+            ),
             account: @account,
             agent: @agent,
             requested_by: @user,

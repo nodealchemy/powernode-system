@@ -95,11 +95,14 @@ module System
         end
       end
 
-      def initialize(account:, agent: nil)
+      # +principal+ is the calling executor's own park_principal_descriptor; with
+      # none, the park names the agent (there is no user on this path).
+      def initialize(account:, agent: nil, principal: nil)
         raise ArgumentError, "account is required" if account.nil?
 
         @account = account
         @agent = agent
+        @principal = principal
       end
 
       # Gate and (when policy allows) apply one materialisation.
@@ -124,7 +127,9 @@ module System
         result = ::Ai::AutonomyGate.evaluate(
           action_category: category,
           executor_class: self.class.name,
-          params: payload,
+          params: ::Ai::Approvals::ParkPrincipal.stamp(
+            payload, @principal || ::Ai::Approvals::ParkPrincipal.for_session(user: nil, agent: @agent)
+          ),
           account: @account,
           agent: @agent,
           description: "Governance gap materialisation (#{kind}): #{fingerprint}"
