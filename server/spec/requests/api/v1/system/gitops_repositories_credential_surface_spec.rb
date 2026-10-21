@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require_relative "../../../../support/git_popen3_routing"
 
 # IMP-0f914db2c7cf — an operator whose GitOps sync fails on credentials had no
 # platform-side way to see WHICH Vault path the repository is configured with,
@@ -20,6 +21,8 @@ require "rails_helper"
 # from. The last describe block pins that by mutating the producer and
 # demanding the consumer's failure follow it.
 RSpec.describe "Operator API — GitOps credential surface", type: :request do
+  include GitPopen3Routing
+  before { route_popen3_through_capture3! }
   let(:account) { create(:account) }
   let(:user)    { user_with_permissions("system.gitops.read", account: account) }
   let(:headers) { auth_headers_for(user) }
@@ -86,20 +89,28 @@ RSpec.describe "Operator API — GitOps credential surface", type: :request do
   # `<password>:<password>` and the Vault `username` was read and discarded.
   describe "the askpass shim answers each git prompt correctly" do
     let(:repository) { repo_with(url: "https://git.example.test/fleet.git") }
-    let(:script) { "#{Rails.root.join('tmp/gitops', account.id.to_s, repository.id.to_s)}.askpass" }
+    # The askpass script now lives in a per-call 0700 secrets dir, named to git
+    # only through GIT_ASKPASS in the env of the exec.
     let(:captured) { {} }
 
     before do
       allow(::Security::VaultClient).to receive(:read_secret).and_return(
         { "username" => "deploy-bot", "password" => "hunter2" }.with_indifferent_access
       )
-      allow(Open3).to receive(:capture3) do |*_args|
+      allow(Open3).to receive(:capture3) do |*args, **_kwargs|
+        env = args.first.is_a?(Hash) ? args.first : {}
+        argv = args.first.is_a?(Hash) ? args[1..] : args
         # Read the shim while it still exists — run_git! deletes it on exit,
         # and sync! runs git a second time (rev-parse) after that cleanup, so
         # capture only on the first invocation.
         unless captured.key?(:username)
+          script = env["GIT_ASKPASS"]
+          captured[:script] = script
+          captured[:secret_dir] = File.dirname(script)
           captured[:username] = `bash #{script} "Username for 'https://git.example.test': "`.strip
           captured[:password] = `bash #{script} "Password for 'https://deploy-bot@git.example.test': "`.strip
+          captured[:argv] = argv.map(&:to_s)
+          captured[:env_values] = env.values.map(&:to_s)
         end
         [ "", "", instance_double(Process::Status, success?: true, exitstatus: 0) ]
       end
@@ -115,6 +126,16 @@ RSpec.describe "Operator API — GitOps credential surface", type: :request do
       ::System::Gitops::RepoSyncService.sync!(repository)
 
       expect(captured[:password]).to eq("hunter2")
+    end
+
+    it "never puts the secret on the command line or in the env, and removes the script afterwards" do
+      ::System::Gitops::RepoSyncService.sync!(repository)
+
+      expect(captured[:argv].join(" ")).not_to include("hunter2")
+      expect(captured[:env_values].join(" ")).not_to include("hunter2")
+      expect(captured[:script]).to include("gitops-secrets-")
+      expect(File.exist?(captured[:script])).to be(false)
+      expect(File.exist?(captured[:secret_dir])).to be(false)
     end
   end
 
