@@ -527,8 +527,11 @@ func tailBytes(b []byte, max int) string {
 // lines that immediately precedes a PRIVATE KEY END footer (the footer line
 // too), replacing it with logTailKeyBodyMarker. removeKeyBlocks has already
 // taken every headed block, so a footer still standing here closes a body whose
-// header is not in the stream. A footer with no body line before it is left
-// alone.
+// header is not in the stream. A body's last wrapped line is usually its short
+// base64 remainder (under isKeyBodyLine's 16-character floor), so one
+// pemShortLineRe line directly before the footer is stepped over first; it
+// counts only when full body lines (or Proc-Type / DEK-Info headers) stand
+// above it. A footer with no body line before it is left alone.
 func stripFooteredBodies(text string) string {
 	lines := strings.SplitAfter(text, "\n")
 	out := make([]string, 0, len(lines))
@@ -538,10 +541,14 @@ func stripFooteredBodies(text string) string {
 			continue
 		}
 		j := len(out)
+		if j > 0 && pemShortLineRe.MatchString(strings.TrimSpace(out[j-1])) {
+			j--
+		}
+		top := j
 		for j > 0 && isKeyBodyLine(strings.TrimSpace(out[j-1])) {
 			j--
 		}
-		if j == len(out) {
+		if j == top {
 			out = append(out, raw)
 			continue
 		}

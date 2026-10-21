@@ -898,6 +898,37 @@ func TestLogTail_HeaderlessBodyMidStreamBeforeAnEndFooterIsRemoved(t *testing.T)
 	if want := "stdout: stage 1\nstage 2\n" + wantKeyBodyMarker + "\nafter\nstderr: ok"; got != want {
 		t.Fatalf("a headerless body mid-stream must be removed through its footer, got:\n%.300s", got)
 	}
+
+	// A PEM body's last wrapped line is usually its short base64 remainder;
+	// it must not stop the walk up from the footer.
+	short := strings.Repeat("A", 63) + "x\n" + strings.Repeat("B", 63) + "x\n" + "QUJDRA==\n"
+	in = "stage 1\nstage 2\n" + short + footer + "\nafter\n"
+	got = logTail([]byte(in), []byte("ok"))
+	if want := "stdout: stage 1\nstage 2\n" + wantKeyBodyMarker + "\nafter\nstderr: ok"; got != want {
+		t.Fatalf("a body ending in a short remainder line must be removed through its footer, got:\n%.300s", got)
+	}
+
+	// The same body inside a window cut: the stream is longer than the window,
+	// so the cut lands in the leading noise, well before the body.
+	var noise strings.Builder
+	for noise.Len() < 2*logTailMaxBytes {
+		noise.WriteString("noise line\n")
+	}
+	in = noise.String() + "stage 1\nstage 2\n" + short + footer + "\nafter\n"
+	got = logTail([]byte(in), []byte("ok"))
+	if strings.Contains(got, "QUJDRA==") || strings.Contains(got, strings.Repeat("B", 63)) {
+		t.Fatalf("a short-remainder body inside a cut window leaked, got:\n%.400s", got[len(got)-400:])
+	}
+	if !strings.HasSuffix(got, "stage 1\nstage 2\n"+wantKeyBodyMarker+"\nafter\nstderr: ok") {
+		t.Fatalf("the cut window must keep the context and mark the body, got tail:\n%.300s", got[len(got)-300:])
+	}
+
+	// Mid-stream, a footer whose only preceding line is a short word is not a
+	// key body.
+	lone := "stage 1\nstage 2 done\nok\n" + footer + "\nafter\n"
+	if got, want := logTail([]byte(lone), []byte("ok")), "stdout: "+strings.TrimSpace(lone)+"\nstderr: ok"; got != want {
+		t.Fatalf("a footer with only a short word before it must be left alone, got:\n%.300s", got)
+	}
 }
 
 func TestLogTail_FooterWithTrailingTextOnTheSameLineStillAnchors(t *testing.T) {
