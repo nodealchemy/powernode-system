@@ -118,4 +118,47 @@ RSpec.describe Ai::Tools::SystemFleetTool, "promotion grants" do
                                         "call_origin" => Ai::Tools::CallOrigin::AGENT_BRIDGE)
     end
   end
+
+  # Round-3 M-1: the concierge confirmation reached from the TOOL door.
+  # Agent A (created by the granter) runs for someone else and calls
+  # confirm_concierge_action on a pending promote card. Its tool `user` is
+  # the creator stand-in, so the concierge must get no driver from it.
+  describe "through confirm_concierge_action on the agent-bridge door" do
+    let(:conversation_perms) { %w[system.nodes.read system.modules.update ai.conversations.create ai.agents.read] }
+    let!(:granter) { create(:user, account: account, permissions: conversation_perms) }
+    let(:concierge) { create(:ai_agent, account: account, creator: granter, is_concierge: true, name: "Concierge") }
+    let(:agent_a) { create(:ai_agent, account: account, creator: granter, name: "Agent A") }
+    let(:conversation) { create(:ai_conversation, account: account, user: granter, agent: concierge) }
+
+    def confirm_from_bridge
+      Ai::Tools::McpPlatformToolRegistrar.execute_tool(
+        "platform.confirm_concierge_action",
+        params: { conversation_id: conversation.id, action_type: "tool_call",
+                  action_params: { "_tool_name" => "system_promote_module_version", "module_id" => mod.id,
+                                   "environment" => "ops", "version_id" => v1.id } },
+        account: account, user: granter, mcp_agent: agent_a, origin: Ai::Tools::CallOrigin::AGENT_BRIDGE
+      )
+    end
+
+    it "does not spend a granter-only grant: the stand-in creator is not the driver" do
+      grant = create(:ai_promotion_grant, account: account, granted_by: granter, agent: concierge, environment: ops,
+                                          module_ids: [ mod.id ], granter_driven_only: true)
+
+      confirm_from_bridge
+
+      expect(grant.reload.uses_count).to eq(0)
+      expect(mod.served_version_for(ops)).to be_nil
+    end
+
+    it "records an unknown driver when an ordinary grant is spent" do
+      create(:ai_promotion_grant, account: account, granted_by: granter, agent: concierge, environment: ops,
+                                  module_ids: [ mod.id ])
+
+      confirm_from_bridge
+
+      audit = AuditLog.where(account_id: account.id, action: "ai.promotion_grant.used").sole
+      expect(audit.metadata).to include("driver_known" => false, "driving_user_id" => nil)
+      expect(audit.user_id).to be_nil
+    end
+  end
 end

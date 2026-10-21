@@ -326,6 +326,20 @@ module System
         # set it wherever a signal fingerprint or a tick id is in hand.
         attr_writer :caller_correlation_id
 
+        # Who drove the call this executor is a step of, and the door it came
+        # through, handed down by Ai::Tools::BaseTool#build_skill_executor.
+        # Writers for the same reason as the ones above. driving_user is read
+        # only by the autonomy gate, for promotion grants: once set (even to
+        # nil, on a stand-in door) it is passed explicitly, so the gate never
+        # falls back to @user, which on the agent bridge is the creator.
+        attr_reader :driving_user
+        attr_accessor :parent_call_origin
+
+        def driving_user=(value)
+          @driving_user = value
+          @driving_user_known = true
+        end
+
         def initialize(account:, agent: nil, user: nil)
           raise ArgumentError, "account is required" if account.nil?
 
@@ -467,7 +481,9 @@ module System
             account: @account,
             agent: @agent,
             requested_by: @user,
-            description: self.class.descriptor[:description]
+            description: self.class.descriptor[:description],
+            **(@driving_user_known ? { driving_user: @driving_user } : {}),
+            **(@parent_call_origin ? { call_origin: @parent_call_origin } : {})
           )
 
           case result.decision
@@ -779,6 +795,8 @@ module System
           built = tool_class.new(account: @account, agent: @agent, user: @user,
                                  internal: internal_caller?,
                                  call_origin: ::Ai::Tools::CallOrigin::SKILL_EXECUTOR)
+          # The nested tool's driver is this call's, never @user by default.
+          built.driving_user = @driving_user if @driving_user_known
           mark_instance_provenance(built)
         end
 
@@ -804,6 +822,10 @@ module System
           # unconditionally — every executor answers this writer (it is defined
           # on this class), unlike the gate-declaring guard above.
           built.caller_correlation_id = execution_correlation_id
+          if @driving_user_known
+            built.driving_user = @driving_user
+            built.parent_call_origin = @parent_call_origin
+          end
           mark_instance_provenance(built)
         end
 
