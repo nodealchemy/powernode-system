@@ -66,6 +66,9 @@ module System
 
       WORK_TREE_ROOT = Rails.root.join("tmp/gitops")
       CLONE_TIMEOUT_SEC = 60
+      # A per-call secrets dir older than this is the remains of a sync that was
+      # killed (SIGKILL, OOM) between writing the key and its cleanup.
+      STALE_SECRETS_AGE = 30.minutes
 
       def self.sync!(repository)
         new(repository).sync!
@@ -76,6 +79,7 @@ module System
       end
 
       def sync!
+        sweep_stale_secret_dirs!
         FileUtils.mkdir_p(work_tree_path)
 
         if File.exist?(File.join(work_tree_path, ".git"))
@@ -120,6 +124,23 @@ module System
       end
 
       private
+
+      # Removes gitops-secrets-* dirs (0600 key material) that a killed sync
+      # left under the work-tree root. Only dirs older than STALE_SECRETS_AGE,
+      # so a concurrent sync's live dir is never touched; a failure to remove
+      # one is logged and never fails the sync.
+      def sweep_stale_secret_dirs!
+        cutoff = Time.current - STALE_SECRETS_AGE
+        Dir.glob(File.join(WORK_TREE_ROOT.to_s, "*", "gitops-secrets-*")).each do |dir|
+          next unless File.directory?(dir) && File.mtime(dir) < cutoff
+
+          FileUtils.rm_rf(dir)
+        rescue StandardError => e
+          Rails.logger.warn("[Gitops::RepoSync] stale secrets sweep failed: #{e.class}")
+        end
+      rescue StandardError => e
+        Rails.logger.warn("[Gitops::RepoSync] stale secrets sweep failed: #{e.class}")
+      end
 
       def work_tree_path
         @work_tree_path ||= WORK_TREE_ROOT.join(@repository.account_id.to_s, @repository.id.to_s).to_s
