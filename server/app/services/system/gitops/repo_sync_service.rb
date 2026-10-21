@@ -192,10 +192,13 @@ module System
       # and an exec that outlives it is killed (TERM, then KILL) and reported
       # as GitTimeoutError rather than hanging the sync worker.
       def run_with_timeout(cmd, chdir)
-        Open3.popen3(*cmd, chdir: chdir) do |stdin, stdout, stderr, wait_thr|
+        # pgroup: git runs ssh / credential helpers / hooks as children, and a
+        # kill of git alone would orphan them; the exec leads its own process
+        # group and the whole group is signalled.
+        Open3.popen3(*cmd, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, wait_thr|
           stdin.close
-          out_reader = Thread.new { stdout.read }
-          err_reader = Thread.new { stderr.read }
+          out_reader = quiet_reader(stdout)
+          err_reader = quiet_reader(stderr)
           unless wait_thr.join(CLONE_TIMEOUT_SEC)
             kill_git(wait_thr)
             raise GitTimeoutError, "git did not finish within #{CLONE_TIMEOUT_SEC}s and was killed"
@@ -204,13 +207,25 @@ module System
         end
       end
 
+      # A reader that closes quietly: when the exec is killed the pipe is closed
+      # under it, which is expected and must not print a thread exception.
+      def quiet_reader(io)
+        Thread.new do
+          Thread.current.report_on_exception = false
+          io.read
+        rescue IOError
+          ""
+        end
+      end
+
       def kill_git(wait_thr)
-        Process.kill("TERM", wait_thr.pid)
+        pgid = -wait_thr.pid
+        Process.kill("TERM", pgid)
         return if wait_thr.join(2)
 
-        Process.kill("KILL", wait_thr.pid)
+        Process.kill("KILL", pgid)
         wait_thr.join(2)
-      rescue Errno::ESRCH
+      rescue Errno::ESRCH, Errno::EPERM
         nil
       end
 

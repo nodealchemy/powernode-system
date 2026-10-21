@@ -507,16 +507,59 @@ func hasEndFooterLine(text string) bool {
 func tailBytes(b []byte, max int) string {
 	if len(b) <= max {
 		text := string(b)
-		// Not window-cut, but the stream may still BEGIN mid-key (the header
-		// was written elsewhere): a leading run of body lines closed by an END
-		// footer is key material. Only a footer anchors it here, so ordinary
-		// base64-looking output is never touched.
+		// Not window-cut, but the stream may still carry a headerless key body
+		// (the header was written elsewhere): body lines closed by an END
+		// footer are key material wherever they sit. Only a footer anchors
+		// them, so ordinary base64-looking output is never touched.
 		if hasEndFooterLine(text) {
-			text = dropCutKeyBody(text)
+			text = stripFooteredBodies(dropCutKeyBody(text))
 		}
 		return strings.TrimSpace(text)
 	}
-	return strings.TrimSpace(dropCutKeyBody(string(b[len(b)-max:])))
+	cut := dropCutKeyBody(string(b[len(b)-max:]))
+	if hasEndFooterLine(cut) {
+		cut = stripFooteredBodies(cut)
+	}
+	return strings.TrimSpace(cut)
+}
+
+// stripFooteredBodies removes, anywhere in text, the run of PEM-body-shaped
+// lines that immediately precedes a PRIVATE KEY END footer (the footer line
+// too), replacing it with logTailKeyBodyMarker. removeKeyBlocks has already
+// taken every headed block, so a footer still standing here closes a body whose
+// header is not in the stream. A footer with no body line before it is left
+// alone.
+func stripFooteredBodies(text string) string {
+	lines := strings.SplitAfter(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, raw := range lines {
+		if !pemEndLineRe.MatchString(strings.TrimSpace(raw)) {
+			out = append(out, raw)
+			continue
+		}
+		j := len(out)
+		for j > 0 && isKeyBodyLine(strings.TrimSpace(out[j-1])) {
+			j--
+		}
+		if j == len(out) {
+			out = append(out, raw)
+			continue
+		}
+		out = append(out[:j], logTailKeyBodyMarker+"\n")
+	}
+	return strings.Join(out, "")
+}
+
+// isKeyBodyLine: a non-empty base64-alphabet line (or a Proc-Type / DEK-Info
+// encryption header) such as a PEM body wraps to.
+func isKeyBodyLine(line string) bool {
+	if line == "" {
+		return false
+	}
+	if strings.HasPrefix(line, "Proc-Type:") || strings.HasPrefix(line, "DEK-Info:") {
+		return true
+	}
+	return len(line) >= 16 && pemFragmentRe.MatchString(line)
 }
 
 const (
@@ -563,11 +606,11 @@ var (
 	// The window's first line is a FRAGMENT (the cut landed mid-line): any
 	// length of base64 alphabet, including none, can be the end of a body line.
 	pemFragmentRe = regexp.MustCompile(`^[A-Za-z0-9+/=]*$`)
-	// A line that is, by itself, a PRIVATE KEY END footer (pemFooterRe's forms,
-	// anchored to the line). Certificates, public keys and banners such as
+	// A line that IS a PRIVATE KEY END footer (pemFooterRe's forms), optionally
+	// followed by non-base64 trailing text on the same line. Certificates, public keys and banners such as
 	// "-----END OF OUTPUT-----" or "---- END OF BUILD LOG ----" are never taken
 	// for the footer of a key body.
-	pemEndLineRe = regexp.MustCompile(`^(?:-----END[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|---- END [A-Z0-9 ]*PRIVATE KEY ----)$`)
+	pemEndLineRe = regexp.MustCompile(`^(?:-----END[A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|---- END [A-Z0-9 ]*PRIVATE KEY ----)(?:[^A-Za-z0-9+/=].*)?$`)
 )
 
 // removeKeyBlocks replaces every headed private-key block in the stream with

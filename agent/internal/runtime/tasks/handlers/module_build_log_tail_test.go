@@ -889,3 +889,23 @@ func TestLogTail_CertificateBodyAndEndOfOutputSurviveAnUncutStream(t *testing.T)
 		t.Fatalf("a hex line before END OF OUTPUT must survive, got:\n%.300s", got)
 	}
 }
+
+func TestLogTail_HeaderlessBodyMidStreamBeforeAnEndFooterIsRemoved(t *testing.T) {
+	footer := "-----END RSA " + "PRIVATE KEY-----"
+	body := strings.Repeat("A", 63) + "x\n" + strings.Repeat("B", 63) + "x\n"
+	in := "stage 1\nstage 2\n" + body + footer + "\nafter\n"
+	got := logTail([]byte(in), []byte("ok"))
+	if want := "stdout: stage 1\nstage 2\n" + wantKeyBodyMarker + "\nafter\nstderr: ok"; got != want {
+		t.Fatalf("a headerless body mid-stream must be removed through its footer, got:\n%.300s", got)
+	}
+}
+
+func TestLogTail_FooterWithTrailingTextOnTheSameLineStillAnchors(t *testing.T) {
+	footer := "-----END RSA " + "PRIVATE KEY-----"
+	body := strings.Repeat("A", 63) + "x\n" + strings.Repeat("B", 63) + "x\n"
+	in := "stage 1\n" + body + footer + " (end of key)\nafter\n"
+	got := logTail([]byte(in), []byte("ok"))
+	if want := "stdout: stage 1\n" + wantKeyBodyMarker + "\nafter\nstderr: ok"; got != want {
+		t.Fatalf("a footer followed by text must still anchor the body, got:\n%.300s", got)
+	}
+}

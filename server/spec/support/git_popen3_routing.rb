@@ -9,7 +9,9 @@ module GitPopen3Routing
   FakeWait = Struct.new(:status) do
     def join(_timeout = nil) = self
     def value = status
-    def pid = 0
+    # The routing stub runs no process: reaching a kill is a spec bug, and a real
+    # pid here (0 would signal the rspec process group) must never be signalled.
+    def pid = raise("FakeWait has no process to signal; the kill path was reached under the popen3 routing stub")
   end
 
   def route_popen3_through_capture3!

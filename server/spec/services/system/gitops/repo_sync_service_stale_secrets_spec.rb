@@ -66,6 +66,39 @@ RSpec.describe System::Gitops::RepoSyncService, "stale secret directories" do
       expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 10
     end
 
+    it "kills the whole process group: a grandchild of the timed-out exec does not survive" do
+      stub_const("System::Gitops::RepoSyncService::CLONE_TIMEOUT_SEC", 1)
+      pidfile = File.join(Dir.mktmpdir("pg-"), "child.pid")
+      grandchild = nil
+
+      begin
+        expect { service.send(:capture_git, "sh", "-c", "sleep 300 & echo $! > #{pidfile}; wait", chdir: Dir.tmpdir) }
+          .to raise_error(described_class::GitTimeoutError)
+        grandchild = File.read(pidfile).to_i
+        expect(grandchild).to be > 1
+
+        gone = 20.times.any? do
+          sleep 0.1
+          begin
+            Process.kill(0, grandchild)
+            false
+          rescue Errno::ESRCH
+            true
+          end
+        end
+        expect(gone).to be(true), "the sleep started under the timed-out exec is still running (pid #{grandchild})"
+      ensure
+        Process.kill("KILL", grandchild) if grandchild.to_i > 1 && (Process.kill(0, grandchild) rescue nil)
+      end
+    end
+
+    it "does not print a thread exception when it kills the exec" do
+      stub_const("System::Gitops::RepoSyncService::CLONE_TIMEOUT_SEC", 1)
+
+      expect { service.send(:capture_git, "sleep", "30", chdir: Dir.tmpdir) rescue nil }
+        .not_to output(/terminated with exception/).to_stderr
+    end
+
     it "still returns output, error and status for a git exec inside the limit" do
       out, _err, status = service.send(:capture_git, "echo", "hi", chdir: Dir.tmpdir)
 
