@@ -128,3 +128,17 @@ rescue StandardError => e
   # Absolute backstop: the reconcile must never break boot.
   warn "[role-grants-reconcile] unexpected error (non-fatal): #{e.class}: #{e.message}"
 end
+
+# One-shot core data scrub, folded into this boot runner so it costs no extra
+# Rails boot (IMP-dbabbea6f81c). `db:seed` is first-boot only, so a scrub added
+# after an install's first boot never runs from a seed. The core class checks its
+# SiteSetting marker first (a single cheap read once done), is bounded by its own
+# time budget, and never raises; the guard here is the absolute backstop.
+begin
+  if defined?(::Ai::ExecutionEventErrorScrub)
+    outcome = ::Ai::ExecutionEventErrorScrub.run_once!(time_budget: 30)
+    warn "[execution-event-error-scrub] status=#{outcome.status}"
+  end
+rescue StandardError => e
+  warn "[execution-event-error-scrub] unexpected error (non-fatal): #{e.class}"
+end
