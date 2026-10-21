@@ -162,6 +162,12 @@ module PowernodeSystem
             #     through core DiscoveryRunService#ingest!. Nil ⇒ core mode,
             #     and core skips every unit with no_discovery_executor.
             lint_discovery_executor: "System::LintDiscoveryExecutor",
+            #   * promotion_grant_catalog — what core's time-boxed promotion
+            #     grants (Ai::PromotionGrants::Catalog) need to know about
+            #     release.promote: the verb's own permission (a granter must
+            #     hold it) and this account's modules (what a grant may name).
+            #     Nil ⇒ core mode, and no grant can be issued.
+            promotion_grant_catalog: "System::PromotionGrantCatalog",
             ingress_certs: "Acme::TraefikConfigWriter",
             ingress_routers: "Acme::TraefikConfigWriter"
           }

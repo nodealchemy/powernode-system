@@ -6339,6 +6339,10 @@ module Ai
         deferred_tool_call_context(pinned).merge(
           source_type: "System::NodeModule",
           source_id: node_module.id,
+          # What a core promotion grant (Ai::PromotionGrant) is matched and
+          # audited against: the module and the version this context resolved
+          # and pinned, never a caller-supplied value.
+          grant_subject: { module_id: node_module.id, version_id: version.id },
           description: "Promote module '#{node_module.name}' v#{version.version_number} into environment " \
                        "#{environment.slug} (ladder rung #{environment.tier}); its nodes restart onto it"
         )
