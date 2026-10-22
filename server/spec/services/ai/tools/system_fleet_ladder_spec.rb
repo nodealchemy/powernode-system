@@ -8,9 +8,10 @@ require "rails_helper"
 RSpec.describe Ai::Tools::SystemFleetTool, "promotion ladder verbs" do
   let(:account)  { create(:account) }
   # The replay executor re-asks the principal's permissions; an AGENT principal
-  # answers "any user in the account holds it".
+  # answers with its CREATOR's role (BaseTool.permitted_by_creator_role?,
+  # IMP-82db8ba318aa), so the operator who holds them creates the agent.
   let!(:operator) { create(:user, account: account, permissions: %w[system.nodes.read system.modules.update system.modules.rollback]) }
-  let(:agent)    { create(:ai_agent, account: account, agent_type: "monitor", name: "Release Manager") }
+  let(:agent)    { create(:ai_agent, account: account, creator: operator, agent_type: "monitor", name: "Release Manager") }
   let(:tool)     { described_class.new(account: account, agent: agent, internal: true) }
   let(:platform) { create(:system_node_platform, account: account) }
   let(:category) { create(:system_node_module_category, account: account) }
@@ -60,9 +61,24 @@ RSpec.describe Ai::Tools::SystemFleetTool, "promotion ladder verbs" do
     expect(Ai::DeferredOperation.where(account_id: account.id).count).to eq(0)
     call("system_promote_module_version", module_id: mod.id, environment: "staging", version_id: v2.id)
 
-    # naming a laxer plane on the params does not move the gate: the target plane is the floor
+    # naming a laxer plane on the params does not move the gate: the target
+    # plane is the floor. The strict-params check now refuses the unknown
+    # key outright, before anything is gated, parked or applied.
     forged = call("system_promote_module_version", module_id: mod.id, environment: "prod", version_id: v2.id, environment_slug: "dev")
-    expect(forged.dig(:data, :pending)).to be true
+    expect(forged[:success]).to be false
+    expect(forged[:error]).to match(/Unrecognized parameter\(s\).*"environment_slug"/)
+    expect(Ai::DeferredOperation.where(account_id: account.id, status: "pending").count).to eq(0)
+    expect(mod.served_version_for(prod)).to be_nil
+
+    # Behind that refusal the gate itself still holds the floor: with the
+    # strict-params check out of the way, the forged plane still parks in prod.
+    allow(tool).to receive(:unknown_params_refusal).and_return(nil)
+    behind = call("system_promote_module_version", module_id: mod.id, environment: "prod", version_id: v2.id, environment_slug: "dev")
+    expect(behind.dig(:data, :pending)).to be true
+    parked = Ai::DeferredOperation.where(account_id: account.id, status: "pending").order(:created_at).last
+    expect(parked.environment).to eq(prod)
+    expect(mod.served_version_for(prod)).to be_nil
+    parked.update_columns(status: "rejected")
 
     r = call("system_promote_module_version", module_id: mod.id, environment: "prod", version_id: v2.id)
     expect(r[:success]).to be true

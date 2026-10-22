@@ -330,6 +330,8 @@ RSpec.describe "MCP tools/call — system_fleet_tool refusal surface", type: :re
     end
 
     it "still surfaces as JSON-RPC -32603, because it is not a refusal" do
+      allow(Rails.logger).to receive(:error).and_call_original
+
       call_tool("system_update_module",
                 { "module_id" => node_module.id, "manifest_yaml" => manifest_yaml }, headers: headers)
 
@@ -338,7 +340,10 @@ RSpec.describe "MCP tools/call — system_fleet_tool refusal surface", type: :re
                                            "a genuine fault was converted into an application-level result: " \
                                            "#{body['result'].inspect}"
       expect(body["result"]).to be_nil
-      expect(body.dig("error", "message")).to include("imp_d2f87ffa8733_fault_sentinel")
+      # Bound to the injected fault through the server-side log: the
+      # client-visible message is the generic fallback since IMP-378de6e082be.
+      expect(Rails.logger).to have_received(:error).with(a_string_including("imp_d2f87ffa8733_fault_sentinel"))
+      expect(body.dig("error", "message")).to eq("Internal error: #{::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE}")
     end
   end
 end

@@ -175,7 +175,10 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_provision_instance contract" 
 
       row = last_row
       expect(r[:success]).to be false
-      expect(r[:error]).to include("cloud exploded mid-create")
+      # The provider's raw text stays server-side (IMP-88ad4adbf97d): the
+      # caller gets the caller-safe phrase, never the adapter's message.
+      expect(r[:error]).to eq(::System::CallerFacingMessages::GENERIC)
+      expect(r[:error]).not_to include("cloud exploded mid-create")
       expect(r.dig(:data, :instance, :id)).to eq(row.id)
       expect(r.dig(:data, :instance, :status)).to eq(row.reload.status)
       expect(r[:data]).to have_key(:cloud_instance_id)

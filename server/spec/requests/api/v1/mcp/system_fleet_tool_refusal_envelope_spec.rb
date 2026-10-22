@@ -170,6 +170,8 @@ RSpec.describe "MCP tools/call — system_fleet_tool refusal envelope", type: :r
     end
 
     it "still surfaces as JSON-RPC -32603, because it is not a refusal" do
+      allow(Rails.logger).to receive(:error).and_call_original
+
       provision(node)
 
       body = json_response
@@ -180,8 +182,12 @@ RSpec.describe "MCP tools/call — system_fleet_tool refusal envelope", type: :r
       # Bound to the fault THIS example injects. Without it any unrelated
       # internal error upstream of the stub — a factory change, a serializer
       # blowing up — produces the identical -32603 and the example passes green
-      # while never reaching the stub or the new rescue arms at all.
-      expect(body.dig("error", "message")).to include("zz_mutation_fixture_boom")
+      # while never reaching the stub or the new rescue arms at all. The
+      # client-visible message is the generic fallback since IMP-378de6e082be
+      # (raw exception text no longer reaches the caller), so the binding is
+      # the server-side log line, which still carries it in full.
+      expect(Rails.logger).to have_received(:error).with(a_string_including("zz_mutation_fixture_boom"))
+      expect(body.dig("error", "message")).to eq("Internal error: #{::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE}")
     end
   end
 end

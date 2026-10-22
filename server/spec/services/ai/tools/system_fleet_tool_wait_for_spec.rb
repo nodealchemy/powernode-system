@@ -588,10 +588,15 @@ RSpec.describe Ai::Tools::SystemFleetTool, "wait-for" do
       end
     end
 
+    # A granted instance is also served every read-only bootstrap verb,
+    # derived from Ai::Tools::BootstrapVerbs::ACTIONS (Mcp::Principal
+    # #bootstrap_derived?, IMP-ad2b2b1b3c74); an empty grant still gets none.
     it "is listed for an instance granted it and hidden from one that is not" do
       catalog = ::Mcp::ToolCatalog.new(protocol_version: ::Mcp::ProtocolService::ALL_SUPPORTED_VERSIONS.max,
                                        principal: principal)
-      expect(catalog.advertised_names).to match_array(granted)
+      bootstrap = ::Ai::Tools::BootstrapVerbs::ACTIONS.map { |action| "platform.#{action}" }
+      expect(catalog.advertised_names).to include(*granted)
+      expect(catalog.advertised_names - granted).to all(satisfy { |name| bootstrap.include?(name) })
 
       ::Mcp::Principal.tool_grant_resolver = ->(_i) { [] }
       expect(catalog.class.new(protocol_version: ::Mcp::ProtocolService::ALL_SUPPORTED_VERSIONS.max,

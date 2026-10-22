@@ -29,10 +29,12 @@ RSpec.describe "SystemFleetTool release verb gating (HIER-P2B-ENG)" do
   let(:account) { create(:account) }
   # system.nodes.read is the tool floor Ai::Executors::DeferredToolCall
   # re-asks for on replay: for an AGENT principal BaseTool.permitted? answers
-  # "any user in the account holds it", so the account needs one such user.
+  # with the agent's CREATOR's role (IMP-82db8ba318aa), so the user who holds
+  # it is the one who creates the agent.
   let!(:operator) { create(:user, account: account, permissions: %w[system.nodes.read]) }
   let(:release_manager) do
-    create(:ai_agent, account: account, name: "Release Manager", agent_type: "monitor", source_key: "release-manager")
+    create(:ai_agent, account: account, creator: operator, name: "Release Manager", agent_type: "monitor",
+                      source_key: "release-manager")
   end
   # `internal: true` mirrors the in-process bridge the platform executor uses;
   # the AGENT is what the policy resolution keys on, and it rides on the
