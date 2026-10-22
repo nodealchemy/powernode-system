@@ -5,11 +5,14 @@ require "digest"
 # IMP-a6d61b01490d — the operator-visible half of the agent's standing
 # conditions.
 #
-# The agent keeps two things OFF the failure path on purpose and used to say so
+# The agent keeps three things OFF the failure path on purpose and used to say so
 # only through cfg.OnError, i.e. stderr and the node journal, which the operator
 # cannot read: a known-degraded unit (a run-once unit that was already failing
-# before an in-place upgrade, which the upgrade therefore committed past), and a
-# refused sudoers grant (an illegal or colliding drop-in name). Neither may become
+# before an in-place upgrade, which the upgrade therefore committed past), a
+# refused sudoers grant (an illegal or colliding drop-in name, or a field that
+# could leave its slot), and a refused Unix user or group (identity_refused,
+# IMP-01a0f109: an entry the identity render skipped as unsafe, so the account
+# and any unit running as it are missing). None may become
 # a convergence failure — that would fail every apply_config on the node forever —
 # so they ride the heartbeat as ONE generic agent_conditions list
 # {kind, subject, detail, first_seen}; System::BootLkgStateWriter persists it, and
@@ -81,8 +84,9 @@ module System
               "truncated"          => affected.size > MAX_NAMED_INSTANCES,
               "summary"            => "#{capped ? 'at least ' : ''}#{affected.size} live node(s) report a standing agent " \
                                       "condition the agent deliberately keeps off the failure path (a known-degraded unit, " \
-                                      "or a refused sudoers grant). Each needs an operator: configure the missing " \
-                                      "credential, or fix or remove the refused grant",
+                                      "a refused sudoers grant, or a refused Unix user or group). Each needs an operator: " \
+                                      "configure the missing credential, or fix or remove the refused grant or identity " \
+                                      "in the module's manifest",
               "remediation_action" => nil
             },
             fingerprint: "node_agent_condition:#{account.id}:#{standing_digest(affected)}"

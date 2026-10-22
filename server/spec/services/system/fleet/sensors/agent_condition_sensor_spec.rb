@@ -80,6 +80,20 @@ RSpec.describe System::Fleet::Sensors::AgentConditionSensor do
       expect(signal[:fingerprint]).not_to eq(first)
     end
 
+    # IMP-01a0f109 (M2): a user/group the agent's identity render refused as
+    # unsafe is reported like a refused sudoers grant, and the operator-facing
+    # summary names it so the missing account (and its failing unit) has a cause.
+    it "raises and names an identity_refused condition" do
+      inst = instance!
+      report!(inst, [ condition(kind: "identity_refused", subject: "mod-a/user:svcbad",
+                                detail: "gecos contains control character '\\n'") ])
+
+      expect(signal).to be_present
+      listed = signal[:payload]["instances"].first["conditions"].first
+      expect(listed).to include("kind" => "identity_refused", "subject" => "mod-a/user:svcbad")
+      expect(signal[:payload]["summary"]).to match(/refused (Unix )?user or group/)
+    end
+
     it "goes quiet once the node reports the empty list" do
       inst = instance!
       report!(inst, [ condition ])
