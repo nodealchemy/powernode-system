@@ -17,9 +17,11 @@ RSpec.describe RenameSystemConciergeToInfrastructureGeneralist do
   let(:account) { create(:account) }
   let(:migration) { described_class.new }
 
+  # suppress_messages, not `migration.verbose = false`: verbose is a
+  # cattr_accessor, so the instance writer flips it for every migration in
+  # the process and silences a later spec's migration output.
   def run!
-    migration.verbose = false
-    migration.up
+    migration.suppress_messages { migration.up }
   end
 
   # The seeded global canonical, at the shape AgentSetupHelpers writes.

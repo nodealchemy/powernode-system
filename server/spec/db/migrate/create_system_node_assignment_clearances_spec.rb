@@ -17,8 +17,9 @@ RSpec.describe CreateSystemNodeAssignmentClearances do
   it "is a no-op when the table already exists (schema.rb loaded ahead of the migration)" do
     expect(ActiveRecord::Base.connection.table_exists?(:system_node_assignment_clearances)).to be(true)
 
-    migration.verbose = false
-    expect { migration.migrate(:up) }.not_to raise_error
+    # suppress_messages, not `migration.verbose = false`: verbose is a
+    # cattr_accessor, so the instance writer flips it process-wide.
+    expect { migration.suppress_messages { migration.migrate(:up) } }.not_to raise_error
 
     expect(ActiveRecord::Base.connection.table_exists?(:system_node_assignment_clearances)).to be(true)
   end

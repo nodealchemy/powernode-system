@@ -125,6 +125,18 @@ RSpec.describe "extension tool-specific gate parks record the originating princi
       end
     end
 
+    # The category registry is process-global and has no unregister: a
+    # fixture category left in it is read by every later example in the run
+    # (GovernanceGapSensor reports it as unowned, the policy-domain spec as
+    # stranded). Snapshot and restore it around each example.
+    around do |example|
+      registry = ::Ai::InterventionPolicy.instance_variable_get(:@category_registry)
+      snapshot = registry.dup
+      example.run
+    ensure
+      registry.replace(snapshot)
+    end
+
     before do
       stub_const("ZzParkPrincipalFixtureExecutor", fixture_class)
       ::Ai::InterventionPolicy.register_category!("system.zz_park_principal_fixture")

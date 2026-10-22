@@ -26,9 +26,10 @@ RSpec.describe AddMountedCredentialIdToSystemStorageAssignments do
 
   subject(:migration) { described_class.new }
 
+  # suppress_messages, not `migration.verbose = false`: verbose is a
+  # cattr_accessor, so the instance writer flips it process-wide.
   def run!
-    migration.verbose = false
-    migration.up
+    migration.suppress_messages { migration.up }
   end
 
   def build_assignment_with_credential(status:)

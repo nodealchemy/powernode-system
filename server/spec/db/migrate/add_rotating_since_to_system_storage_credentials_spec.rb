@@ -29,9 +29,10 @@ RSpec.describe AddRotatingSinceToSystemStorageCredentials do
 
   after(:context) { ActiveRecord::Base.connection.clear_cache! }
 
+  # suppress_messages, not `migration.verbose = false`: verbose is a
+  # cattr_accessor, so the instance writer flips it process-wide.
   def run!
-    migration.verbose = false
-    migration.up
+    migration.suppress_messages { migration.up }
   end
 
   def credential(status:, rotating_since: nil, updated_at: Time.current)
