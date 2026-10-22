@@ -44,6 +44,12 @@ RSpec.describe System::CiBuildOrchestrator do
 
   describe ".dispatch!" do
     context "when the lease, dispatch, and run correlation all succeed" do
+      # The stubbed runs' created_at is read when the stub is built, BEFORE
+      # dispatch! floors its own Time.current to the second. Unfrozen, a second
+      # boundary falling between the two made the matching run predate the
+      # dispatch, so correlation found nothing (run_id nil): an intermittent red.
+      before { freeze_time }
+
       it "threads the leased runner_label into the dispatch, attaches the correlated run to the lease, and returns an ok Result" do
         lease = build_lease
         allow(System::CiRunnerLeaseService).to receive(:lease!).and_return(lease)
