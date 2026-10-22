@@ -273,7 +273,7 @@ services:
       Environment=DATABASE_URL=postgres://powernode@localhost:5432/powernode_production
       Environment=REDIS_URL=redis://localhost:6379/0
       Environment=POWERNODE_DEPLOYED=1
-      Environment=CACHE_STORE=memory_store
+      Environment=CACHE_STORE=solid_cache_store
       Environment=QUEUE_ADAPTER=async
       Environment=POWERNODE_CA_MODE=local
       ExecStartPre=-+/usr/local/bin/rails-relock-gemfile.sh
@@ -331,29 +331,48 @@ services:
     # goes to hub-worker over HTTP), so async remains the safe table-free
     # ActiveJob fallback for stray enqueues.
     #
-    # WHY CACHE_STORE STAYS PINNED ANYWAY, deliberately and not by inertia:
-    # unpinning it is a live-hub deploy decision, not a config tidy-up. A cache
-    # store that cannot be reached at boot fails a self-hosted hub closed, and
-    # this hub cannot be recovered by the control plane it is running.
+    # CACHE_STORE=solid_cache_store (IMP-24a25a083497, operator decision
+    # 2026-10-19). MemoryStore was per process: RateLimiting counters were
+    # per process (the effective limit was limit x processes once puma runs
+    # workers) and reset on every restart, and a CacheVersioning bump retired
+    # nothing outside the process that made it. solid_cache is Postgres-backed,
+    # so every puma worker and every out-of-band rails process shares one
+    # cache, and cache writes stay out of the Redis AOF the queues depend on.
     #
-    # The correctness prerequisite for solid_cache IS now landed:
-    # CacheVersioning no longer uses a resumable counter, and no longer falls
-    # back to a shared "never bumped" namespace either — a swept version row
-    # used to let a later bump re-issue keys a previous bump had retired.
-    # Deliberately NOT listed as a further prerequisite: config/cache.yml's
-    # missing max_age. Setting it explicitly to 2.weeks changes nothing, and
-    # setting it to nil only disables the age sweep — the cache_full sweep
-    # (max_size: 256 MB) evicts the version row regardless and ignores
-    # created_at entirely, so that knob protects nothing the token change did
-    # not already handle.
+    # The prerequisites are landed: db/cache_migrate ships the table and the
+    # db:migrate rails-start.sh runs on every boot creates it, and
+    # CacheVersioning no longer issues reusable keys when the cache_full sweep
+    # (max_size 256 MB, config/cache.yml) evicts a version row.
     #
-    # WHAT THE PIN COSTS TODAY, stated so nobody assumes otherwise: MemoryStore
-    # is per-process, so each puma worker holds its own cache and a
-    # CacheVersioning bump in one retires nothing in the others or in
-    # hub-worker. Every invalidation is therefore per-process here. That is not
-    # a regression — MemoryStore's #delete_matched was equally per-process — but
-    # it does mean cross-process invalidation is not yet delivered in
-    # production. See app/services/concerns/cache_versioning.rb.
+    # It stays an explicit pin, rather than falling through to production.rb's
+    # identical default, so rolling back is this line plus its mirror in
+    # powernode-rails-exec (and the two specs that pin the value): set it back
+    # to memory_store. Boot reachability:
+    # the store lives in the same Postgres as every other table, so it adds no
+    # new dependency, and solid_cache turns a transient connection error into
+    # a logged miss. A MISSING table is not transient and does raise, which is
+    # why rails-start.sh's db:migrate (set -e, before puma) must keep creating
+    # it; hub_backend_cache_store_spec.rb pins that delivery path.
+    #
+    # What it does NOT change: Security::JwtBlacklistService and
+    # Powernode::CacheRedis use Redis only when Rails.cache IS a
+    # RedisCacheStore. The blacklist keeps its jwt_blacklists SQL path (shared,
+    # correct, one query per authenticated request), and the admin rate-limit
+    # tools that scan the cache's Redis (stats, clear_limits, the tiered TTL
+    # lookup) still find nothing: they report empty and clear nothing.
+    #
+    # Entry values ARE encrypted at rest: core config/cache.yml sets
+    # encrypt: true for production, and Powernode::CacheEncryptionGuard
+    # refuses to boot without it or without the three AR encryption keys
+    # (they come from the secrets file rails-start.sh sources). Keys are
+    # stored as written. Secrets stay out of the cache regardless: VaultClient
+    # caches in process memory and HS256 secrets live in JwtKeyStore. The
+    # first boot with this pin empties solid_cache_entries once (the boot
+    # runner's legacy plaintext clear), a cold start, not data loss. Rack::Attack
+    # counts in Redis, not here.
+    #
+    # Pinned by extensions/system/server/spec/integration/system/
+    # hub_backend_cache_store_spec.rb.
     #
     # POWERNODE_CA_MODE=local — pin the internal CA adapter. Unset,
     # System::InternalCaService#resolve_default_mode probes Vault LIVE and

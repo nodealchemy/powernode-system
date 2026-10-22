@@ -1991,9 +1991,9 @@ module System
         #
         # The read is DB-backed on purpose (see #open_operator_request? for the
         # definition of "open" and what resolve/reject/expire do): cross-process
-        # and restart-safe, where Rails.cache — memory_store on the hub — is
-        # neither. The engine's own cache dedup stays an optimization in front
-        # of it.
+        # and restart-safe, which Rails.cache need not be (the hub ran
+        # memory_store until IMP-24a25a083497, and every store evicts). The
+        # engine's own cache dedup stays an optimization in front of it.
         #
         # The terminal state is per OPERATOR OBLIGATION, not per fingerprint,
         # because the obligation itself is: the gate's dedup key is coarser than

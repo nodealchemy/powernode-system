@@ -14,10 +14,10 @@ module System
     # invisible to anyone not watching the firehose. This row is the record
     # instead, and the event stream is throttled to a heartbeat.
     #
-    # THE ROW IS NOT A CACHE. Rails.cache on the hub is memory_store —
-    # per-Puma-process, flushed on restart — so it can only ever be an
-    # optimization in front of the engine's 600s dedup, never the memory of how
-    # long something has stood. Everything durable lives here.
+    # THE ROW IS NOT A CACHE. Rails.cache is an operator-chosen, evicting store
+    # (the hub ran per-process memory_store until IMP-24a25a083497), so it can
+    # only ever be an optimization in front of the engine's 600s dedup, never
+    # the memory of how long something has stood. Everything durable lives here.
     #
     # RESOLUTION SEAM. Every threshold this table's lanes read resolves through
     # .setting, which is the deployment-wide SiteSetting rung the fleet sensors

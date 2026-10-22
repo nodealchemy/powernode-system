@@ -299,9 +299,10 @@ RSpec.describe System::Fleet::DecisionEngine do
     # into require_approval.
     #
     # The gate is the DATABASE (the same open ApprovalRequest
-    # create_pending_approval dedupes on), never Rails.cache: the hub runs
-    # CACHE_STORE=memory_store, which is per-Puma-process and flushes on
-    # restart, so the cache can only ever be an optimization here.
+    # create_pending_approval dedupes on), never Rails.cache: the cache store
+    # is an operator choice (CACHE_STORE; the hub ran per-process memory_store
+    # until IMP-24a25a083497) and evicts under pressure, so the cache can only
+    # ever be an optimization here.
     context "stuck escalation is terminal while an operator request is open (IMP-01a025b3)" do
       let(:platform) { create(:system_node_platform, account: account) }
       let(:node_module) do

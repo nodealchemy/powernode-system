@@ -58,7 +58,7 @@ RSpec.describe "powernode-rails-exec: out-of-band bundle wrapper (IMP-01a0e40a-c
     expect(script).to match(/export DATABASE_URL="postgres:\/\/powernode@localhost:5432\/powernode_production"/)
     expect(script).to match(/export REDIS_URL="redis:\/\/localhost:6379\/0"/)
     expect(script).to match(/export POWERNODE_DEPLOYED=1/)
-    expect(script).to match(/export CACHE_STORE=memory_store/)
+    expect(script).to match(/export CACHE_STORE=solid_cache_store/)
     expect(script).to match(/export QUEUE_ADAPTER=async/)
     expect(script).to match(/export POWERNODE_CA_MODE=local/)
   end

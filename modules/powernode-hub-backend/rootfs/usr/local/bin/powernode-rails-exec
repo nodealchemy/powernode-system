@@ -110,7 +110,7 @@ export RAILS_LOG_TO_STDOUT=1
 export DATABASE_URL="postgres://powernode@localhost:5432/powernode_production"
 export REDIS_URL="redis://localhost:6379/0"
 export POWERNODE_DEPLOYED=1
-export CACHE_STORE=memory_store
+export CACHE_STORE=solid_cache_store
 export QUEUE_ADAPTER=async
 export POWERNODE_CA_MODE=local
 

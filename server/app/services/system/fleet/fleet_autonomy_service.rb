@@ -837,10 +837,11 @@ module System
       #
       # "Open" means "re-gating would produce no NEW operator-facing artifact",
       # and it mirrors #create_pending_approval's three suppression arms
-      # one-for-one, read straight off the DATABASE (never Rails.cache — the hub
-      # runs CACHE_STORE=memory_store, which is per-Puma-process and flushes on
-      # restart, so the cache can only ever be an optimization here, never the
-      # correctness mechanism):
+      # one-for-one, read straight off the DATABASE (never Rails.cache — the
+      # cache store is an operator choice (CACHE_STORE; the hub ran per-process
+      # memory_store until IMP-24a25a083497) and evicts under pressure, so the
+      # cache can only ever be an optimization here, never the correctness
+      # mechanism):
       #
       #   1. a PENDING request on the same dedup key — the gate would find that
       #      row and merely update it in place;
