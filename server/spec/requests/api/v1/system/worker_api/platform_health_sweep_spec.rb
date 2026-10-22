@@ -25,10 +25,18 @@ RSpec.describe "Api::V1::System::WorkerApi::PlatformHealth", type: :request do
 
   let(:user) { create(:user, account: account) }
   let!(:provider) { create(:ai_provider, account: account, is_active: true) }
-  let(:bound_source_key) { System::Ai::Skills::SkillBindings::AGENT_ALIASES.fetch("concierge") }
+  # The canonical the service credits is whichever one SkillBindings has
+  # PlatformHealthCheckExecutor registered against (since IMP-80a353489ba4,
+  # platform-health-monitor, no longer the concierge). Resolved through the
+  # same registry the service reads, so a future binds_to change moves the
+  # fixture with it instead of leaving the sweep with no clone to run.
+  let(:bound_source_key) do
+    executor = System::Ai::Skills::PlatformHealthCheckExecutor
+    System::Ai::Skills::SkillBindings.all.find { |r| r[:executor] == executor }.fetch(:agents).sole
+  end
   let!(:bound_canonical) do
     create(:ai_agent, :global, owner_account: seeding_account, status: "active",
-                              name: "Infrastructure Generalist", slug: "infrastructure-generalist",
+                              name: "Platform Health Monitor", slug: bound_source_key,
                               source_key: bound_source_key, is_system: true)
   end
   let!(:clone) do
@@ -82,10 +90,31 @@ RSpec.describe "Api::V1::System::WorkerApi::PlatformHealth", type: :request do
     expect(row).to include("ran" => false, "reason" => "not_due")
   end
 
-  it "skips an account with no clone of the bound agent instead of failing the sweep" do
+  # IMP-80a353489ba4: the sweep tick is the bound agent's first use, so an
+  # account with no clone yet gets one minted here rather than being skipped
+  # forever.
+  it "mints the bound agent's clone on the first sweep of an account that has none" do
     clone.destroy!
 
     post path, headers: headers
+
+    expect(response).to have_http_status(:ok)
+    row = JSON.parse(response.body)["data"]["results"].find { |r| r["account_id"] == account.id }
+    minted = ::Ai::Agents::AccountPrincipalResolver.existing(bound_canonical, account: account)
+    expect(minted).to be_present
+    expect(minted.id).not_to eq(bound_canonical.id)
+    expect(row).to include("ran" => true, "agent_id" => minted.id)
+  end
+
+  # `no_bound_agent_clone` is now only the genuinely un-mintable case: no user
+  # in the account to own a clone. The tick never runs as the canonical.
+  it "skips an account that cannot mint a clone of the bound agent instead of failing the sweep" do
+    clone.destroy!
+    account.users.each(&:destroy!)
+
+    expect {
+      post path, headers: headers
+    }.not_to change { Ai::AgentExecution.where(account: account).count }
 
     expect(response).to have_http_status(:ok)
     row = JSON.parse(response.body)["data"]["results"].find { |r| r["account_id"] == account.id }
