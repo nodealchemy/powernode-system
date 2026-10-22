@@ -360,9 +360,9 @@ RSpec.describe System::NodeEnrollmentService do
 
     it "keeps definitive refusals non-transient (bad token, bad CSR)" do
       bad = described_class.enroll!(bootstrap_token_plaintext: "not-a-real-enrol-key", csr_pem: csr_pem)
-      expect([bad.success?, bad.transient]).to eq([false, false])
+      expect([ bad.success?, bad.transient ]).to eq([ false, false ])
       malformed = described_class.enroll!(bootstrap_token_plaintext: token_plaintext, csr_pem: "garbage")
-      expect([malformed.success?, malformed.transient]).to eq([false, false])
+      expect([ malformed.success?, malformed.transient ]).to eq([ false, false ])
     end
   end
 
@@ -431,11 +431,11 @@ RSpec.describe System::NodeEnrollmentService do
       allow(System::InternalCaService).to receive(:issue_certificate)
         .and_raise(System::InternalCaService::CaError, "vault down")
       r = described_class.refresh!(node_instance: enrolled, csr_pem: csr_pem)
-      expect([r.success?, r.transient]).to eq([ false, true ])
+      expect([ r.success?, r.transient ]).to eq([ false, true ])
 
       allow(System::InternalCaService).to receive(:issue_certificate).and_call_original
       bad = described_class.refresh!(node_instance: enrolled, csr_pem: "garbage")
-      expect([bad.success?, bad.transient]).to eq([ false, false ])
+      expect([ bad.success?, bad.transient ]).to eq([ false, false ])
     end
 
     it "fails closed (transient) when the issued CN differs from the instance's mtls_subject" do
@@ -453,7 +453,7 @@ RSpec.describe System::NodeEnrollmentService do
       )
       expect {
         r = described_class.refresh!(node_instance: inst, csr_pem: csr_pem)
-        expect([r.success?, r.transient]).to eq([ false, true ])
+        expect([ r.success?, r.transient ]).to eq([ false, true ])
       }.not_to change(System::NodeCertificate, :count)
     end
   end

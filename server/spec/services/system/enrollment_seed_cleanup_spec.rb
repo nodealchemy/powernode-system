@@ -250,7 +250,7 @@ RSpec.describe System::EnrollmentSeedCleanup, "lease ownership" do
 
   def expire_lease!(instance)
     System::NodeInstance.where(id: instance.id).update_all(
-      ["config = jsonb_set(config, '{seed_cleanup,next_attempt_at}', to_jsonb(?::text))", 1.minute.ago.utc.iso8601]
+      [ "config = jsonb_set(config, '{seed_cleanup,next_attempt_at}', to_jsonb(?::text))", 1.minute.ago.utc.iso8601 ]
     )
   end
 

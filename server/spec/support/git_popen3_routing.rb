@@ -21,5 +21,3 @@ module GitPopen3Routing
     end
   end
 end
-
-

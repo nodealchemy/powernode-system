@@ -74,7 +74,7 @@ module System
 
       ::System::ProvisioningDocument.validate_server!(platform_url)
       ca_pem = ca_pem.presence || ::System::ProvisioningDocument.configured_ca_pem
-      [platform_url, ::System::ProvisioningDocument.fingerprint_for(ca_pem)]
+      [ platform_url, ::System::ProvisioningDocument.fingerprint_for(ca_pem) ]
     end
 
     def self.render_ipxe_script(instance:, bootstrap_token:, image_base:,

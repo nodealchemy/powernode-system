@@ -85,9 +85,9 @@ RSpec.describe System::ProvisioningDocument do
     end
 
     it "refuses out-of-range ports, spaces and control characters in the server URL" do
-      ["https://p.example.test:99999", "https://p.example.test:0", "https://p.example.test/a b",
+      [ "https://p.example.test:99999", "https://p.example.test:0", "https://p.example.test/a b",
        "https://p.example.test/\n", "https://p_x.example.test", "https://..", "https://.",
-       "https://p.example.test?x=1", "https://p.example.test/a?b", "https://p.example.test/#f", "https://p.example.test#f"].each do |bad|
+       "https://p.example.test?x=1", "https://p.example.test/a?b", "https://p.example.test/#f", "https://p.example.test#f" ].each do |bad|
         expect { render(server: bad) }.to raise_error(described_class::RenderError), bad
       end
       expect { render(server: "https://p.example.test:8443/base") }.not_to raise_error

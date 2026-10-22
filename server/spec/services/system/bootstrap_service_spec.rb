@@ -78,7 +78,7 @@ RSpec.describe System::BootstrapService do
       expect {
         result = described_class.render_for_instance(instance: instance)
         expect(result.ok?).to be false
-      }.not_to change { [System::BootstrapToken.count, System::FleetEvent.where(kind: "system.bootstrap_issued").count] }
+      }.not_to change { [ System::BootstrapToken.count, System::FleetEvent.where(kind: "system.bootstrap_issued").count ] }
     end
 
     it "mints no token and writes no audit row when no platform_url is configured" do
@@ -87,7 +87,7 @@ RSpec.describe System::BootstrapService do
         result = described_class.render_for_instance(instance: instance)
         expect(result.ok?).to be false
         expect(result.error).to match(/platform_url/)
-      }.not_to change { [System::BootstrapToken.count, System::FleetEvent.where(kind: "system.bootstrap_issued").count] }
+      }.not_to change { [ System::BootstrapToken.count, System::FleetEvent.where(kind: "system.bootstrap_issued").count ] }
     end
 
     it "derives the default image_base from PhysicalEnrollmentService.platform_url, not ENV or a placeholder" do
