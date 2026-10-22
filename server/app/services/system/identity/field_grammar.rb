@@ -40,6 +40,12 @@ module System
         systemd-journal pnadmin nogroup
       ].freeze
 
+      # The built-in accounts whose home is a MANAGED home (/home/*), which the
+      # agent's home reconciler chowns to whichever user declares it. A module
+      # user may not claim one, nor a home inside one. Mirrors the /home/*
+      # entries of etcidentity.Baseline().
+      BASELINE_MANAGED_HOMES = { "/home/pnadmin" => "pnadmin" }.freeze
+
       GECOS_MAX = 256 # system_service_users.gecos limit
       HOME_MAX  = 256 # system_service_users.home limit
       SHELL_MAX = 128 # system_service_users.shell limit
@@ -88,6 +94,25 @@ module System
         return "must be an absolute path of [A-Za-z0-9._+@/-]" unless value.match?(PATH_RX)
         return "must not contain a '..' component" if value.split("/").include?("..")
 
+        nil
+      end
+
+      # The cleaned path when it is a managed home (strictly under /home/), else
+      # nil. Matches etcidentity.isManagedHome + filepath.Clean.
+      def managed_home(path)
+        return nil unless path.is_a?(String) && path.start_with?("/")
+
+        clean = ::Pathname.new(path).cleanpath.to_s
+        clean.start_with?("/home/") ? clean : nil
+      end
+
+      # The error suffix when a managed home is, or lies inside, a built-in
+      # account's home; nil otherwise.
+      def baseline_home_error(clean)
+        BASELINE_MANAGED_HOMES.each do |home, owner|
+          return "belongs to the built-in account #{owner}" if clean == home
+          return "lies inside the built-in account #{owner}'s home" if clean.start_with?("#{home}/")
+        end
         nil
       end
 

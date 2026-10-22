@@ -54,6 +54,10 @@ module System
              foreign_key: :service_user_id,
              dependent: :restrict_with_exception
 
+    # IMP-01a0f109 (L3): an account's name is fixed for its lifetime, so no
+    # later updater can rename an allocated user to a reserved one.
+    attr_readonly :username
+
     validates :username, presence: true,
                          format: { with: USERNAME_RX },
                          uniqueness: {

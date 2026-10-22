@@ -46,6 +46,10 @@ module System
              foreign_key: :service_group_id,
              dependent: :destroy
 
+    # IMP-01a0f109 (L3): a group's name is fixed for its lifetime, so no later
+    # updater can rename an allocated group to a privileged one.
+    attr_readonly :groupname
+
     validates :groupname, presence: true,
                           format: { with: GROUPNAME_RX },
                           uniqueness: {

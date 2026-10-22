@@ -399,6 +399,7 @@ module System
 
       group_names = Array(manifest["groups"]).filter_map { |g| g.is_a?(Hash) ? g["name"] : nil }.to_set
       seen = Set.new
+      seen_homes = {}
       users.each_with_index do |entry, i|
         prefix = "users[#{i}]"
         unless entry.is_a?(Hash)
@@ -440,6 +441,8 @@ module System
                      "(e.g. \"/var/lib/#{name}\") instead of a shared system path"
         end
 
+        validate_managed_home(entry, prefix, name, seen_homes, errors)
+
         pg = entry["primary_group"]
         if pg && !pg.is_a?(String)
           errors << "#{prefix}.primary_group must be a string"
@@ -461,6 +464,38 @@ module System
           end
         end
       end
+    end
+
+    # IMP-01a0f109 (L1): the agent chowns a /home/* home to the user that
+    # declares it, refusing one that is a built-in account's home, lies inside
+    # one, or is another module's. The platform refuses the same at authoring
+    # time: a built-in home or one under it, two users of this manifest
+    # sharing a home, or a home a DIFFERENT live user already holds. The same
+    # username keeps its own home on re-import.
+    def validate_managed_home(entry, prefix, name, seen_homes, errors)
+      grammar = ::System::Identity::FieldGrammar
+      home = entry["home"]
+      return unless home.is_a?(String) && grammar.path_error(home, max: grammar::HOME_MAX).nil?
+
+      clean = grammar.managed_home(home)
+      return unless clean
+
+      if (err = grammar.baseline_home_error(clean))
+        errors << "#{prefix}.home #{home.inspect} #{err}"
+      elsif (holder = seen_homes[clean])
+        errors << "#{prefix}.home #{home.inspect} is already the home of #{holder} in this manifest"
+      elsif (holder = live_home_holder(clean, name))
+        errors << "#{prefix}.home #{home.inspect} is already the home of #{holder}"
+      end
+      seen_homes[clean] ||= name
+    end
+
+    def live_home_holder(clean, name)
+      ::System::ServiceUser.live
+                           .where("home = ? OR home LIKE ?", clean, "#{::ActiveRecord::Base.sanitize_sql_like(clean)}/%")
+                           .where.not(username: name.to_s)
+                           .find { |u| ::System::Identity::FieldGrammar.managed_home(u.home) == clean }
+                           &.username
     end
 
     def validate_groups(manifest, errors)

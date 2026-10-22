@@ -131,6 +131,44 @@ RSpec.describe System::ManifestImportService, type: :service do
     end
   end
 
+  # L1: the platform half of the agent's home-ownership rules. The agent chowns
+  # a /home/* home to the user that declares it, so a module claiming
+  # pnadmin's home (or one under it), or another module's home, would take it.
+  describe "managed home ownership" do
+    it "refuses a home equal to a built-in account's home" do
+      expect(errors_for("users" => [ user("home" => "/home/pnadmin") ]))
+        .to match(%r{users\[0\]\.home "/home/pnadmin" belongs to the built-in account pnadmin})
+    end
+
+    it "refuses a home under a built-in account's home" do
+      expect(errors_for("users" => [ user("home" => "/home/pnadmin/.ssh") ]))
+        .to match(%r{users\[0\]\.home "/home/pnadmin/\.ssh" lies inside the built-in account pnadmin's home})
+    end
+
+    it "refuses two users in one manifest sharing a /home/* home" do
+      users = [ user("name" => "svcone", "home" => "/home/shared"), user("name" => "svctwo", "home" => "/home/shared/") ]
+      expect(errors_for("users" => users)).to match(%r{users\[1\]\.home "/home/shared/" is already the home of svcone})
+    end
+
+    it "refuses a /home/* home another module's live user already holds" do
+      ::System::Identity::UserAllocator.allocate!(username: "svcother", home: "/home/shared")
+
+      expect(errors_for("users" => [ user("name" => "svcmine", "home" => "/home/shared") ]))
+        .to match(%r{users\[0\]\.home "/home/shared" is already the home of svcother})
+    end
+
+    it "lets a user keep its own home on re-import, and allows non-/home paths to be shared" do
+      described_class.import!(node_module: mod, yaml: yaml_for("users" => [ user("home" => "/home/svcdemo") ]))
+      result = described_class.validate_only(
+        yaml: yaml_for("users" => [ user("home" => "/home/svcdemo"),
+                                    user("name" => "svcb", "home" => "/run/systemd"),
+                                    user("name" => "svcc", "home" => "/run/systemd") ]),
+        node_module: mod
+      )
+      expect(result.validation_errors).to be_empty
+    end
+  end
+
   describe "a refused manifest never reaches a node" do
     it "persists no identity rows, so the node API serializes none" do
       result = described_class.import!(
@@ -169,6 +207,24 @@ RSpec.describe "IMP-01a0f109 model-level identity grammar" do # rubocop:disable 
   it "refuses creating a reserved user or a privileged group" do
     expect(service_user(username: "pnadmin")).not_to be_valid
     expect(::System::ServiceGroup.new(groupname: "sudo", gid: 71_502)).not_to be_valid
+  end
+
+  # L3: an identity's name is fixed for its lifetime, so no later updater can
+  # rename an allocated account or group to a reserved/privileged one.
+  it "never renames an allocated user or group" do
+    user = service_user.tap(&:save!)
+    expect do
+      user.update(username: "root")
+    rescue ActiveRecord::ReadonlyAttributeError
+      nil
+    end.not_to(change { user.class.find(user.id).username })
+    expect do
+      group.update(groupname: "sudo")
+    rescue ActiveRecord::ReadonlyAttributeError
+      nil
+    end.not_to(change { group.class.find(group.id).groupname })
+    expect(::System::ServiceUser.readonly_attributes).to include("username")
+    expect(::System::ServiceGroup.readonly_attributes).to include("groupname")
   end
 
   it "refuses a sudoers grant whose command, runas or flag could leave its slot" do
