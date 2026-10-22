@@ -140,10 +140,10 @@ RSpec.describe "instance principal → nested skill executor → tool" do
       "system_cve_triage" => [ ::System::Ai::Skills::CveResponseExecutor, { cve_id: "CVE-2026-0001" } ],
       "system_attribute_failure" => [ ::System::Ai::Skills::AttributeFailureExecutor,
                                       { instance_id: SecureRandom.uuid } ],
-      "system_platform_maintenance" => [ ::System::Ai::Skills::PlatformMaintenanceExecutor, { op: "health_check" } ],
+      "system_platform_maintenance" => [ ::System::Ai::Skills::PlatformMaintenanceExecutor, { op: "drift_check" } ],
       "system_platform_health_check" => [ ::System::Ai::Skills::PlatformHealthCheckExecutor, {} ],
       "system_platform_resilience" => [ ::System::Ai::Skills::PlatformResilienceExecutor,
-                                        { op: "health_check", instance_id: SecureRandom.uuid } ]
+                                        { op: "failover_check", instance_id: SecureRandom.uuid } ]
     }.each do |action, (executor_class, action_params)|
       it "hands #{executor_class.name.demodulize} the instance provenance" do
         spy = executor_spy.new
