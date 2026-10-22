@@ -22,8 +22,8 @@ import (
 
 const confirmedM2Body = `{"success": true,"data": {"id":"m2","name":"other","priority":100,"effective_priority":100,"digest":"e1",
 	"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
-	"users": [{"name":"pguser","uid":6001,"primary_gid":6001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
-	"groups": [{"name":"pguser","gid":6001}], "services": []}}`
+	"users": [{"name":"pguser","uid":76001,"primary_gid":76001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
+	"groups": [{"name":"pguser","gid":76001}], "services": []}}`
 
 const listM1M2 = `{"success": true,"data": {"modules": [
 	{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true},

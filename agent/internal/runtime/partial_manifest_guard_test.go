@@ -209,7 +209,7 @@ func TestReconcilerRendersNewModuleWhileRetainingAFailingModulesCachedIdentity(t
 	failingCachePath := filepath.Join(manifestRoot, "failing", "manifest.json")
 	writeFile(t, failingCachePath,
 		`{"id":"failing","name":"failing","digest":"d-failing","priority":100,"effective_priority":100,
-		  "users":[{"name":"svc-failing","uid":6001,"primary_gid":6001}]}`)
+		  "users":[{"name":"svc-failing","uid":76001,"primary_gid":76001}]}`)
 	// Backdate the cache past ManifestTTL so LoadOrFetch actually calls the
 	// (stubbed, 502ing) client below instead of short-circuiting on this
 	// fixture's own fresh write.
@@ -240,7 +240,7 @@ func TestReconcilerRendersNewModuleWhileRetainingAFailingModulesCachedIdentity(t
 				"success": true,
 				"data": {"id":"newmod", "name":"newmod", "digest":"d-new",
 				         "priority":100, "effective_priority":100,
-				         "users":[{"name":"svc-new","uid":6002,"primary_gid":6002}]}
+				         "users":[{"name":"svc-new","uid":76002,"primary_gid":76002}]}
 			}`,
 		},
 		statuses: map[string]int{
@@ -308,7 +308,7 @@ func TestReconcilerPreservesRetainedModuleIdentityWhenAssignedListOmitsIt(t *tes
 	writeFile(t, filepath.Join(manifestRoot, "rails", "manifest.json"),
 		`{"id":"rails","name":"rails","digest":"d-rails","priority":100,"effective_priority":100,
 		  "services":[{"name":"rails","start_command":"/usr/bin/rails-start"}],
-		  "users":[{"name":"powernode-rails","uid":5000,"primary_gid":5000}]}`)
+		  "users":[{"name":"powernode-rails","uid":75000,"primary_gid":75000}]}`)
 
 	if err := mount.SaveState(statePath, &mount.State{
 		AttachedModules: []mount.Module{{ID: "rails", Digest: "d-rails", Priority: 100}},
@@ -590,7 +590,7 @@ func TestReconcilerSkipsRenderRatherThanLoseAnAttachedModulesUsersAcrossTicks(t 
 				"success": true,
 				"data": {"id":"m1", "name":"nginx", "digest":"d1",
 				         "priority":100, "effective_priority":100,
-				         "users":[{"name":"svc-m1","uid":7001,"primary_gid":7001}]}
+				         "users":[{"name":"svc-m1","uid":77001,"primary_gid":77001}]}
 			}`,
 		},
 	}
@@ -674,7 +674,7 @@ func TestReconcilerResolvesIdentityFromTheBootBreadcrumbWhenStateIsEmpty(t *test
 
 	m1Manifest := manifest.Manifest{
 		ID: "m1", Name: "compose-rendered", Digest: "d1",
-		Users: []manifest.ManifestUser{{Name: "svc-m1", UID: 7001, PrimaryGID: 7001}},
+		Users: []manifest.ManifestUser{{Name: "svc-m1", UID: 77001, PrimaryGID: 77001}},
 	}
 	rawM1, err := json.Marshal(m1Manifest)
 	if err != nil {
@@ -761,7 +761,7 @@ func TestReconcilerResolvesIdentityFromBreadcrumbDataModuleAbsentFromStateAndAss
 
 	m1Manifest := manifest.Manifest{
 		ID: "m1", Name: "compose-rendered", Digest: "d1",
-		Users: []manifest.ManifestUser{{Name: "svc-m1", UID: 7001, PrimaryGID: 7001}},
+		Users: []manifest.ManifestUser{{Name: "svc-m1", UID: 77001, PrimaryGID: 77001}},
 	}
 	rawM1, err := json.Marshal(m1Manifest)
 	if err != nil {
@@ -839,7 +839,7 @@ func TestReconcilerIgnoresABreadcrumbFromADifferentBoot(t *testing.T) {
 
 	m1Manifest := manifest.Manifest{
 		ID: "m1", Name: "compose-rendered", Digest: "d1",
-		Users: []manifest.ManifestUser{{Name: "svc-m1", UID: 7001, PrimaryGID: 7001}},
+		Users: []manifest.ManifestUser{{Name: "svc-m1", UID: 77001, PrimaryGID: 77001}},
 	}
 	rawM1, err := json.Marshal(m1Manifest)
 	if err != nil {
@@ -915,7 +915,7 @@ func TestReconcilerRejectsACachedManifestWhoseDigestDisagreesWithWhatsMounted(t 
 	mkdirAll(t, filepath.Join(manifestRoot, "m1"))
 	writeFile(t, filepath.Join(manifestRoot, "m1", "manifest.json"),
 		`{"id":"m1","name":"m1","digest":"d-old","priority":100,"effective_priority":100,
-		  "users":[{"name":"svc-old","uid":8001,"primary_gid":8001}]}`)
+		  "users":[{"name":"svc-old","uid":78001,"primary_gid":78001}]}`)
 
 	if err := mount.SaveState(statePath, &mount.State{
 		AttachedModules: []mount.Module{{ID: "m1", Digest: "d-new", Priority: 100}},

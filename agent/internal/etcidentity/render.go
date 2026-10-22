@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+// Every Render* re-checks its input (screen, IMP-01a0f109) and silently
+// drops an entry whose fields could break the line format — this is the
+// SECOND gate behind Collect, for a Set that never went through it. ApplyAt
+// reports those skips through LogRefused; the pure renderers cannot log.
+//
 // RenderPasswd returns the byte slice that should be written to
 // /etc/passwd. One line per user, glibc colon-separated format:
 //
@@ -14,6 +19,7 @@ import (
 // service accounts have locked shadow entries ('*') so this is purely
 // a placeholder — there is no shadow lookup that would succeed.
 func RenderPasswd(set *Set) []byte {
+	set, _ = screen(set)
 	var b strings.Builder
 	for _, u := range set.Users {
 		fmt.Fprintf(&b, "%s:x:%d:%d:%s:%s:%s\n",
@@ -32,6 +38,7 @@ func RenderPasswd(set *Set) []byte {
 // resolves them correctly without listing them here, but we include
 // them for compatibility with tools that scan /etc/group directly).
 func RenderGroup(set *Set) []byte {
+	set, _ = screen(set)
 	var b strings.Builder
 	for _, g := range set.Groups {
 		fmt.Fprintf(&b, "%s:x:%d:%s\n", g.Name, g.GID, strings.Join(g.Members, ","))
@@ -48,6 +55,7 @@ func RenderGroup(set *Set) []byte {
 // Zero values for the date fields mean "no expiry, no warnings,
 // password change unrestricted" — the locked password is the gate.
 func RenderShadow(set *Set) []byte {
+	set, _ = screen(set)
 	var b strings.Builder
 	for _, u := range set.Users {
 		// Skip the root entry — operator passwords for root are managed
@@ -69,6 +77,7 @@ func RenderShadow(set *Set) []byte {
 //
 //	name:password:administrators:members\n
 func RenderGshadow(set *Set) []byte {
+	set, _ = screen(set)
 	var b strings.Builder
 	for _, g := range set.Groups {
 		fmt.Fprintf(&b, "%s:!::%s\n", g.Name, strings.Join(g.Members, ","))

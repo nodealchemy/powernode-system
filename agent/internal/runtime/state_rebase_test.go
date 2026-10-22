@@ -930,13 +930,13 @@ func TestStateRebase_NeverAdds(t *testing.T) {
 func TestStateRebase_ReportNamesRenderImpact(t *testing.T) {
 	dead := rebaseModule{id: "devpin-pg", digest: "sha256:dead1", inState: true, services: true,
 		users: []manifest.ManifestUser{
-			{Name: "pgdev", UID: 5001, PrimaryGID: 5001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"},
-			{Name: "postgres", UID: 998, PrimaryGID: 998, PrimaryGroup: "postgres", Shell: "/bin/false", Home: "/var/lib/postgresql"},
+			{Name: "pgdev", UID: 75001, PrimaryGID: 75001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"},
+			{Name: "postgres", UID: 70998, PrimaryGID: 70998, PrimaryGroup: "postgres", Shell: "/bin/false", Home: "/var/lib/postgresql"},
 		},
 		egress: []string{"10.9.9.9:5432"}}
 	survivor := func(egress []string) rebaseModule {
 		return rebaseModule{id: "m-postgres", digest: "sha256:aaa3", assigned: true, inState: true, composed: true,
-			users:  []manifest.ManifestUser{{Name: "postgres", UID: 999, PrimaryGID: 999, PrimaryGroup: "postgres", Shell: "/bin/false", Home: "/var/lib/postgresql"}},
+			users:  []manifest.ManifestUser{{Name: "postgres", UID: 70999, PrimaryGID: 70999, PrimaryGroup: "postgres", Shell: "/bin/false", Home: "/var/lib/postgresql"}},
 			egress: egress}
 	}
 
@@ -947,7 +947,7 @@ func TestStateRebase_ReportNamesRenderImpact(t *testing.T) {
 		if len(would) != 1 {
 			t.Fatalf("want one report, got %v", *h.signals)
 		}
-		for _, want := range []string{"pgdev(uid 5001, devpin-pg)", "user postgres: devpin-pg says 998, surviving 999",
+		for _, want := range []string{"pgdev(uid 75001, devpin-pg)", "user postgres: devpin-pg says 70998, surviving 70999",
 			"10.9.9.9:5432(devpin-pg)", "egress enforcement turns off: false"} {
 			if !strings.Contains(would[0], want) {
 				t.Errorf("report missing %q: %s", want, would[0])
@@ -964,7 +964,7 @@ func TestStateRebase_ReportNamesRenderImpact(t *testing.T) {
 			t.Errorf("enforce dropped a module whose user id conflicts with a survivor: %v stamp %q", attachedIDs(st), st.RebasedAgainst)
 		}
 		skipped := h.signalsFor(stageStateRebaseSkipped)
-		if len(skipped) != 1 || !strings.Contains(skipped[0], "user postgres: devpin-pg says 998, surviving 999") {
+		if len(skipped) != 1 || !strings.Contains(skipped[0], "user postgres: devpin-pg says 70998, surviving 70999") {
 			t.Errorf("want a skip naming the conflict, got %v", skipped)
 		}
 	})
@@ -977,7 +977,7 @@ func TestStateRebase_ReportNamesRenderImpact(t *testing.T) {
 			rebaseOpts{selfHosted: true, enforce: true, approval: approvalFor("devpin-pg@sha256:dead1")})
 		st := h.run(t)
 		rebased := h.signalsFor(stageStateRebased)
-		if hasEntry(st, "devpin-pg") || len(rebased) != 1 || !strings.Contains(rebased[0], "pgdev(uid 5001, devpin-pg)") {
+		if hasEntry(st, "devpin-pg") || len(rebased) != 1 || !strings.Contains(rebased[0], "pgdev(uid 75001, devpin-pg)") {
 			t.Errorf("want devpin-pg dropped with its sole-source user named: %v %v", attachedIDs(st), rebased)
 		}
 	})
@@ -1080,12 +1080,12 @@ func (h *rebaseHarness) unitQueries(id string) int {
 // breadcrumb, and survivors resolvable only through the breadcrumb.
 func TestStateRebase_ImpactUsesTheRendersOwnSet(t *testing.T) {
 	deadPg := rebaseModule{id: "devpin-pg", digest: "sha256:dead1", inState: true, services: true,
-		users: []manifest.ManifestUser{{Name: "postgres", UID: 998, PrimaryGID: 998, PrimaryGroup: "postgres", Shell: "/bin/false", Home: "/var/lib/postgresql"}}}
+		users: []manifest.ManifestUser{{Name: "postgres", UID: 70998, PrimaryGID: 70998, PrimaryGroup: "postgres", Shell: "/bin/false", Home: "/var/lib/postgresql"}}}
 	base := rebaseModule{id: "m-base", digest: "sha256:ba5e", assigned: true, inState: true, composed: true}
 
 	t.Run("(a) a newly assigned module in neither state nor breadcrumb conflicts", func(t *testing.T) {
 		newN := rebaseModule{id: "m-new", digest: "sha256:4e4", assigned: true,
-			users: []manifest.ManifestUser{{Name: "postgres", UID: 999, PrimaryGID: 999, PrimaryGroup: "postgres", Shell: "/bin/false", Home: "/var/lib/postgresql"}}}
+			users: []manifest.ManifestUser{{Name: "postgres", UID: 70999, PrimaryGID: 70999, PrimaryGroup: "postgres", Shell: "/bin/false", Home: "/var/lib/postgresql"}}}
 		h := newRebaseHarness(t, []rebaseModule{base, newN, deadPg}, rebaseOpts{selfHosted: true, enforce: true, approval: defaultRebaseKey()})
 		st := h.run(t)
 		if !hasEntry(st, "devpin-pg") || st.RebasedAgainst != "" {
@@ -1098,7 +1098,7 @@ func TestStateRebase_ImpactUsesTheRendersOwnSet(t *testing.T) {
 	})
 
 	t.Run("(b) a survivor resolvable only through the breadcrumb still counts", func(t *testing.T) {
-		pgdev := manifest.ManifestUser{Name: "pgdev", UID: 5001, PrimaryGID: 5001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"}
+		pgdev := manifest.ManifestUser{Name: "pgdev", UID: 75001, PrimaryGID: 75001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"}
 		dead := rebaseModule{id: "devpin-x", digest: "sha256:dead2", inState: true, services: true, users: []manifest.ManifestUser{pgdev}}
 		bcOnly := rebaseModule{id: "m-bc-only", digest: "sha256:bc01", composed: true, noCache: true, users: []manifest.ManifestUser{pgdev}}
 		h := newRebaseHarness(t, []rebaseModule{base, bcOnly, dead}, rebaseOpts{selfHosted: true})
@@ -1113,7 +1113,7 @@ func TestStateRebase_ImpactUsesTheRendersOwnSet(t *testing.T) {
 	})
 
 	t.Run("(b) control: without the breadcrumb survivor pgdev IS lost", func(t *testing.T) {
-		pgdev := manifest.ManifestUser{Name: "pgdev", UID: 5001, PrimaryGID: 5001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"}
+		pgdev := manifest.ManifestUser{Name: "pgdev", UID: 75001, PrimaryGID: 75001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"}
 		dead := rebaseModule{id: "devpin-x", digest: "sha256:dead2", inState: true, services: true, users: []manifest.ManifestUser{pgdev}}
 		h := newRebaseHarness(t, []rebaseModule{base, dead}, rebaseOpts{selfHosted: true})
 		h.run(t)
@@ -1193,7 +1193,7 @@ func TestStateRebase_NonEmptyImpactNeedsPerCompositionApproval(t *testing.T) {
 		return []rebaseModule{
 			{id: "m-base", digest: "sha256:ba5e", assigned: true, inState: true, composed: true},
 			{id: "devpin-u", digest: "sha256:dead5", inState: true, services: true,
-				users: []manifest.ManifestUser{{Name: "pgdev", UID: 5001, PrimaryGID: 5001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"}}},
+				users: []manifest.ManifestUser{{Name: "pgdev", UID: 75001, PrimaryGID: 75001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"}}},
 		}
 	}
 	for _, tc := range []struct {
@@ -1311,7 +1311,7 @@ func TestStateRebase_SharedUserVariantIsNeverAnEmptyImpact(t *testing.T) {
 	for _, deadID := range []string{"a-dead", "z-dead"} {
 		t.Run(deadID, func(t *testing.T) {
 			pg := func(home string) []manifest.ManifestUser {
-				return []manifest.ManifestUser{{Name: "postgres", UID: 999, PrimaryGID: 999, PrimaryGroup: "postgres", Shell: "/bin/false", Home: home}}
+				return []manifest.ManifestUser{{Name: "postgres", UID: 70999, PrimaryGID: 70999, PrimaryGroup: "postgres", Shell: "/bin/false", Home: home}}
 			}
 			mods := []rebaseModule{
 				{id: "m-postgres", digest: "sha256:aaa3", assigned: true, inState: true, composed: true, users: pg("/var/lib/postgresql")},
@@ -1346,7 +1346,7 @@ func TestStateRebase_ApprovalIsBoundToTheDeadSet(t *testing.T) {
 	mods := []rebaseModule{
 		{id: "m-base", digest: "sha256:ba5e", assigned: true, inState: true, composed: true},
 		{id: "devpin-u", digest: "sha256:dead5", inState: true, services: true,
-			users: []manifest.ManifestUser{{Name: "pgdev", UID: 5001, PrimaryGID: 5001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"}}},
+			users: []manifest.ManifestUser{{Name: "pgdev", UID: 75001, PrimaryGID: 75001, PrimaryGroup: "pgdev", Shell: "/bin/false", Home: "/var/lib/pgdev"}}},
 	}
 	for _, tc := range []struct {
 		name     string
@@ -1392,14 +1392,14 @@ func TestStateRebase_SharedGroupMemberLossIsNeverAnEmptyImpact(t *testing.T) {
 	}
 }
 
-// newRebaseHarnessWithGroups declares group ssl-cert (gid 110) in both modules;
+// newRebaseHarnessWithGroups declares group ssl-cert (gid 71110) in both modules;
 // the dead module lists member pgdev, the survivor lists it only when keeps.
 func newRebaseHarnessWithGroups(t *testing.T, survivor, dead rebaseModule, keeps bool) *rebaseHarness {
 	t.Helper()
 	h := newRebaseHarness(t, []rebaseModule{survivor, dead}, rebaseOpts{selfHosted: true, enforce: true})
 	patch := func(m rebaseModule, members []string) {
 		mf := m.manifest()
-		mf.Groups = []manifest.ManifestGroup{{Name: "ssl-cert", GID: 110, Members: members}}
+		mf.Groups = []manifest.ManifestGroup{{Name: "ssl-cert", GID: 71110, Members: members}}
 		writeManifestFixture(t, h.r.cfg.ManifestRoot, mf)
 		if m.assigned {
 			body, _ := json.Marshal(mf)

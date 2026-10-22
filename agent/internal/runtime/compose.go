@@ -86,6 +86,9 @@ func (r *Reconciler) ComposeForPivot(ctx context.Context, sysroot string) error 
 		r.cfg.OnError("compose:identity_conflict",
 			fmt.Errorf("%s %q (source=%s)", c.Kind, c.Name, c.SourceModule))
 	}
+	for _, rf := range identitySet.Refused { // IMP-01a0f109: skipped, never rendered
+		r.cfg.OnError("compose:identity_refused", rf)
+	}
 	if err := etcidentity.ApplyAt(identitySet, unionIdentityPaths(sysroot)); err != nil {
 		r.cfg.OnError("compose:identity_write", err)
 	}

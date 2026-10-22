@@ -246,7 +246,7 @@ func upgradeModuleFixtureWithOldUser(digest string) string {
 			"priority":100, "effective_priority":100,
 			"digest":"%s",
 			"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
-			"users": [{"name":"olduser","uid":5001,"primary_gid":5001,"primary_group":"olduser","shell":"/bin/false","home":"/home/olduser"}],
+			"users": [{"name":"olduser","uid":75001,"primary_gid":75001,"primary_group":"olduser","shell":"/bin/false","home":"/home/olduser"}],
 			"services": [%s]
 		}
 	}`, digest, upgradeAppService)
@@ -4145,8 +4145,8 @@ func upgradeModuleFixtureWithUser(digest string, services, userName string) stri
 			"priority":100, "effective_priority":100,
 			"digest":"%s",
 			"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
-			"users": [{"name":%q,"uid":5001,"primary_gid":5001,"primary_group":%q,"shell":"/bin/false","home":"/home/%s"}],
-			"groups": [{"name":%q,"gid":5001}],
+			"users": [{"name":%q,"uid":75001,"primary_gid":75001,"primary_group":%q,"shell":"/bin/false","home":"/home/%s"}],
+			"groups": [{"name":%q,"gid":75001}],
 			"services": [%s]
 		}
 	}`, digest, userName, userName, userName, userName, services)
@@ -5040,8 +5040,8 @@ func TestReviewer_BumpRenderDropsOtherModulesUsers(t *testing.T) {
 		{"id":"m2", "name":"other", "priority":100, "effective_priority":100, "has_data_file":true}]}}`
 	client.responses["/api/v1/system/node_api/modules/m2"] = `{"success": true,"data": {"id":"m2","name":"other","priority":100,"effective_priority":100,"digest":"e1",
 		"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
-		"users": [{"name":"pguser","uid":6001,"primary_gid":6001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
-		"groups": [{"name":"pguser","gid":6001}], "services": []}}`
+		"users": [{"name":"pguser","uid":76001,"primary_gid":76001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
+		"groups": [{"name":"pguser","gid":76001}], "services": []}}`
 	client.responses["/api/v1/system/node_api/modules/m1"] = upgradeModuleFixtureWithUser("d1", upgradeAppService, "d1user")
 	appUnit := lifecycle.UnitName("m1", "app")
 	if err := r.RunOnce(context.Background()); err != nil {
@@ -5089,8 +5089,8 @@ func TestAttachOne_UpgradeRendersOtherAttachedModulesUser(t *testing.T) {
 	}
 	client.responses["/api/v1/system/node_api/modules/m2"] = `{"success": true,"data": {"id":"m2","name":"other","priority":100,"effective_priority":100,"digest":"e1",
 		"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
-		"users": [{"name":"pguser","uid":6001,"primary_gid":6001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
-		"groups": [{"name":"pguser","gid":6001}], "services": []}}`
+		"users": [{"name":"pguser","uid":76001,"primary_gid":76001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
+		"groups": [{"name":"pguser","gid":76001}], "services": []}}`
 	if _, err := r.AttachOne(context.Background(), "m2"); err != nil {
 		t.Fatalf("AttachOne m2 (fresh): %v", err)
 	}
@@ -5138,8 +5138,8 @@ func TestAttachOne_UnresolvableAttachedManifestRefusesBeforeRestart(t *testing.T
 	}
 	client.responses["/api/v1/system/node_api/modules/m2"] = `{"success": true,"data": {"id":"m2","name":"other","priority":100,"effective_priority":100,"digest":"e1",
 		"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
-		"users": [{"name":"pguser","uid":6001,"primary_gid":6001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
-		"groups": [{"name":"pguser","gid":6001}], "services": []}}`
+		"users": [{"name":"pguser","uid":76001,"primary_gid":76001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
+		"groups": [{"name":"pguser","gid":76001}], "services": []}}`
 	if _, err := r.AttachOne(context.Background(), "m2"); err != nil {
 		t.Fatalf("AttachOne m2 (fresh): %v", err)
 	}
@@ -5303,8 +5303,8 @@ func TestUpgradeModule_SkippedTickIdentityRefusesBeforeRestart(t *testing.T) {
 		{"id":"m2", "name":"other", "priority":100, "effective_priority":100, "has_data_file":true}]}}`
 	client.responses["/api/v1/system/node_api/modules/m2"] = `{"success": true,"data": {"id":"m2","name":"other","priority":100,"effective_priority":100,"digest":"e1",
 		"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
-		"users": [{"name":"pguser","uid":6001,"primary_gid":6001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
-		"groups": [{"name":"pguser","gid":6001}], "services": []}}`
+		"users": [{"name":"pguser","uid":76001,"primary_gid":76001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
+		"groups": [{"name":"pguser","gid":76001}], "services": []}}`
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("pass 1 (attach m1 + m2): %v", err)
 	}
@@ -5418,8 +5418,8 @@ func otherModuleFixtureWithUser(digest, userName string) string {
 			"priority":200, "effective_priority":200,
 			"digest":"%s",
 			"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
-			"users": [{"name":%q,"uid":6001,"primary_gid":6001,"primary_group":%q,"shell":"/bin/false","home":"/home/%s"}],
-			"groups": [{"name":%q,"gid":6001}],
+			"users": [{"name":%q,"uid":76001,"primary_gid":76001,"primary_group":%q,"shell":"/bin/false","home":"/home/%s"}],
+			"groups": [{"name":%q,"gid":76001}],
 			"services": [%s]
 		}
 	}`, digest, userName, userName, userName, userName, upgradeAppService)
@@ -5611,8 +5611,8 @@ func TestAttachOne_UnionsAnotherAttachedModulesTouchedDigest(t *testing.T) {
 			"priority":200, "effective_priority":200,
 			"digest":"e2",
 			"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
-			"users": [{"name":"e2user","uid":6002,"primary_gid":6002,"primary_group":"e2user","shell":"/bin/false","home":"/home/e2user"}],
-			"groups": [{"name":"e2user","gid":6002}],
+			"users": [{"name":"e2user","uid":76002,"primary_gid":76002,"primary_group":"e2user","shell":"/bin/false","home":"/home/e2user"}],
+			"groups": [{"name":"e2user","gid":76002}],
 			"services": [%s,%s]
 		}
 	}`, upgradeAppService, upgradeNewWorkerService)

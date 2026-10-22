@@ -102,11 +102,11 @@ func TestRunOnce_RenderSkippedTickDoesNotAttachOrReattach(t *testing.T) {
 	const m2Digest = `"digest":"e1"`
 	m2Body := `{"success": true,"data": {"id":"m2","name":"other","priority":100,"effective_priority":100,` + m2Digest + `,
 		"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
-		"users": [{"name":"pguser","uid":6001,"primary_gid":6001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
-		"groups": [{"name":"pguser","gid":6001}], "services": []}}`
+		"users": [{"name":"pguser","uid":76001,"primary_gid":76001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
+		"groups": [{"name":"pguser","gid":76001}], "services": []}}`
 	m3Body := `{"success": true,"data": {"id":"m3","name":"newmod","priority":100,"effective_priority":100,"digest":"f1",
-		"users": [{"name":"newuser","uid":6002,"primary_gid":6002,"primary_group":"newuser","shell":"/bin/false","home":"/home/newuser"}],
-		"groups": [{"name":"newuser","gid":6002}],
+		"users": [{"name":"newuser","uid":76002,"primary_gid":76002,"primary_group":"newuser","shell":"/bin/false","home":"/home/newuser"}],
+		"groups": [{"name":"newuser","gid":76002}],
 		"services": [` + upgradeAppService + `]}}`
 	listWithM3 := `{"success": true,"data": {"modules": [
 		{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true},
@@ -204,8 +204,8 @@ func TestRunOnce_RenderSkippedTickDoesNotRunTheConfinementRecheck(t *testing.T) 
 	m1WorkerUnit := lifecycle.UnitName("m1", "old-worker")
 	m2Body := `{"success": true,"data": {"id":"m2","name":"other","priority":100,"effective_priority":100,"digest":"e1",
 		"config": {"security": {"capabilities": ["CAP_CHOWN"], "user_namespace": false}},
-		"users": [{"name":"pguser","uid":6001,"primary_gid":6001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
-		"groups": [{"name":"pguser","gid":6001}], "services": []}}`
+		"users": [{"name":"pguser","uid":76001,"primary_gid":76001,"primary_group":"pguser","shell":"/bin/false","home":"/home/pguser"}],
+		"groups": [{"name":"pguser","gid":76001}], "services": []}}`
 	client.responses["/api/v1/system/node_api/modules"] = `{"success": true,"data": {"modules": [
 		{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true},
 		{"id":"m2", "name":"other", "priority":100, "effective_priority":100, "has_data_file":true}]}}`
@@ -288,8 +288,8 @@ func TestRunOnce_DigestlessNeverAttachedModuleIsNotRendered(t *testing.T) {
 		{"id":"m1", "name":"app-mod", "priority":100, "effective_priority":100, "has_data_file":true},
 		{"id":"m9", "name":"ghost", "priority":100, "effective_priority":100, "has_data_file":true}]}}`
 	client.responses["/api/v1/system/node_api/modules/m9"] = `{"success": true,"data": {"id":"m9","name":"ghost","priority":100,"effective_priority":100,"digest":"",
-		"users": [{"name":"ghostuser","uid":6009,"primary_gid":6009,"primary_group":"ghostuser","shell":"/bin/false","home":"/home/ghostuser"}],
-		"groups": [{"name":"ghostuser","gid":6009}], "services": []}}`
+		"users": [{"name":"ghostuser","uid":76009,"primary_gid":76009,"primary_group":"ghostuser","shell":"/bin/false","home":"/home/ghostuser"}],
+		"groups": [{"name":"ghostuser","gid":76009}], "services": []}}`
 
 	for tick := 2; tick <= 3; tick++ {
 		rendered, signals = nil, nil
@@ -351,8 +351,8 @@ func TestRunOnce_FetchFailureAfterDigestlessDoesNotRenderTheCachedGhost(t *testi
 	client.responses["/api/v1/system/node_api/modules"] = `{"success": true,"data": {"modules": [
 		{"id":"m9", "name":"ghost", "priority":100, "effective_priority":100, "has_data_file":true}]}}`
 	client.responses["/api/v1/system/node_api/modules/m9"] = `{"success": true,"data": {"id":"m9","name":"ghost","priority":100,"effective_priority":100,"digest":"",
-		"users": [{"name":"ghostuser","uid":6009,"primary_gid":6009,"primary_group":"ghostuser","shell":"/bin/false","home":"/home/ghostuser"}],
-		"groups": [{"name":"ghostuser","gid":6009}], "services": []}}`
+		"users": [{"name":"ghostuser","uid":76009,"primary_gid":76009,"primary_group":"ghostuser","shell":"/bin/false","home":"/home/ghostuser"}],
+		"groups": [{"name":"ghostuser","gid":76009}], "services": []}}`
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("pass 1 (digestless m9 cached): %v", err)
 	}

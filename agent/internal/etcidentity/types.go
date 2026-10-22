@@ -30,4 +30,8 @@ type Group struct {
 type Set struct {
 	Users  []User
 	Groups []Group
+
+	// Refused lists the manifest entries Collect skipped as invalid
+	// (IMP-01a0f109). Never rendered; callers report them.
+	Refused []Refusal
 }

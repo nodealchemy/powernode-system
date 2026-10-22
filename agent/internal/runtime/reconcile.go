@@ -2856,6 +2856,12 @@ func (r *Reconciler) applyIdentityAndSudoers(manifests []*manifest.Manifest, sta
 			fmt.Errorf("%s %q kept=%d dropped=%d (source=%s)",
 				c.Kind, c.Name, c.KeptValue, c.DroppedValue, c.SourceModule))
 	}
+	// IMP-01a0f109: entries Collect refused as unsafe were skipped, never
+	// rendered. Signalled, not returned: one module's bad entry must not stall
+	// every other module's upgrade (same rule as sudoers_refused below).
+	for _, rf := range identitySet.Refused {
+		r.cfg.OnError(stagePrefix+"identity_refused", rf)
+	}
 	var firstErr error
 	if err := applyIdentity(identitySet); err != nil {
 		r.cfg.OnError(stagePrefix+"identity_write", err)

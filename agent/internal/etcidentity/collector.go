@@ -1,6 +1,7 @@
 package etcidentity
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
@@ -19,17 +20,42 @@ import (
 // the conflict via the returned slice of warnings. Caller logs/raises
 // as appropriate; the agent does NOT abort the render — a working
 // /etc/passwd with one wrong UID is better than no /etc/passwd.
+//
+// Validation (IMP-01a0f109): every manifest entry is checked before it joins
+// the Set, and a failing one is SKIPPED and recorded in Set.Refused (callers
+// report those). A manifest entry is refused when any rendered field could
+// break the colon/newline line format (CheckUserFields/CheckGroupFields),
+// when its uid/gid is outside the platform range (so never 0, the system
+// range, or a baseline id), when it redeclares a built-in user name, when it
+// takes a uid/gid or managed home that the baseline or ANOTHER module
+// already holds, or when it would add members to a privileged
+// baseline group (sudo, disk, shadow, ...).
 func Collect(manifests []*manifest.Manifest) (*Set, []Conflict) {
 	set := Baseline()
 	conflicts := []Conflict{}
 
 	userByName := map[string]int{} // name -> index into set.Users
+	uidOwner := map[int]owner{}
+	homeOwner := map[string]owner{}
+	baselineUsers := map[string]bool{}
 	for i, u := range set.Users {
 		userByName[u.Name] = i
+		uidOwner[u.UID] = owner{name: u.Name}
+		baselineUsers[u.Name] = true
+		if isManagedHome(u.Home) {
+			homeOwner[cleanHome(u.Home)] = owner{name: u.Name}
+		}
 	}
 	groupByName := map[string]int{}
+	gidOwner := map[int]owner{}
+	baselineGroups := map[string]bool{}
 	for i, g := range set.Groups {
 		groupByName[g.Name] = i
+		gidOwner[g.GID] = owner{name: g.Name}
+		baselineGroups[g.Name] = true
+	}
+	refuse := func(kind, name, module, reason string) {
+		set.Refused = append(set.Refused, Refusal{Kind: kind, Name: name, SourceModule: module, Reason: reason})
 	}
 
 	for _, m := range manifests {
@@ -47,6 +73,10 @@ func Collect(manifests []*manifest.Manifest) (*Set, []Conflict) {
 				Gecos:               mu.Gecos,
 				SupplementaryGroups: mu.SupplementaryGroups,
 			}
+			if err := checkManifestUser(u, baselineUsers); err != nil {
+				refuse("user", u.Name, m.ID, err.Error())
+				continue
+			}
 			if idx, seen := userByName[u.Name]; seen {
 				if set.Users[idx].UID != u.UID {
 					conflicts = append(conflicts, Conflict{
@@ -57,11 +87,31 @@ func Collect(manifests []*manifest.Manifest) (*Set, []Conflict) {
 				}
 				continue
 			}
+			if o, taken := uidOwner[u.UID]; taken && o.foreignTo(m.ID) {
+				refuse("user", u.Name, m.ID, fmt.Sprintf("uid %d already belongs to %s", u.UID, o))
+				continue
+			}
+			if isManagedHome(u.Home) {
+				if o, taken := homeOwner[cleanHome(u.Home)]; taken && o.foreignTo(m.ID) {
+					refuse("user", u.Name, m.ID, fmt.Sprintf("home %s already belongs to %s", cleanHome(u.Home), o))
+					continue
+				}
+				homeOwner[cleanHome(u.Home)] = owner{name: u.Name, module: m.ID}
+			}
+			uidOwner[u.UID] = owner{name: u.Name, module: m.ID}
 			userByName[u.Name] = len(set.Users)
 			set.Users = append(set.Users, u)
 		}
 		for _, mg := range m.Groups {
 			g := Group{Name: mg.Name, GID: mg.GID, Members: mg.Members}
+			if err := checkManifestGroup(g); err != nil {
+				refuse("group", g.Name, m.ID, err.Error())
+				continue
+			}
+			if baselineGroups[g.Name] && privilegedGroups[g.Name] {
+				refuse("group", g.Name, m.ID, "is a privileged built-in group a module may not add members to")
+				continue
+			}
 			if idx, seen := groupByName[g.Name]; seen {
 				if set.Groups[idx].GID != g.GID {
 					conflicts = append(conflicts, Conflict{
@@ -76,6 +126,11 @@ func Collect(manifests []*manifest.Manifest) (*Set, []Conflict) {
 				set.Groups[idx].Members = mergeStrings(set.Groups[idx].Members, g.Members)
 				continue
 			}
+			if o, taken := gidOwner[g.GID]; taken && o.foreignTo(m.ID) {
+				refuse("group", g.Name, m.ID, fmt.Sprintf("gid %d already belongs to %s", g.GID, o))
+				continue
+			}
+			gidOwner[g.GID] = owner{name: g.Name, module: m.ID}
 			groupByName[g.Name] = len(set.Groups)
 			set.Groups = append(set.Groups, g)
 		}
@@ -85,6 +140,22 @@ func Collect(manifests []*manifest.Manifest) (*Set, []Conflict) {
 	sort.Slice(set.Groups, func(i, j int) bool { return set.Groups[i].GID < set.Groups[j].GID })
 
 	return set, conflicts
+}
+
+// owner records who first claimed a uid, gid or managed home. module is ""
+// for the baseline. A claim by a DIFFERENT module (or over the baseline) is
+// refused; the same module ID may reuse it, because the reconciler unions an
+// old and a new digest of one module during an upgrade and a renamed user
+// that keeps its id is a legitimate migration (see applyIdentityAndSudoers).
+type owner struct{ name, module string }
+
+func (o owner) foreignTo(module string) bool { return o.module == "" || o.module != module }
+
+func (o owner) String() string {
+	if o.module == "" {
+		return fmt.Sprintf("built-in %q", o.name)
+	}
+	return fmt.Sprintf("%q (module %s)", o.name, o.module)
 }
 
 // Conflict reports a duplicate-name-with-different-id situation that

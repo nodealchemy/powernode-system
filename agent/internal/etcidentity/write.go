@@ -73,6 +73,14 @@ func ApplyAt(set *Set, paths Paths) error {
 			return err
 		}
 	}
+	// Render-time re-check (IMP-01a0f109): report every entry the renderers
+	// below will skip. Collect has already refused manifest-level problems;
+	// anything caught here reached ApplyAt without going through it.
+	if _, refused := screen(set); len(refused) > 0 {
+		for _, r := range refused {
+			LogRefused(r)
+		}
+	}
 	unlock, err := acquireLock(lockPath, LockTimeout)
 	if err != nil {
 		return fmt.Errorf("acquire %s: %w", lockPath, err)
