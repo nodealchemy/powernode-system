@@ -62,10 +62,55 @@ module System
         [ false, instance.last_authentication_error || "authentication failed" ]
       end
     rescue StandardError => e
-      [ false, e.message ]
+      [ false, safe_error_text(e) ]
     end
 
+    # Authored, caller-facing text for each probe failure an operator can act
+    # on. The onboarding UI shows the tuple's message verbatim, so a caught
+    # exception's own #message never goes there: a driver's names the upstream
+    # host and port, an SDK's can echo request detail.
+    #
+    # Matched by ancestor NAME, not by constant: the SDK and HTTP-client gems
+    # behind these classes are optional per build (see #sdk_refusal), and a
+    # bare constant for an absent gem would raise NameError inside the very
+    # rescue meant to stop a raw failure reaching the caller. Matching
+    # ancestors also classifies a future subclass. Timeouts are tested before
+    # connection failures because Faraday::TimeoutError is not one, but
+    # Net::OpenTimeout and Errno::ETIMEDOUT read as either.
+    ERROR_CATEGORIES = [
+      [ %w[Timeout::Error Net::OpenTimeout Net::ReadTimeout Net::WriteTimeout Errno::ETIMEDOUT Faraday::TimeoutError],
+        "credential check timed out: the provider endpoint did not answer in time. Check the endpoint URL and " \
+        "that this platform can reach it, then retry." ],
+      [ %w[SocketError Errno::ECONNREFUSED Errno::EHOSTUNREACH Errno::ENETUNREACH Errno::ECONNRESET
+           Errno::EADDRNOTAVAIL OpenSSL::SSL::SSLError Faraday::ConnectionFailed Faraday::SSLError
+           Seahorse::Client::NetworkingError],
+        "provider endpoint unreachable: check the endpoint URL, DNS, firewall rules and the TLS setting " \
+        "(verify_ssl) for this provider." ],
+      [ %w[System::Providers::BaseProvider::AuthenticationError Faraday::UnauthorizedError Faraday::ForbiddenError
+           Aws::Errors::MissingCredentialsError Signet::AuthorizationError],
+        "the provider rejected the credentials: check the key or token, that it has not expired, and that it " \
+        "is allowed to authenticate." ],
+      [ %w[JSON::ParserError Faraday::ParsingError],
+        "the provider returned a response this platform could not parse: check that the endpoint URL points at " \
+        "the provider's API and not at a proxy or login page." ]
+    ].freeze
+
+    UNCATEGORISED_ERROR = "credential check failed with an unexpected error; the server log has the details. " \
+                          "Check the provider settings and retry."
+
     private
+
+    # The withheld text is recorded server-side only, redacted, so an operator
+    # can still find out what failed.
+    def safe_error_text(error)
+      Rails.logger.error(
+        "[#{self.class.name}] credential probe for provider_type=#{provider_type_label} withheld " \
+        "#{error.class}: #{::System::ShellOutputSanitizer.redact(error.message.to_s)}"
+      )
+      ancestors = error.class.ancestors.map(&:name)
+      category = ERROR_CATEGORIES.find { |names, _| names.intersect?(ancestors) }
+      category ? category.last : UNCATEGORISED_ERROR
+    end
 
     # WHAT KEEPS UNREGISTERED TYPES OUT is the call ORDER, not the
     # `supported?` clause inside Registry.sdk_refusal. #test returns early
