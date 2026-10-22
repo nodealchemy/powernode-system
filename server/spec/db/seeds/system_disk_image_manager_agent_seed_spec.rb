@@ -78,14 +78,23 @@ RSpec.describe "system_disk_image_manager_agent seed" do
                             .map { |t| t.delete_prefix(Ai::ClaudeExport::ToolAllowlist::MCP_PREFIX) }
       # A family matches its registered action exactly or by `<family>_`
       # prefix (ToolAllowlist step 4), so `system_get_task` also admits the
-      # read verb `system_get_task_log`. Expand the families the same way
-      # against the live registry rather than listing every member by hand.
-      registered = Ai::Tools::PlatformApiToolRegistry.all_tools.keys.map(&:to_s)
-      family_members = registered.select do |name|
-        DISK_IMAGE_TOOL_FAMILIES.any? { |family| name == family || name.start_with?("#{family}_") }
-      end
-      expect(family_members).to include(*DISK_IMAGE_TOOL_FAMILIES)
-      expect(platform_tools).to match_array(Ai::ClaudeExport::ToolAllowlist::BOOTSTRAP_ACTIONS | family_members)
+      # read verb `system_get_task_log`. Listed by hand on purpose: a new
+      # prefix match widens this agent's allowlist, and that should be a
+      # visible edit here.
+      expected_members = %w[
+        system_list_disk_image_publications
+        system_set_default_disk_image_publication
+        system_revert_disk_image
+        system_set_disk_image_retention
+        system_list_disk_image_webhooks
+        system_recent_signals
+        system_list_tasks
+        system_get_task
+        system_get_task_log
+        discover_skills
+        get_skill_context
+      ]
+      expect(platform_tools).to match_array(Ai::ClaudeExport::ToolAllowlist::BOOTSTRAP_ACTIONS | expected_members)
     end
 
     it "requests its model by tier (standard — a 5-minute monitor), never a pinned model id" do
