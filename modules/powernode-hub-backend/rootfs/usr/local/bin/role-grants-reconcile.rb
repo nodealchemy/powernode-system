@@ -142,3 +142,18 @@ begin
 rescue StandardError => e
   warn "[execution-event-error-scrub] unexpected error (non-fatal): #{e.class}"
 end
+
+# One-time legacy cache clear, folded in here for the same reason as the scrub
+# above: the deploy that turns on solid_cache encryption (core config/cache.yml)
+# must empty the entries written in plain text before it, before puma serves.
+# A cold start, not data loss. The core class checks its SiteSetting marker
+# first, bounds the clear with statement/lock timeouts, and never raises; the
+# guard here is the absolute backstop.
+begin
+  if defined?(::Powernode::LegacyCachePlaintextClear)
+    outcome = ::Powernode::LegacyCachePlaintextClear.run_once!(time_budget: 30)
+    warn "[legacy-cache-plaintext-clear] status=#{outcome.status}"
+  end
+rescue StandardError => e
+  warn "[legacy-cache-plaintext-clear] unexpected error (non-fatal): #{e.class}"
+end
