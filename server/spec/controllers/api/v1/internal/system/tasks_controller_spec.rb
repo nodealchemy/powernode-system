@@ -9,10 +9,9 @@ require "rails_helper"
 # yields 2931 routes, 270 under `api/v1/internal/`, and ZERO under
 # `api/v1/internal/system/` — no routes.rb (core, system, marketing,
 # supply-chain) draws it, and it has never been drawn since the extension's
-# initial import. The only would-be caller is the worker's
-# OperationReportingConcern, which PATCHes `/api/v1/internal/system/operations/:id`
-# and swallows the resulting 404 in a `rescue StandardError`. So the scoping
-# defect is LATENT, not live. We draw the routes for the duration of each
+# initial import. Nothing calls it: the worker's OperationReportingConcern,
+# which PATCHed `/api/v1/internal/system/operations/:id`, had no includers left
+# and was removed (IMP-afe5e469cdf7). So the scoping defect is LATENT, not live. We draw the routes for the duration of each
 # example so the guard exercises the real controller + real mTLS auth without
 # widening the mounted attack surface.
 RSpec.describe "Api::V1::Internal::System::Tasks", type: :request do

@@ -4,7 +4,14 @@ module Api
   module V1
     module Internal
       module System
-        # Internal API controller for system operation management
+        # Internal API controller for system operation management.
+        #
+        # UNROUTED, with no caller: no routes.rb draws api/v1/internal/system,
+        # and the worker's OperationReportingConcern, the only code that ever
+        # addressed these paths, was removed with no includers
+        # (IMP-afe5e469cdf7). System::Task status is reported by the on-node
+        # agent through node_api/status/tasks/:id/* and reaped through the
+        # worker_api janitor seam.
         class TasksController < BaseController
           before_action :set_operation, only: %i[show update events]
 
