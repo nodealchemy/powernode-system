@@ -13,12 +13,13 @@ module System
     # DESTROY_INSTANCE_FKS names only tables core or this extension owns; a
     # table ANOTHER extension owns, holding a node_instance FK this model
     # declares no `dependent:` for, registers here from that extension's
-    # to_prepare block (the store is a class-level ivar a reload wipes, and
-    # re-registering the same pair is a no-op). Naming it statically would
+    # `config.to_prepare` block, never `after_initialize`: the store is a
+    # class-level ivar that a development reload wipes, and only to_prepare
+    # re-runs after a reload (re-registering the same pair is a no-op). Naming it statically would
     # break every destroy on an install without that extension: the table
     # would not exist and the DELETE would abort the transaction.
     #
-    # Both names are interpolated into a DELETE statement, so only a plain
+    # Both names go into a DELETE statement (quoted there), and only a plain
     # lower-case SQL identifier is accepted.
     DESTROY_DEPENDENT_IDENTIFIER = /\A[a-z_][a-z0-9_]*\z/
 

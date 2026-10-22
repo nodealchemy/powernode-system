@@ -5895,9 +5895,17 @@ module Ai
           registered = ::System::NodeInstance.registered_destroy_dependents - DESTROY_INSTANCE_FKS
           present, absent = registered.partition { |table, _col| ActiveRecord::Base.connection.data_source_exists?(table) }
           skipped_tables = absent.map { |table, col| "#{table}.#{col}" }
+          if skipped_tables.any?
+            Rails.logger.warn(
+              "[SystemFleetTool] destroy_instance #{inst_id}: skipped registered dependent table(s) absent from " \
+              "the schema (an unmigrated extension, or a mistyped registration): #{skipped_tables.join(', ')}"
+            )
+          end
+          connection = ActiveRecord::Base.connection
           (DESTROY_INSTANCE_FKS + present).each do |table, col|
-            k = ActiveRecord::Base.connection.exec_delete(
-              "DELETE FROM #{table} WHERE #{col} = $1",
+            # Quoted: a registered name may be a reserved word (order, user).
+            k = connection.exec_delete(
+              "DELETE FROM #{connection.quote_table_name(table)} WHERE #{connection.quote_column_name(col)} = $1",
               "del-#{table}-#{col}", [ inst_id ]
             )
             deleted["#{table}.#{col}"] = k if k > 0

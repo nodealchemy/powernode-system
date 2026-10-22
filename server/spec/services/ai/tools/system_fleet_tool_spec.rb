@@ -2023,12 +2023,36 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     it "skips a registered table the schema does not have, and names it in the result" do
       ::System::NodeInstance.register_destroy_dependent("zz_ext_unmigrated_rows", "node_instance_id")
       inst = create(:system_node_instance, account: account, name: "ext-unmigrated-instance")
+      # Logged too, so a mistyped registration shows up for an operator.
+      allow(Rails.logger).to receive(:warn).and_call_original
 
       r = call("system_destroy_instance", instance_id: inst.id)
+
+      expect(Rails.logger).to have_received(:warn).with(a_string_including("zz_ext_unmigrated_rows.node_instance_id"))
 
       expect(r[:success]).to be(true), r.inspect
       expect(r.dig(:data, :dependent_tables_skipped)).to eq([ "zz_ext_unmigrated_rows.node_instance_id" ])
       expect(::System::NodeInstance.where(id: inst.id)).not_to exist
+    end
+
+    # The names are quoted in the DELETE, so a registered table whose name is
+    # a reserved word works instead of breaking every destroy with a syntax
+    # error.
+    it "clears a registered table whose name is a reserved word" do
+      ActiveRecord::Base.connection.create_table(:order, id: :uuid) do |t|
+        t.uuid :user, null: false
+      end
+      ::System::NodeInstance.register_destroy_dependent("order", "user")
+      inst = create(:system_node_instance, account: account, name: "reserved-word-instance")
+      ActiveRecord::Base.connection.exec_insert(
+        %(INSERT INTO "order" (id, "user") VALUES ($1, $2)), "seed-reserved", [ SecureRandom.uuid, inst.id ]
+      )
+
+      r = call("system_destroy_instance", instance_id: inst.id)
+
+      expect(r[:success]).to be(true), r.inspect
+      expect(ActiveRecord::Base.connection.select_value(%(SELECT count(*) FROM "order")).to_i).to eq(0)
+      expect(r.dig(:data, :dependent_rows_deleted).keys.map(&:to_s)).to include("order.user")
     end
 
     # A STATIC entry is never skipped: a missing one is a defect, so the
