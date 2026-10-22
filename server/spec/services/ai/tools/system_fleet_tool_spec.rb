@@ -1980,6 +1980,70 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
   end
 
+  # A table owned by another extension is not named in DESTROY_INSTANCE_FKS
+  # (it would not exist on an install without that extension, and the raw
+  # DELETE would raise PG::UndefinedTable and abort every destroy). It
+  # registers itself through System::NodeInstance.register_destroy_dependent,
+  # and the cascade clears it with the static tables.
+  describe "system_destroy_instance with a registered extension dependent" do
+    around do |example|
+      snapshot = ::System::NodeInstance.destroy_dependents.dup
+      example.run
+    ensure
+      ::System::NodeInstance.destroy_dependents.replace(snapshot)
+    end
+
+    before do
+      # DDL is transactional in PostgreSQL, so the example's rollback drops it.
+      ActiveRecord::Base.connection.create_table(:zz_ext_instance_dependents, id: :uuid) do |t|
+        t.references :node_instance, type: :uuid, null: false,
+                                     foreign_key: { to_table: :system_node_instances }
+      end
+      ::System::NodeInstance.register_destroy_dependent("zz_ext_instance_dependents", "node_instance_id")
+    end
+
+    it "clears the registered table's rows and destroys the instance" do
+      inst = create(:system_node_instance, account: account, name: "ext-dependent-instance")
+      ActiveRecord::Base.connection.exec_insert(
+        "INSERT INTO zz_ext_instance_dependents (id, node_instance_id) VALUES ($1, $2)",
+        "seed-ext-dependent", [ SecureRandom.uuid, inst.id ]
+      )
+
+      r = call("system_destroy_instance", instance_id: inst.id)
+
+      expect(r[:success]).to be(true), r.inspect
+      expect(::System::NodeInstance.where(id: inst.id)).not_to exist
+      expect(ActiveRecord::Base.connection.select_value("SELECT count(*) FROM zz_ext_instance_dependents").to_i).to eq(0)
+      expect(r.dig(:data, :dependent_rows_deleted).keys.map(&:to_s)).to include("zz_ext_instance_dependents.node_instance_id")
+      expect(r.dig(:data, :dependent_tables_skipped)).to eq([])
+    end
+
+    # A registered extension's migrations may not have run: its table is
+    # absent, holds no rows, and is skipped and named, not fatal.
+    it "skips a registered table the schema does not have, and names it in the result" do
+      ::System::NodeInstance.register_destroy_dependent("zz_ext_unmigrated_rows", "node_instance_id")
+      inst = create(:system_node_instance, account: account, name: "ext-unmigrated-instance")
+
+      r = call("system_destroy_instance", instance_id: inst.id)
+
+      expect(r[:success]).to be(true), r.inspect
+      expect(r.dig(:data, :dependent_tables_skipped)).to eq([ "zz_ext_unmigrated_rows.node_instance_id" ])
+      expect(::System::NodeInstance.where(id: inst.id)).not_to exist
+    end
+
+    # A STATIC entry is never skipped: a missing one is a defect, so the
+    # DELETE raises (and the lint spec keeps it from shipping) rather than the
+    # destroy quietly carrying on.
+    it "does not skip a missing static table" do
+      stub_const("#{described_class}::DESTROY_INSTANCE_FKS",
+                 described_class::DESTROY_INSTANCE_FKS + [ [ "zz_static_typo_rows", "node_instance_id" ] ])
+      inst = create(:system_node_instance, account: account, name: "static-typo-instance")
+
+      expect { call("system_destroy_instance", instance_id: inst.id) }
+        .to raise_error(ActiveRecord::StatementInvalid, /zz_static_typo_rows/)
+    end
+  end
+
   # IMP-1a5c145c24eb — a THIRD occurrence of the same InvalidForeignKey leak
   # IMP-7e08feaf4ebf fixed at delete_node/delete_module (above); this one was
   # not in that task's own count and stayed open. Same shape, same fix: the
@@ -1987,13 +2051,9 @@ RSpec.describe Ai::Tools::SystemFleetTool do
   # declared constants an operator can extend) is real and safe and must
   # survive; only the interpolated driver text goes.
   describe "system_destroy_instance InvalidForeignKey (IMP-1a5c145c24eb)" do
-    # DESTROY_INSTANCE_FKS unconditionally raw-SQL-deletes against 13 tables
-    # including one owned by a private extension not present in
-    # this (core-mode) checkout — a pre-existing environment gap, not
-    # something this fix introduces: the untouched storage-credential specs
-    # two describe blocks above fail identically against current code.
-    # Flagged separately; stub the cascade so this test exercises what it's
-    # actually about — the InvalidForeignKey rescue arm on instance.destroy!.
+    # Stub the DESTROY_INSTANCE_FKS raw-SQL cascade so this test exercises
+    # what it's actually about — the InvalidForeignKey rescue arm on
+    # instance.destroy!.
     before { allow(ActiveRecord::Base.connection).to receive(:exec_delete).and_return(0) }
 
     it "does not forward the raw FK violation message" do

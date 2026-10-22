@@ -8,6 +8,40 @@ module System
     VARIETIES = %w[cloud physical dynamic].freeze
     STATUSES = %w[pending provisioning starting running stopping stopped rebooting terminated error].freeze
 
+    # Extension seam for Ai::Tools::SystemFleetTool#destroy_instance's raw-SQL
+    # cascade (mirrors Account.register_teardown_guard). That cascade's static
+    # DESTROY_INSTANCE_FKS names only tables core or this extension owns; a
+    # table ANOTHER extension owns, holding a node_instance FK this model
+    # declares no `dependent:` for, registers here from that extension's
+    # to_prepare block (the store is a class-level ivar a reload wipes, and
+    # re-registering the same pair is a no-op). Naming it statically would
+    # break every destroy on an install without that extension: the table
+    # would not exist and the DELETE would abort the transaction.
+    #
+    # Both names are interpolated into a DELETE statement, so only a plain
+    # lower-case SQL identifier is accepted.
+    DESTROY_DEPENDENT_IDENTIFIER = /\A[a-z_][a-z0-9_]*\z/
+
+    def self.destroy_dependents
+      @destroy_dependents ||= {}
+    end
+
+    def self.register_destroy_dependent(table, foreign_key)
+      pair = [ table.to_s, foreign_key.to_s ]
+      pair.each do |name|
+        next if name.match?(DESTROY_DEPENDENT_IDENTIFIER)
+
+        raise ArgumentError, "destroy dependent #{name.inspect} is not a plain SQL identifier"
+      end
+
+      destroy_dependents[pair] = true
+      pair
+    end
+
+    def self.registered_destroy_dependents
+      destroy_dependents.keys
+    end
+
     # Statuses that count as a replica the control plane still expects to
     # serve — capacity metrics (ProjectMetricsCollector's replica_count /
     # region_count) measure the fleet against this, NOT against `active`.

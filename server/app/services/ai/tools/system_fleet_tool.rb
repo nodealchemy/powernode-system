@@ -5813,6 +5813,11 @@ module Ai
       # loop's raw-SQL DELETEs for everything else are done. Deleting them
       # here too, ahead of that, would restore the exact bypass this task
       # fixed — the row would be gone via raw SQL before AR ever saw it.
+      #
+      # ONLY tables core or this extension owns (system_, devops_, ai_), each
+      # of which must exist (spec/lint/destroy_instance_dependents_spec.rb).
+      # A table another extension owns registers itself with
+      # System::NodeInstance.register_destroy_dependent instead.
       DESTROY_INSTANCE_FKS = [
         [ "system_node_modules", "node_instance_id" ],
         [ "system_bootstrap_tokens", "node_instance_id" ],
@@ -5823,7 +5828,6 @@ module Ai
         [ "devops_kubernetes_nodes", "node_instance_id" ],
         [ "devops_docker_hosts", "node_instance_id" ],
         [ "system_mount_encryption_keys", "node_instance_id" ],
-        [ "business_billing_provisioning_usage_records", "node_instance_id" ],
         [ "ai_provisioning_code_deployments", "node_instance_id" ],
         [ "system_sdwan_host_vrf_assignments", "node_instance_id" ],
         [ "system_sdwan_host_bridges", "node_instance_id" ],
@@ -5848,6 +5852,7 @@ module Ai
         inst_id = instance.id
         name = instance.name
         deleted = Hash.new(0)
+        skipped_tables = []
         peers_destroyed = 0
 
         ActiveRecord::Base.transaction do
@@ -5879,8 +5884,18 @@ module Ai
             peers_destroyed += k
           end
 
-          # Direct dependents
-          DESTROY_INSTANCE_FKS.each do |table, col|
+          # Direct dependents: the static tables core and this extension own,
+          # plus any another extension registered for itself
+          # (System::NodeInstance.register_destroy_dependent). A static table
+          # is never skipped: if one is missing, that is a defect the DELETE
+          # should surface (the lint spec keeps the list real). A REGISTERED
+          # table can be missing when its extension is loaded but its
+          # migrations have not run; it holds no rows then, and is skipped
+          # and named in the result rather than aborting the destroy.
+          registered = ::System::NodeInstance.registered_destroy_dependents - DESTROY_INSTANCE_FKS
+          present, absent = registered.partition { |table, _col| ActiveRecord::Base.connection.data_source_exists?(table) }
+          skipped_tables = absent.map { |table, col| "#{table}.#{col}" }
+          (DESTROY_INSTANCE_FKS + present).each do |table, col|
             k = ActiveRecord::Base.connection.exec_delete(
               "DELETE FROM #{table} WHERE #{col} = $1",
               "del-#{table}-#{col}", [ inst_id ]
@@ -5896,7 +5911,8 @@ module Ai
           instance_id: inst_id,
           name: name,
           sdwan_peers_destroyed: peers_destroyed,
-          dependent_rows_deleted: deleted
+          dependent_rows_deleted: deleted,
+          dependent_tables_skipped: skipped_tables
         )
       rescue ActiveRecord::InvalidForeignKey => e
         # IMP-1a5c145c24eb — same pattern as delete_node/delete_module above
