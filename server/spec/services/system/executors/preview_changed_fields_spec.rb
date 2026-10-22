@@ -119,10 +119,15 @@ RSpec.describe "approval-card changed-field naming" do
     # `not_to include` is refusing something present rather than passing on an
     # empty fixture — and the neighbouring serializer field masks it, which is
     # the standard the preview must not undercut.
+    # Since IMP-3d10c3c9439e #params masks secret-looking values on every
+    # read; the parked original is reachable only through #replay_params, the
+    # executor-replay path.
     it "refuses a value that is present in params and masked by the sibling field" do
-      expect(secret_bearing.params.dig("attributes", "server_token"))
+      expect(secret_bearing.send(:replay_params).dig("attributes", "server_token"))
         .to eq("K10-plaintext-server-token")
-      expect(::Ai::SensitiveParams.filter(secret_bearing.params).dig("attributes", "server_token"))
+      expect(secret_bearing.params.dig("attributes", "server_token"))
+        .to eq(::Ai::SensitiveParams::MASK)
+      expect(::Ai::SensitiveParams.filter(secret_bearing.send(:replay_params)).dig("attributes", "server_token"))
         .to eq(::Ai::SensitiveParams::MASK)
     end
   end

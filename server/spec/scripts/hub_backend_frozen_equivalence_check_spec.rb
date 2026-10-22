@@ -117,9 +117,13 @@ RSpec.describe "stage15.sh hub-backend frozen-equivalence check (IMP-094d900f909
                "gem \"rake\", \"#{gems['rake'][:version]}\"\n" \
                "gem \"matrix\", \"#{gems['matrix'][:version]}\"\n")
 
+    # Bundler's executable is resolved through the clean ruby's own gem
+    # path rather than a `bundle` on PATH: a distro ruby can ship bundler
+    # as a default gem with only a versioned binstub (Ubuntu's
+    # /usr/bin/bundle3.2), and the check block itself only ever runs `ruby`.
     lock_out, lock_err, lock_status = Open3.capture3(
       { "PATH" => clean_path, "BUNDLE_GEMFILE" => gemfile_path },
-      "bundle", "lock", "--local",
+      "ruby", "-e", 'load Gem.bin_path("bundler", "bundle")', "lock", "--local",
       unsetenv_others: true
     )
     skip "could not generate a real lock on this machine: #{lock_out}\n#{lock_err}" unless lock_status.success?

@@ -106,8 +106,9 @@ This extension contributes:
   the operator API, the on-node API and the worker API
 - A React/TypeScript frontend: page components, reusable components, custom
   hooks and API client services
-- Worker jobs (12 scheduled): `system_task_reaper`, `out_of_band_exec_reaper`,
-  `system_fleet_reconcile`, `system_cve_feed`, `system_cve_responder_reconcile`,
+- Worker jobs (13 scheduled): `system_task_reaper`, `out_of_band_exec_reaper`,
+  `system_fleet_reconcile`, `system_seed_cleanup`, `system_cve_feed`,
+  `system_cve_responder_reconcile`,
   `system_fleet_event_retention`, `sdwan_flow_sample_retention`,
   `system_gitops_sync`, `system_cloud_sync`,
   `system_fulfillment_request_reconcile`, `system_package_repository_sync`,

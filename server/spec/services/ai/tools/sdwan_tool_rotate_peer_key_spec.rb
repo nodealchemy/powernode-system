@@ -126,7 +126,10 @@ RSpec.describe Ai::Tools::SdwanTool, "system_sdwan_rotate_peer_key" do
       definition = described_class.action_definitions.fetch("system_sdwan_rotate_peer_key")
 
       expect(definition[:description]).to match(/leaked key/i)
-      expect(definition[:description]).to match(/not a compromised node/i)
+      # Sentence 1 now reads "...the remedy for a LEAKED KEY rather than a
+      # compromised node" (99c1f5d3, the listing-budget rewrite); the scope is
+      # the same.
+      expect(definition[:description]).to match(/(?:not|rather than) a compromised node/i)
       expect(definition[:description]).to include("system_sdwan_detach_peer")
       expect(definition[:description]).not_to match(/suspected key compromise/i)
       expect(definition[:parameters][:reason][:description]).to match(/suspected key leak/i)

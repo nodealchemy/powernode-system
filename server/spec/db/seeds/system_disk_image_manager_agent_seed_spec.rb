@@ -76,7 +76,16 @@ RSpec.describe "system_disk_image_manager_agent seed" do
       tools = Ai::ClaudeExport::ToolAllowlist.for(agent, registry: registry)
       platform_tools = tools.select { |t| t.start_with?(Ai::ClaudeExport::ToolAllowlist::MCP_PREFIX) }
                             .map { |t| t.delete_prefix(Ai::ClaudeExport::ToolAllowlist::MCP_PREFIX) }
-      expect(platform_tools).to match_array(Ai::ClaudeExport::ToolAllowlist::BOOTSTRAP_ACTIONS | DISK_IMAGE_TOOL_FAMILIES)
+      # A family matches its registered action exactly or by `<family>_`
+      # prefix (ToolAllowlist step 4), so `system_get_task` also admits the
+      # read verb `system_get_task_log`. Expand the families the same way
+      # against the live registry rather than listing every member by hand.
+      registered = Ai::Tools::PlatformApiToolRegistry.all_tools.keys.map(&:to_s)
+      family_members = registered.select do |name|
+        DISK_IMAGE_TOOL_FAMILIES.any? { |family| name == family || name.start_with?("#{family}_") }
+      end
+      expect(family_members).to include(*DISK_IMAGE_TOOL_FAMILIES)
+      expect(platform_tools).to match_array(Ai::ClaudeExport::ToolAllowlist::BOOTSTRAP_ACTIONS | family_members)
     end
 
     it "requests its model by tier (standard — a 5-minute monitor), never a pinned model id" do

@@ -24,8 +24,11 @@ RSpec.describe "sample_content:remove rake task" do
     $stdout = original_out
   end
 
-  let!(:account) { create(:account) }
-  let!(:agent) { create(:ai_agent, account: account, name: "Customer Success Agent") }
+  # The service resolves sample agents by slug inside the well-known seed
+  # account (System::SampleContentRemovalService#seed_account), not by
+  # display name in any account, so the fixture lives where the seeds put it.
+  let!(:account) { create(:account, name: "Powernode Admin") }
+  let!(:agent) { create(:ai_agent, account: account, name: "Customer Success Agent", slug: "customer-success-agent") }
 
   after { ENV.delete("CONFIRM_DELETE") }
 

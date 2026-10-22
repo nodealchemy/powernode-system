@@ -202,9 +202,12 @@ RSpec.describe "Api::V1::System::Sdwan::FederationPeers", type: :request do
           expect(peer.reload.status).to eq("proposed"), "acceptance bypassed the approval gate"
 
           deferred = Ai::DeferredOperation.order(created_at: :desc).first
-          expect(deferred.params["acceptance_token"]).to eq(token),
-                                                         "the token was dropped between the controller and the executor"
-          expect(deferred.params["attributes"]).not_to include("acceptance_token"),
+          # #params masks the token on every read (IMP-3d10c3c9439e); the
+          # executor replays from #replay_params, which unseals the original.
+          expect(deferred.send(:replay_params)["acceptance_token"]).to eq(token),
+                                                                "the token was dropped between the controller and the executor"
+          expect(deferred.params["acceptance_token"]).to eq(::Ai::SensitiveParams::MASK)
+          expect(deferred.send(:replay_params)["attributes"]).not_to include("acceptance_token"),
                                                        "the token leaked into the ride-along attributes accept! writes"
         end
 

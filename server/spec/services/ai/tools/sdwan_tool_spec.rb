@@ -262,8 +262,12 @@ RSpec.describe Ai::Tools::SdwanTool do
         expect(r[:data][:pending]).to be true
 
         deferred = Ai::DeferredOperation.order(created_at: :desc).first
-        expect(deferred.params["acceptance_token"]).to eq(plaintext),
-                                                       "the token did not survive to the executor's replay params"
+        # #params masks it on every read (IMP-3d10c3c9439e); the executor
+        # replays from #replay_params (private; read here as the
+        # executor does), which unseals the original.
+        expect(deferred.send(:replay_params)["acceptance_token"]).to eq(plaintext),
+                                                              "the token did not survive to the executor's replay params"
+        expect(deferred.params["acceptance_token"]).to eq(::Ai::SensitiveParams::MASK)
         # The approval-audience copy must NOT carry the plaintext token
         # (Ai::SensitiveParams filters the request_data mirror).
         expect(deferred.approval_request.request_data.dig("params", "acceptance_token")).to eq("[FILTERED]")

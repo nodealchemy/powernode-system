@@ -207,11 +207,11 @@ RSpec.describe "SDWAN port-mapping surface parity", type: :request do
   describe "MCP create" do
     # This arm writes inline, so the assertion is against the persisted row
     # rather than a parked attributes hash.
-    it "persists every writable attribute and ignores everything else" do
+    it "persists every writable attribute" do
       result = tool.execute(params: {
         action: "system_sdwan_create_port_mapping",
         network_id: network.id
-      }.merge(under_caller_names(full_attributes)).merge(forbidden_attributes))
+      }.merge(under_caller_names(full_attributes)))
 
       expect(result[:success]).to be(true), "MCP create refused the full writable payload: #{result[:error]}"
       payload = result[:data][:port_mapping]
@@ -227,8 +227,26 @@ RSpec.describe "SDWAN port-mapping surface parity", type: :request do
 
       expect(row.account_id).to eq(account.id)
       expect(row.sdwan_network_id).to eq(network.id)
-      expect(row.id).not_to eq(forbidden_attributes[:id])
       expect(row.last_compiled_at).to be_nil
+    end
+
+    # The MCP door used to drop non-writable keys silently. BaseTool's
+    # strict-params check now refuses the whole call instead and names each
+    # unrecognized key, so a caller learns its payload was not applied as sent.
+    it "refuses a payload carrying a non-writable attribute, and writes nothing" do
+      result = nil
+      expect {
+        result = tool.execute(params: {
+          action: "system_sdwan_create_port_mapping",
+          network_id: network.id
+        }.merge(under_caller_names(full_attributes)).merge(forbidden_attributes))
+      }.not_to change(::Sdwan::PortMapping, :count)
+
+      expect(result[:success]).to be(false)
+      expect(result[:error]).to include("Nothing was applied")
+      forbidden_attributes.each_key do |key|
+        expect(result[:error]).to include(%("#{key}")), "the refusal does not name #{key}"
+      end
     end
 
     # create's schema is hand-written where update's is interpolated, so it is
