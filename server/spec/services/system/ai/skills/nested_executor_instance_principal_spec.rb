@@ -88,7 +88,7 @@ RSpec.describe "instance principal → nested skill executor → tool" do
       tool = ::Ai::Tools::SystemIngressTool.new(account: account, user: nil)
       tool.instance_authorized = true
       tool.node_instance = node_instance
-      tool.execute(params: { action: "system_expose_service_publicly", hostname: "x.example.com" })
+      tool.execute(params: { action: "system_expose_service_publicly", service_hostname: "x.example.com" })
 
       expect(spy.instance_authorized).to be true
       expect(spy.node_instance).to eq(node_instance)
@@ -100,7 +100,7 @@ RSpec.describe "instance principal → nested skill executor → tool" do
 
       operator = create(:user, account: account, permissions: %w[system.ingress.manage])
       tool = ::Ai::Tools::SystemIngressTool.new(account: account, user: operator)
-      tool.execute(params: { action: "system_expose_service_publicly", hostname: "x.example.com" })
+      tool.execute(params: { action: "system_expose_service_publicly", service_hostname: "x.example.com" })
 
       expect(spy.instance_authorized).to be_nil
       expect(spy.node_instance).to be_nil
@@ -128,15 +128,23 @@ RSpec.describe "instance principal → nested skill executor → tool" do
   # CveResponseExecutor -> system_list_modules); the other five are the same
   # latent shape. None of the seven fails closed earlier — they pass the tool's
   # own `@account`, not a user-derived one, so an instance reaches them.
+  #
+  # Each action gets only the parameters IT declares: since IMP-217f4496a0a2
+  # BaseTool#execute refuses an undeclared key before routing, so one shared
+  # bag of every site's keys would be refused at the door and never reach the
+  # executor this example is about.
   describe "SystemFleetTool executor sites" do
     {
-      "system_runbook_generate" => ::System::Ai::Skills::RunbookGenerateExecutor,
-      "system_cve_triage"       => ::System::Ai::Skills::CveResponseExecutor,
-      "system_attribute_failure" => ::System::Ai::Skills::AttributeFailureExecutor,
-      "system_platform_maintenance" => ::System::Ai::Skills::PlatformMaintenanceExecutor,
-      "system_platform_health_check" => ::System::Ai::Skills::PlatformHealthCheckExecutor,
-      "system_platform_resilience"  => ::System::Ai::Skills::PlatformResilienceExecutor
-    }.each do |action, executor_class|
+      "system_runbook_generate" => [ ::System::Ai::Skills::RunbookGenerateExecutor,
+                                     { template_id: SecureRandom.uuid } ],
+      "system_cve_triage" => [ ::System::Ai::Skills::CveResponseExecutor, { cve_id: "CVE-2026-0001" } ],
+      "system_attribute_failure" => [ ::System::Ai::Skills::AttributeFailureExecutor,
+                                      { instance_id: SecureRandom.uuid } ],
+      "system_platform_maintenance" => [ ::System::Ai::Skills::PlatformMaintenanceExecutor, { op: "health_check" } ],
+      "system_platform_health_check" => [ ::System::Ai::Skills::PlatformHealthCheckExecutor, {} ],
+      "system_platform_resilience" => [ ::System::Ai::Skills::PlatformResilienceExecutor,
+                                        { op: "health_check", instance_id: SecureRandom.uuid } ]
+    }.each do |action, (executor_class, action_params)|
       it "hands #{executor_class.name.demodulize} the instance provenance" do
         spy = executor_spy.new
         allow(executor_class).to receive(:new).and_return(spy)
@@ -144,8 +152,7 @@ RSpec.describe "instance principal → nested skill executor → tool" do
         tool = ::Ai::Tools::SystemFleetTool.new(account: account, user: nil)
         tool.instance_authorized = true
         tool.node_instance = node_instance
-        tool.execute(params: { action: action, op: "health_check", template_id: SecureRandom.uuid,
-                               cve_id: "CVE-2026-0001", instance_id: SecureRandom.uuid })
+        tool.execute(params: { action: action, **action_params })
 
         expect(spy.instance_authorized).to be true
         expect(spy.node_instance).to eq(node_instance)
@@ -267,6 +274,14 @@ RSpec.describe "instance principal → nested skill executor → tool" do
     before do
       stub_const("Ai::Tools::SystemIngressTool::ACTION_EXECUTORS",
                  { "system_expose_service_publicly" => "System::Ai::Skills::ArchitectureDeleteExecutor" })
+      # The target id rides in on the route's fixed executor inputs, not as a
+      # call parameter: system_expose_service_publicly does not declare
+      # `architecture_id`, so since IMP-217f4496a0a2 #execute would refuse it as
+      # an unrecognized parameter before any executor is built — a refusal that
+      # says nothing about the overlay. ACTION_EXECUTOR_OVERRIDES is the real
+      # merge #run_executor applies, so the hop under test stays production code.
+      stub_const("Ai::Tools::SystemIngressTool::ACTION_EXECUTOR_OVERRIDES",
+                 { "system_expose_service_publicly" => { architecture_id: architecture.id } })
 
       # ArchitectureDeleteExecutor declares `requires_approval: true`, and since
       # IMP-7e2bdc1774e4 BaseSkillExecutor#execute honours that BEFORE #perform.
@@ -282,7 +297,7 @@ RSpec.describe "instance principal → nested skill executor → tool" do
       tool = ::Ai::Tools::SystemIngressTool.new(account: account, user: nil)
       tool.instance_authorized = true
       tool.node_instance = node_instance
-      tool.execute(params: { action: "system_expose_service_publicly", architecture_id: architecture.id })
+      tool.execute(params: { action: "system_expose_service_publicly" })
     end
 
     it "refuses the nested destroy-shaped action and leaves the row intact" do
