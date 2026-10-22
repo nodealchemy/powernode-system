@@ -21,13 +21,13 @@
 # on purpose (see that section's own header for why), and it undersold
 # what a real `rails console`/`runner` actually needs). The `rails`
 # service's env comes from two places:
-#   1. modules/powernode-hub-backend/manifest.yaml's static `env:` block
-#      (RAILS_ENV, DATABASE_URL, REDIS_URL, POWERNODE_DEPLOYED,
-#      CACHE_STORE, QUEUE_ADAPTER, POWERNODE_CA_MODE, ...). This wrapper
-#      cannot read the manifest at runtime — there is no on-node copy of
-#      it to parse — so those values are HARDCODED below, kept in sync BY
-#      HAND with that file. A manifest change to the rails `env:` block
-#      must be mirrored here too.
+#   1. modules/powernode-hub-backend/manifest.yaml's rails `unit_body:`
+#      Environment= lines (RAILS_ENV, DATABASE_URL, REDIS_URL,
+#      POWERNODE_DEPLOYED, CACHE_STORE, QUEUE_ADAPTER, POWERNODE_CA_MODE,
+#      ...). This wrapper cannot read the manifest at runtime — there is no
+#      on-node copy of it to parse — so those values are HARDCODED below,
+#      kept in sync BY HAND with that file. A manifest change to those
+#      Environment= lines must be mirrored here too.
 #   2. $STATE_DIR/backend-default.conf, which rails-start.sh writes on
 #      first boot and sources (`set -a`) for everything else
 #      (SECRET_KEY_BASE, the AR encryption keys, JWT_*,
@@ -102,7 +102,7 @@ fi
 
 # Manifest env (systemd Environment=, not the generated secrets file --
 # see this script's header for why). Kept in sync BY HAND with
-# modules/powernode-hub-backend/manifest.yaml's rails `env:` block.
+# modules/powernode-hub-backend/manifest.yaml's rails unit_body Environment= lines.
 # Literal hardcoded values only -- safe to set as root, unlike anything
 # read from $SECRETS_FILE.
 export RAILS_ENV=production

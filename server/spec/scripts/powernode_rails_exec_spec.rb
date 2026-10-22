@@ -64,20 +64,25 @@ RSpec.describe "powernode-rails-exec: out-of-band bundle wrapper (IMP-01a0e40a-c
   end
 
   # Sanity-checks the hardcoded literals above against the ACTUAL manifest
-  # values, not hand-copied constants -- a manifest change to the rails
-  # `env:` block fails this spec until mirrored here, the same shape the
+  # values, not hand-copied constants -- a manifest change to the rails unit's
+  # environment fails this spec until mirrored here, the same shape the
   # OCI cache dir section of rails_setup_root_prep_spec.rb already uses.
-  it "the hardcoded manifest env literals actually match manifest.yaml's rails `env:` block" do
+  #
+  # The rails service is rendered from `unit_body:` (its Environment= lines),
+  # not from a structured `env:` map; this example used to look for the map and
+  # had been failing on nil since that switch (fixed with IMP-24a25a083497).
+  it "the hardcoded manifest env literals actually match the rails unit_body's Environment= lines" do
     manifest = File.read(File.join(extension_root, "modules/powernode-hub-backend/manifest.yaml"))
-    rails_env_block = manifest[/name: rails\b.*?env:\n(.*?)\n\s*exposed_ports:/m, 1]
-    expect(rails_env_block).not_to be_nil
+    unit_env = manifest.scan(/^\s*Environment=([A-Z_]+)=(\S+)$/).to_h
+    mirrored = %w[RAILS_ENV RAILS_LOG_TO_STDOUT DATABASE_URL REDIS_URL POWERNODE_DEPLOYED CACHE_STORE
+                  QUEUE_ADAPTER POWERNODE_CA_MODE]
+    expect(unit_env.keys).to include(*mirrored)
 
-    expect(rails_env_block).to match(/RAILS_ENV: production/)
-    expect(rails_env_block).to match(/DATABASE_URL: "postgres:\/\/powernode@localhost:5432\/powernode_production"/)
-    expect(rails_env_block).to match(/REDIS_URL: "redis:\/\/localhost:6379\/0"/)
-    expect(rails_env_block).to match(/CACHE_STORE: "memory_store"/)
-    expect(rails_env_block).to match(/QUEUE_ADAPTER: "async"/)
-    expect(rails_env_block).to match(/POWERNODE_CA_MODE: "local"/)
+    mirrored.each do |name|
+      exported = script[/^export #{name}=(\S+)$/, 1]&.delete('"')
+      expect(exported).to eq(unit_env[name]),
+        "powernode-rails-exec exports #{name}=#{exported.inspect}, the rails unit sets #{unit_env[name].inspect}"
+    end
   end
 
   it "resolves BUNDLE_* the same way rails-start.sh does at runtime, plus HOME and BOOTSNAP_CACHE_DIR (review round)" do
