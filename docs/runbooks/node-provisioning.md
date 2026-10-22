@@ -559,6 +559,34 @@ path:
 > `provisioning`/`starting` to simplify this path; it is **not shipped yet**, so
 > use the cancel→sync→error→terminate sequence above today.
 
+### A terminated instance whose guest is still running
+
+`system.cloud_sync_terminated_guest_present` means a row reads `terminated` but
+the provider still lists its guest. That guest is running and billing. It
+happens when `InstanceControlService` committed `terminate!` and the process
+died before the provider received the destroy. The signal comes from the
+check event that the hourly cloud sync (`System::CloudSyncService`) writes on
+each successful region sync. It has no applier and stands until a person acts.
+
+1. In the provider console, confirm that the listed guest really is the
+   terminated instance. Match its name and creation time as well as the
+   `cloud_instance_id`, because a recycled id must not be destroyed by mistake.
+2. If it is the same guest, destroy it through the provider's console or
+   CLI. No platform verb retries it: the row is already `terminated`, and
+   `terminate` has no transition out of that state. If the guest is already
+   gone, the next successful sync stops naming it.
+
+### Cloud sync has stopped checking a region
+
+`system.cloud_sync_check_stale` means a region this account has synced before,
+and that is still enabled, has had no fresh check event for longer than the
+sensor's lookback (3 hours). The terminated-guest check above only fires from
+a fresh check, so a region in this state reports nothing wrong because nothing
+is looking. Find out why the sync stopped succeeding: the worker's
+`SystemCloudSyncJob` not running, or the provider connection or API refusing
+it. Resolve each lane on its own. A fresh check clears this signal but says
+nothing about a guest the presence lane named, and the reverse is also true.
+
 For all stuck states, use the `attribute_failure` skill (bound to the System Concierge) to enumerate recent module/version changes that may have caused the failure. The skill is invoked through the System Concierge chat agent (operator describes the failure; Concierge calls the executor internally and returns the analysis):
 
 ```javascript

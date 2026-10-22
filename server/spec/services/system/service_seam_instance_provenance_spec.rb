@@ -263,7 +263,10 @@ RSpec.describe "service-seam instance provenance", type: :service do
       "fulfillment_advance_orchestrator.rb:ModuleSmokeVerifyExecutor" =>
         "Same seam and same reasoning as ProvisionFullStackExecutor above.",
 
-      "scheduled_health_check_service.rb:PlatformMaintenanceExecutor" =>
+      # Re-keyed when health_check moved out of PlatformMaintenanceExecutor
+      # into its own PlatformHealthCheckExecutor (IMP-80a353489ba4); the seam
+      # and its reasoning are unchanged.
+      "scheduled_health_check_service.rb:PlatformHealthCheckExecutor" =>
         "Scheduler-only. Reached from the worker-API tick " \
         "(Api::V1::System::WorkerApi::PlatformHealthController#sweep), " \
         "never from an MCP tool, and passes user: nil meaning a genuine " \

@@ -28,6 +28,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | [node-provisioning.md](./node-provisioning.md) | New operators, on-call SREs | Provider connection configured | ~5–15 min per node |
 | [publish-service.md](./publish-service.md) | SREs publishing internal services to their own users | An overlay backend (VIP or host) + an account TLS cert; `system.ingress.manage` | ~5 min per service |
 | [sdwan-network-setup.md](./sdwan-network-setup.md) | Network engineers, multi-tenant operators | At least one NodeInstance with publicly-reachable address | ~30 min |
+| [ssh-host-key-signals.md](./ssh-host-key-signals.md) | On-call SREs, security operators | `system.instances.read`; `system.instances.control` + a person's own session to clear a key | ~5 min per signal |
 | [storage-migration.md](./storage-migration.md) | Storage / SRE operators | Source + target `ProviderVolume`, `system.storage.*` + `system.platform.scale` perms | Varies by data size |
 | [template-authoring.md](./template-authoring.md) | Template designers, SREs preparing a node type, agents driving the same flow over MCP | A `NodePlatform` on the account, the `NodeModule` rows to compose, `system.templates.*` | ~20 min per template |
 | [traefik-tcp-exposure-vs-dnat.md](./traefik-tcp-exposure-vs-dnat.md) | SREs and network operators deciding how to expose a service | None to read; some paths depend on unbuilt campaign increments (marked planned) | ~5 min decision + per-path setup time |
@@ -49,6 +50,7 @@ the broader learning sequence, see [`../tutorials/`](../tutorials/).
 | Migrating a stateful component's data to another volume | [storage-migration.md](./storage-migration.md) |
 | Authoring a module | [module-authoring.md](./module-authoring.md) → [disk-image-ci.md](./disk-image-ci.md) (if base image too) |
 | Composing modules into a reusable NodeTemplate | [template-authoring.md](./template-authoring.md) (after [module-authoring.md](./module-authoring.md)) |
+| Triaging an SSH host key change or coverage signal | [ssh-host-key-signals.md](./ssh-host-key-signals.md) |
 | Responding to a security CVE | [cve-response.md](./cve-response.md) |
 | Making nodes refuse unsigned module blobs | [module-signature-verification.md](./module-signature-verification.md) (default off; ladder off → audit → runtime → all) |
 | Building federation | [federation-setup.md](./federation-setup.md) → [federation-troubleshooting.md](./federation-troubleshooting.md) when stuck |

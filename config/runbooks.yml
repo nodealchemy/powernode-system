@@ -82,6 +82,12 @@ system.pool_guest_orphaned:
     and what to do when a guest's name lost the pool marker to hostname
     budgeting and the sensor cannot attribute it.
 
+system.cloud_sync_terminated_guest_present:
+  doc: "docs/runbooks/node-provisioning.md#a-terminated-instance-whose-guest-is-still-running"
+
+system.cloud_sync_check_stale:
+  doc: "docs/runbooks/node-provisioning.md#cloud-sync-has-stopped-checking-a-region"
+
 # ── Module and template convergence ───────────────────────────────────────
 system.module_drift:
   doc: "docs/runbooks/node-provisioning.md#phase-4--run-"
@@ -113,6 +119,39 @@ system.module_verify_failed:
 
 system.module_verify_not_measured:
   doc: "docs/runbooks/module-signature-verification.md#step-2--audit-fleet-wide-measure"
+
+system.node_security_fail_closed:
+  not_documented: true
+  reason: >-
+    No runbook covers a unit the node agent refused to attach or start because
+    a security drop-in write failed. A runbook would have to name the usual
+    node-wide causes (a full or read-only filesystem), the manifest correction
+    for the rest, and that no applier exists: the repair is an operator act.
+
+system.node_assignment_deferred:
+  not_documented: true
+  reason: >-
+    No runbook covers an agent that keeps modules its assignment no longer
+    names (an empty or config-only list fails closed) or skips its identity
+    render. A runbook would have to say how to tell a deliberate unassignment
+    from an unservable manifest, and how to make each one explicit.
+
+system.node_agent_condition:
+  not_documented: true
+  reason: >-
+    No runbook covers the standing conditions a live node agent reports off
+    the failure path (a known-degraded unit, a refused sudoers grant). A
+    runbook would have to list the conditions the agent reports and, for each,
+    the credential or grant an operator configures to clear it.
+
+system.node_pending_digest_stuck:
+  not_documented: true
+  reason: >-
+    No runbook covers a module holding the same in-place-upgrade pending
+    digest past the threshold, after the agent's own retry, backoff and revert
+    have not resolved it. A runbook would have to cover diagnosing a manifest
+    problem, a crash-looping binary and a resource conflict, and how to clear
+    the pending digest once fixed.
 
 # ── Boot images ───────────────────────────────────────────────────────────
 system.boot_image_drift:
@@ -170,6 +209,15 @@ system.sdwan_credential_refresh_stalled:
     confirm that no newer revision exists for a (peer, network) pair, and what
     an operator does when SdwanCredentialRefreshExecutor keeps failing —
     re-issue, or detach the peer.
+
+system.ssh_host_key_changed_in_boot:
+  doc: "docs/runbooks/ssh-host-key-signals.md#host-key-changed-within-one-boot"
+
+system.ssh_host_key_uncovered:
+  doc: "docs/runbooks/ssh-host-key-signals.md#instances-with-no-recorded-host-key"
+
+system.ssh_host_key_coverage_complete:
+  doc: "docs/runbooks/ssh-host-key-signals.md#fleet-coverage-complete"
 
 # ── SDWAN topology and reachability ───────────────────────────────────────
 system.sdwan_peer_drift:

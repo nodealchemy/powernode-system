@@ -63,7 +63,9 @@ RSpec.describe System::CredentialValidationService do
         ok, message = described_class.test(provider: provider, credentials: valid_credentials)
 
         expect(ok).to be false
-        expect(message).to include("InvalidClientTokenId")
+        # The adapter's raw rejection text stays server-side (IMP-88ad4adbf97d).
+        expect(message).to eq(::System::CallerFacingMessages::GENERIC)
+        expect(message).not_to include("InvalidClientTokenId")
       end
 
       it "returns [false, ...] when access_key_id is missing" do
@@ -128,7 +130,9 @@ RSpec.describe System::CredentialValidationService do
         ok, message = described_class.test(provider: provider, credentials: valid_credentials)
 
         expect(ok).to be false
-        expect(message).to include("AADSTS7000215")
+        # The adapter's raw rejection text stays server-side (IMP-88ad4adbf97d).
+        expect(message).to eq(::System::CallerFacingMessages::GENERIC)
+        expect(message).not_to include("AADSTS7000215")
       end
 
       it "returns [false, ...] when tenant_id is missing" do
@@ -204,7 +208,9 @@ RSpec.describe System::CredentialValidationService do
         )
 
         expect(ok).to be false
-        expect(message).to include("Invalid JWT signature")
+        # The adapter's raw rejection text stays server-side (IMP-88ad4adbf97d).
+        expect(message).to eq(::System::CallerFacingMessages::GENERIC)
+        expect(message).not_to include("Invalid JWT signature")
       end
 
       it "returns [false, ...] when service_account_json is malformed" do
@@ -214,7 +220,9 @@ RSpec.describe System::CredentialValidationService do
         )
 
         expect(ok).to be false
-        expect(message).to match(/service_account_json/i)
+        # The adapter's raw rejection text stays server-side (IMP-88ad4adbf97d).
+        expect(message).to eq(::System::CallerFacingMessages::GENERIC)
+        expect(message).not_to include("{not-json")
       end
 
       it "returns [false, ...] when service_account_json is missing required fields" do
@@ -293,7 +301,9 @@ RSpec.describe System::CredentialValidationService do
         )
 
         expect(ok).to be false
-        expect(message).to match(/authentication/i)
+        # The adapter's raw rejection text stays server-side (IMP-88ad4adbf97d).
+        expect(message).to eq(::System::CallerFacingMessages::GENERIC)
+        expect(message).not_to include("requires authentication")
       end
 
       it "tolerates trailing slash in auth_url" do
@@ -355,7 +365,9 @@ RSpec.describe System::CredentialValidationService do
         )
 
         expect(ok).to be false
-        expect(message).to match(/cannot connect/i)
+        # The adapter's raw rejection text stays server-side (IMP-88ad4adbf97d).
+        expect(message).to eq(::System::CallerFacingMessages::GENERIC)
+        expect(message).not_to include("Cannot connect to libvirt")
       end
 
       it "treats empty credentials as valid when libvirt is reachable (no creds required)" do
