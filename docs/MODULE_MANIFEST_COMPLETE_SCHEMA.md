@@ -337,8 +337,12 @@ sudoers:
 | Array | Required subkeys | Notes |
 |---|---|---|
 | `groups[*]` | `name` | Name must match `GROUPNAME_RX`; unique within the manifest. |
-| `users[*]` | `name` | Name must match `USERNAME_RX`; unique. `shell`/`home`/`gecos` are optional strings. `primary_group` + each `supplementary_groups` entry must be declared in this manifest's `groups:` OR already allocated platform-wide (`ServiceGroup.live`). |
-| `sudoers[*]` | `id`, `user` | `id` must match `GRANT_ID_RX`; unique. `user` must be declared in `users:` OR a live platform `ServiceUser`. `runas`, `commands`, `flags` shape the granted sudo rule. |
+| `users[*]` | `name` | Name must match `USERNAME_RX`; unique; not a reserved built-in name (`root`, `pnadmin`, `sshd`, `nobody`, ...). `shell`/`home`/`gecos` are optional strings with no `:` and no control characters (newline, CR, NUL, ...); `shell`/`home` are absolute paths of `[A-Za-z0-9._+@/-]` without `..`. A `/home/*` home may not be, or lie inside, a built-in account's home (`/home/pnadmin`), nor be shared with another user. `primary_group` + each `supplementary_groups` entry must be declared in this manifest's `groups:` OR already allocated platform-wide (`ServiceGroup.live`), and may not be a privileged built-in group (`sudo`, `disk`, `shadow`, `adm`, ...). |
+| `sudoers[*]` | `id`, `user` | `id` must match `GRANT_ID_RX`; unique. `user` must be declared in `users:` OR a live platform `ServiceUser`, and may not be a reserved built-in account. `runas` is a plain user name; `flags` come from the sudoers tag allowlist (`SETENV`, `NOEXEC`, `LOG_OUTPUT`, ...); `commands` are absolute paths with no control characters, no `,` `:` `=` `\` separators and no bare `ALL`. |
+
+The identity rules exist because every value is concatenated into `/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/gshadow` or an `/etc/sudoers.d` rule on every node carrying the module (IMP-01a0f109). The agent re-checks them before it renders, skips a failing entry, and reports it on the heartbeat as an `identity_refused` or `sudoers_refused` agent condition.
+
+**The sudoers checks are anti-injection, not anti-broad.** They guarantee a grant cannot add a second rule, reach another user, or carry an unknown tag. They do not judge what a command grants: `/bin/sh`, `/usr/bin/env` or a wildcard like `/usr/bin/*` are accepted by design, and each is root for the grant's user. Review any `sudoers:` block as the privilege grant it is.
 
 Validation collects the full error set in one pass (not first-error-wins), so a bad manifest surfaces every offending entry at once.
 

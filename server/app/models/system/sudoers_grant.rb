@@ -3,10 +3,18 @@
 module System
   # System::SudoersGrant — a narrow, per-command sudoers entry owned by
   # a NodeModule that lets a specific ServiceUser invoke specific
-  # absolute-path commands as root (or another ServiceUser). No broad
-  # ALL=(ALL) ALL grants are ever permitted — the validation rejects
-  # the literal token "ALL" anywhere in commands and requires every
-  # entry to start with `/`.
+  # absolute-path commands as root (or another ServiceUser). The literal
+  # sudoers token "ALL" is rejected in commands and every entry must start
+  # with `/`.
+  #
+  # SCOPE (IMP-01a0f109): the command, runas and flag checks are
+  # ANTI-INJECTION, not anti-broad. They guarantee each value stays inside its
+  # own slot of the rendered rule (no newline, no `, : = \` separators, tags
+  # from an allowlist), so a grant can never add a second rule or reach
+  # another user. They do NOT judge how much a command grants: `/bin/sh`,
+  # `/usr/bin/env`, or a sudoers wildcard such as `/usr/bin/*` are all
+  # accepted by design and are each equivalent to root for the grant's user.
+  # Granting a module sudo at all is a decision to review at authoring time.
   #
   # Rendered by the on-node agent into
   # /etc/sudoers.d/powernode-<module>-<grant_id> at mode 0440 root:root.
