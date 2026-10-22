@@ -162,6 +162,20 @@ RSpec.describe "SystemFleetTool release verb gating (HIER-P2B-ENG)" do
       expect(node_module.served_version_for(staging)).to eq(version)
     end
 
+    # The negative half of the creator-scoped re-check (IMP-82db8ba318aa):
+    # another user in the account holding the floor is not enough.
+    it "refuses the replay when the agent's creator does not hold the tool floor" do
+      trust!(:monitored)
+      promote
+      release_manager.update_columns(creator_id: create(:user, account: account).id)
+
+      operation = approve_and_replay!(pending_ops.first)
+
+      expect(operation.result).to include("refused" => true, "reason" => "permission_revoked")
+      expect(operation.result["error"]).to start_with("Refusing to replay the approved action:")
+      expect(node_module.served_version_for(staging)).to be_nil
+    end
+
     it "keeps the inline error for a foreign or unknown module and parks nothing" do
       trust!(:monitored)
       foreign = create(:system_node_module, account: create(:account))

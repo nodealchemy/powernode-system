@@ -123,8 +123,13 @@ RSpec.describe "approval-card changed-field naming" do
     # read; the parked original is reachable only through #replay_params, the
     # executor-replay path.
     it "refuses a value that is present in params and masked by the sibling field" do
-      expect(secret_bearing.send(:replay_params).dig("attributes", "server_token"))
+      # A fresh load, so the original comes back through the unseal rather
+      # than the in-memory copy the gate kept.
+      stored = Ai::DeferredOperation.find(secret_bearing.id)
+      expect(stored.send(:replay_params).dig("attributes", "server_token"))
         .to eq("K10-plaintext-server-token")
+      expect(stored[:params].dig("attributes", "server_token")).to eq(::Ai::SensitiveParams::MASK)
+      expect(stored[:params].to_json).not_to include("K10-plaintext-server-token")
       expect(secret_bearing.params.dig("attributes", "server_token"))
         .to eq(::Ai::SensitiveParams::MASK)
       expect(::Ai::SensitiveParams.filter(secret_bearing.send(:replay_params)).dig("attributes", "server_token"))

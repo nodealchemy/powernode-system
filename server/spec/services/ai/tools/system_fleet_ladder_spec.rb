@@ -115,6 +115,21 @@ RSpec.describe Ai::Tools::SystemFleetTool, "promotion ladder verbs" do
     expect(mod.reload.current_version).to eq(v2)
   end
 
+  # The negative half of the creator-scoped re-check (IMP-82db8ba318aa): the
+  # auto-approved staging promotion replays inline as the agent, and an agent
+  # whose creator lacks the permissions is refused even though another user
+  # in the account (the operator) holds them.
+  it "refuses the promotion when the agent's creator lacks the permissions" do
+    agent.update_columns(creator_id: create(:user, account: account).id)
+
+    r = call("system_promote_module_version", module_id: mod.id, environment: "staging", version_id: v2.id)
+
+    expect(r).to include(success: false, refused: true, reason: "permission_revoked")
+    expect(r[:error]).to eq("Refusing to replay the approved action: the principal that requested this action " \
+                            "no longer holds the permission it was authorised under.")
+    expect(mod.served_version_for(staging)).to be_nil
+  end
+
   it "refuses a following plane and an unknown environment by name" do
     r = call("system_promote_module_version", module_id: mod.id, environment: "dev", version_id: v2.id)
     expect(r[:success]).to be false

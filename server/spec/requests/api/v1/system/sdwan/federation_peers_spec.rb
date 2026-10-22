@@ -207,6 +207,9 @@ RSpec.describe "Api::V1::System::Sdwan::FederationPeers", type: :request do
           expect(deferred.send(:replay_params)["acceptance_token"]).to eq(token),
                                                                 "the token was dropped between the controller and the executor"
           expect(deferred.params["acceptance_token"]).to eq(::Ai::SensitiveParams::MASK)
+          # At rest the column holds the mask plus the sealed envelope, never the token.
+          expect(deferred[:params]["acceptance_token"]).to eq(::Ai::SensitiveParams::MASK)
+          expect(deferred[:params].to_json).not_to include(token)
           expect(deferred.send(:replay_params)["attributes"]).not_to include("acceptance_token"),
                                                        "the token leaked into the ride-along attributes accept! writes"
         end

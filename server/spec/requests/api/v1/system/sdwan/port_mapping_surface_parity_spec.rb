@@ -243,7 +243,10 @@ RSpec.describe "SDWAN port-mapping surface parity", type: :request do
       }.not_to change(::Sdwan::PortMapping, :count)
 
       expect(result[:success]).to be(false)
-      expect(result[:error]).to include("Nothing was applied")
+      # The authored refusal (BaseTool#unknown_params_refusal), not some other
+      # failure that also returns success: false.
+      expect(result[:error]).to start_with("Unrecognized parameter(s) for system_sdwan_create_port_mapping: ")
+      expect(result[:error]).to include("Nothing was applied. Accepted: ")
       forbidden_attributes.each_key do |key|
         expect(result[:error]).to include(%("#{key}")), "the refusal does not name #{key}"
       end
