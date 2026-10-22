@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 	"github.com/nodealchemy/powernode-system/agent/internal/lifecycle"
 	"github.com/nodealchemy/powernode-system/agent/internal/manifest"
@@ -207,5 +208,70 @@ func TestAgentConditions_ClearThenReturnRestartsFirstSeen(t *testing.T) {
 	again, _ := r.AgentConditions()
 	if len(again) != 1 || again[0].FirstSeen == first[0].FirstSeen {
 		t.Fatalf("a condition that clears and returns starts a new run: first=%v again=%v", first, again)
+	}
+}
+
+// IMP-01a0f109 (M2): a user/group the identity render refuses as unsafe used to
+// reach only OnError, so the refused account just vanished from /etc/passwd and
+// its unit failed with no visible cause. It now rides the heartbeat like a
+// refused sudoers grant, naming the entry and the reason, and clears when the
+// manifest is fixed.
+func TestAgentConditions_IdentityRefusal_ReportedAndCleared(t *testing.T) {
+	r := &Reconciler{nowUnix: func() int64 { return 1000 }}
+	r.cfg.OnError = func(string, error) {}
+
+	origIdentity, origSudoers, origHomes := applyIdentity, applySudoers, reconcileHomeOwnership
+	t.Cleanup(func() {
+		applyIdentity, applySudoers, reconcileHomeOwnership = origIdentity, origSudoers, origHomes
+	})
+	applyIdentity = func(*etcidentity.Set) error { return nil }
+	applySudoers = func([]etcsudoers.Grant) error { return nil }
+	reconcileHomeOwnership = func(*etcidentity.Set, string, func(string, error)) {}
+
+	bad := &manifest.Manifest{ID: "mod-a", Users: []manifest.ManifestUser{
+		{Name: "svcbad", UID: 70500, PrimaryGID: 70500, Gecos: "x\ntoor:x:0:0::/root:/bin/bash",
+			Home: "/var/lib/svcbad", Shell: "/usr/sbin/nologin"},
+		{Name: "evil\nroot", UID: 70501, PrimaryGID: 70501},
+	}, Groups: []manifest.ManifestGroup{{Name: "sudo", GID: 70502, Members: []string{"svcbad"}}}}
+
+	if err := r.applyIdentityAndSudoers([]*manifest.Manifest{bad}, "reconciler:"); err != nil {
+		t.Fatalf("a refusal alone must not be returned (it would stall other modules' upgrades): %v", err)
+	}
+	r.publishAgentConditions()
+
+	got, measured := r.AgentConditions()
+	if !measured || len(got) != 3 {
+		t.Fatalf("AgentConditions = %+v measured=%v, want three identity_refused", got, measured)
+	}
+	subjects := map[string]AgentCondition{}
+	for _, c := range got {
+		if c.Kind != ConditionIdentityRefused {
+			t.Errorf("unexpected kind %q", c.Kind)
+		}
+		if strings.ContainsAny(c.Subject, "\n\r") || strings.ContainsAny(c.Detail, "\n\r") {
+			t.Errorf("condition carries a raw control character: %+v", c)
+		}
+		if c.Detail == "" {
+			t.Errorf("condition %q has no reason", c.Subject)
+		}
+		subjects[c.Subject] = c
+	}
+	for _, want := range []string{"mod-a/user:svcbad", `mod-a/user:"evil\nroot"`, "mod-a/group:sudo"} {
+		if _, ok := subjects[want]; !ok {
+			t.Errorf("missing subject %q in %v", want, got)
+		}
+	}
+	if d := subjects["mod-a/user:svcbad"].Detail; !strings.Contains(d, "gecos") || strings.Contains(d, "toor") {
+		t.Errorf("detail should name the field without echoing the injected value, got %q", d)
+	}
+
+	// The manifest is fixed: cleared (measured and empty).
+	if err := r.applyIdentityAndSudoers([]*manifest.Manifest{}, "reconciler:"); err != nil {
+		t.Fatal(err)
+	}
+	r.publishAgentConditions()
+	got, measured = r.AgentConditions()
+	if !measured || len(got) != 0 {
+		t.Fatalf("after a clean render want measured and empty, got %+v measured=%v", got, measured)
 	}
 }

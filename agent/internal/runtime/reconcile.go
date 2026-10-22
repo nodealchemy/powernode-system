@@ -308,6 +308,7 @@ type Reconciler struct {
 	agentConditions atomic.Pointer[[]AgentCondition]
 	condPending     []AgentCondition
 	sudoersConds    []AgentCondition
+	identityConds   []AgentCondition // IMP-01a0f109: latest identity render's refusals
 	condFirstSeen   map[string]string
 
 	// tickIdentityManifests (T1, final review on f3339424, HIGH) is THIS
@@ -2858,10 +2859,13 @@ func (r *Reconciler) applyIdentityAndSudoers(manifests []*manifest.Manifest, sta
 	}
 	// IMP-01a0f109: entries Collect refused as unsafe were skipped, never
 	// rendered. Signalled, not returned: one module's bad entry must not stall
-	// every other module's upgrade (same rule as sudoers_refused below).
+	// every other module's upgrade (same rule as sudoers_refused below). The
+	// verdict also rides the heartbeat as identity_refused conditions, so the
+	// operator sees WHY an account (and the unit running as it) is missing.
 	for _, rf := range identitySet.Refused {
 		r.cfg.OnError(stagePrefix+"identity_refused", rf)
 	}
+	r.noteIdentityVerdict(identitySet.Refused)
 	var firstErr error
 	if err := applyIdentity(identitySet); err != nil {
 		r.cfg.OnError(stagePrefix+"identity_write", err)

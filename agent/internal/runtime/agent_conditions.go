@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
+	"github.com/nodealchemy/powernode-system/agent/internal/etcidentity"
 	"github.com/nodealchemy/powernode-system/agent/internal/etcsudoers"
 )
 
@@ -28,6 +30,9 @@ const (
 	// ConditionSudoersRefused: a sudoers grant the render declined (illegal or
 	// colliding drop-in name). Subject is "<module>/<grant id>".
 	ConditionSudoersRefused = "sudoers_refused"
+	// ConditionIdentityRefused: a module's user or group the identity render
+	// skipped as unsafe (IMP-01a0f109). Subject is "<module>/<user|group>:<name>".
+	ConditionIdentityRefused = "identity_refused"
 )
 
 // AgentCondition is one standing condition. FirstSeen is RFC3339 UTC on the
@@ -85,6 +90,32 @@ func (r *Reconciler) noteSudoersVerdict(err error) {
 	r.sudoersConds = conds
 }
 
+// noteIdentityVerdict records which module users/groups the latest identity
+// render refused (IMP-01a0f109). Collect is pure, so every render that reaches
+// it yields a verdict — even one whose file write then fails, since the
+// refusals do not depend on the write. A name that is itself invalid (it may
+// carry the injected newline) is Go-quoted, so subject and detail never carry a
+// raw control character; reasons name the field, not the offending value.
+func (r *Reconciler) noteIdentityVerdict(refused []etcidentity.Refusal) {
+	var conds []AgentCondition
+	for _, ref := range refused {
+		name := ref.Name
+		if !etcidentity.ValidName(name) {
+			name = strconv.Quote(name)
+		}
+		module := ref.SourceModule
+		if module == "" {
+			module = "render"
+		}
+		conds = append(conds, AgentCondition{
+			Kind:    ConditionIdentityRefused,
+			Subject: fmt.Sprintf("%s/%s:%s", module, ref.Kind, name),
+			Detail:  ref.Reason,
+		})
+	}
+	r.identityConds = conds
+}
+
 func collectRefusals(err error) []*etcsudoers.RefusedGrantError {
 	var out []*etcsudoers.RefusedGrantError
 	var ref *etcsudoers.RefusedGrantError
@@ -110,7 +141,7 @@ func hasJoined(err error) bool {
 // publishAgentConditions swaps the published set to this pass's, in ONE atomic
 // store (mu is held for the whole pass, so the heartbeat goroutine reads the
 // atomic and must only ever see a complete verdict). The set is the pass's
-// pending conditions plus the latest sudoers verdict, deduplicated by
+// pending conditions plus the latest sudoers and identity verdicts, deduplicated by
 // kind+subject. An empty result is still PUBLISHED: that is the explicit,
 // measured "no conditions", which the heartbeat sends as [] and which the
 // platform must be able to tell from an agent that does not report at all.
@@ -118,8 +149,9 @@ func (r *Reconciler) publishAgentConditions() {
 	now := r.nowUnixOrTime()
 	stamp := time.Unix(now, 0).UTC().Format(time.RFC3339)
 
-	merged := make(map[string]AgentCondition, len(r.condPending)+len(r.sudoersConds))
-	for _, c := range append(append([]AgentCondition(nil), r.condPending...), r.sudoersConds...) {
+	merged := make(map[string]AgentCondition, len(r.condPending)+len(r.sudoersConds)+len(r.identityConds))
+	all := append(append([]AgentCondition(nil), r.condPending...), r.sudoersConds...)
+	for _, c := range append(all, r.identityConds...) {
 		key := agentConditionKey(c.Kind, c.Subject)
 		if _, dup := merged[key]; !dup {
 			merged[key] = c
