@@ -51,9 +51,9 @@ RSpec.describe ::System::Identity::UserAllocator, type: :service do
       # Re-allocate with a different set — the old membership should be revoked.
       described_class.allocate!(
         username: u.username,
-        supplementary_groups: %w[adm]
+        supplementary_groups: %w[log-readers]
       )
-      expect(u.reload.supplementary_groups.map(&:groupname)).to contain_exactly("adm")
+      expect(u.reload.supplementary_groups.map(&:groupname)).to contain_exactly("log-readers")
     end
 
     it "rejects invalid username format" do

@@ -411,19 +411,29 @@ module System
           errors << "#{prefix}.name is required"
         elsif !name.is_a?(String) || !name.match?(::System::ServiceUser::USERNAME_RX)
           errors << "#{prefix}.name #{name.inspect} must match #{::System::ServiceUser::USERNAME_RX.inspect}"
+        elsif ::System::Identity::FieldGrammar.reserved_username?(name)
+          errors << "#{prefix}.name #{name.inspect} is reserved for a built-in account; pick a module-specific name"
         elsif seen.include?(name)
           errors << "#{prefix}.name #{name.inspect} duplicates an earlier user"
         else
           seen << name
         end
 
-        %w[shell home gecos].each do |k|
+        # IMP-01a0f109: each of these lands verbatim in a colon-separated,
+        # newline-terminated /etc/passwd line on every node.
+        { "gecos" => [ :text, ::System::Identity::FieldGrammar::GECOS_MAX ],
+          "home"  => [ :path, ::System::Identity::FieldGrammar::HOME_MAX ],
+          "shell" => [ :path, ::System::Identity::FieldGrammar::SHELL_MAX ] }.each do |k, (kind, max)|
           v = entry[k]
-          errors << "#{prefix}.#{k} must be a string" if v && !v.is_a?(String)
+          next if v.nil?
+
+          err = kind == :text ? ::System::Identity::FieldGrammar.text_error(v, max: max) : ::System::Identity::FieldGrammar.path_error(v, max: max)
+          errors << "#{prefix}.#{k} #{err}" if err
         end
 
         home = entry["home"]
-        if home.is_a?(String) && home.present? && !home_root_allowed?(home)
+        if home.is_a?(String) && home.present? && ::System::Identity::FieldGrammar.path_error(home, max: ::System::Identity::FieldGrammar::HOME_MAX).nil? &&
+           !home_root_allowed?(home)
           errors << "#{prefix}.home #{home.inspect} is not under an allowed home root " \
                      "(#{ALLOWED_HOME_ROOTS.join(', ')}) — the agent's home reconciler and " \
                      "rendering hints only ever operate on these paths; pick one of them " \
@@ -433,6 +443,8 @@ module System
         pg = entry["primary_group"]
         if pg && !pg.is_a?(String)
           errors << "#{prefix}.primary_group must be a string"
+        elsif pg && ::System::Identity::FieldGrammar.privileged_group?(pg)
+          errors << "#{prefix}.primary_group #{pg.inspect} is a privileged built-in group a module may not use"
         elsif pg && pg != name && !group_names.include?(pg) &&
               !::System::ServiceGroup.live.exists?(groupname: pg)
           errors << "#{prefix}.primary_group #{pg.inspect} is not declared in this manifest and not allocated platform-wide"
@@ -442,6 +454,8 @@ module System
           ref = "#{prefix}.supplementary_groups[#{j}]"
           if !sg.is_a?(String) || !sg.match?(::System::ServiceGroup::GROUPNAME_RX)
             errors << "#{ref} #{sg.inspect} must match #{::System::ServiceGroup::GROUPNAME_RX.inspect}"
+          elsif ::System::Identity::FieldGrammar.privileged_group?(sg)
+            errors << "#{ref} #{sg.inspect} is a privileged built-in group a module may not join"
           elsif !group_names.include?(sg) && !::System::ServiceGroup.live.exists?(groupname: sg)
             errors << "#{ref} #{sg.inspect} is not declared in this manifest and not allocated platform-wide"
           end
@@ -471,6 +485,8 @@ module System
           errors << "#{prefix}.name is required"
         elsif !name.is_a?(String) || !name.match?(::System::ServiceGroup::GROUPNAME_RX)
           errors << "#{prefix}.name #{name.inspect} must match #{::System::ServiceGroup::GROUPNAME_RX.inspect}"
+        elsif ::System::Identity::FieldGrammar.privileged_group?(name)
+          errors << "#{prefix}.name #{name.inspect} is a privileged built-in group a module may not declare"
         elsif seen.include?(name)
           errors << "#{prefix}.name #{name.inspect} duplicates an earlier group"
         else
@@ -523,8 +539,27 @@ module System
           errors << "#{prefix}.user is required"
         elsif !u.is_a?(String)
           errors << "#{prefix}.user must be a string"
+        elsif ::System::Identity::FieldGrammar.reserved_username?(u)
+          errors << "#{prefix}.user #{u.inspect} is reserved; a module grant may not escalate a built-in account"
         elsif !user_names.include?(u) && !::System::ServiceUser.live.exists?(username: u)
           errors << "#{prefix}.user #{u.inspect} is not declared in this manifest and not allocated platform-wide"
+        end
+
+        # IMP-01a0f109: runas, flags and commands are concatenated into one
+        # sudoers rule; each must stay inside its own slot.
+        runas = entry["runas"]
+        if !runas.nil? && !(runas.is_a?(String) && runas.match?(::System::ServiceUser::USERNAME_RX))
+          errors << "#{prefix}.runas #{runas.inspect} must be a user name matching #{::System::ServiceUser::USERNAME_RX.inspect}"
+        end
+
+        flags = entry["flags"]
+        if !flags.nil? && !flags.is_a?(Array)
+          errors << "#{prefix}.flags must be an array"
+        else
+          Array(flags).each_with_index do |flag, j|
+            err = ::System::Identity::FieldGrammar.sudo_flag_error(flag)
+            errors << "#{prefix}.flags[#{j}] #{err}" if err
+          end
         end
 
         cmds = entry["commands"]
@@ -532,14 +567,8 @@ module System
           errors << "#{prefix}.commands must be a non-empty array"
         else
           cmds.each_with_index do |cmd, j|
-            cref = "#{prefix}.commands[#{j}]"
-            if !cmd.is_a?(String)
-              errors << "#{cref} must be a string"
-            elsif !cmd.start_with?("/")
-              errors << "#{cref} must be an absolute path (starts with /)"
-            elsif cmd.split(/[\s,]+/).include?("ALL")
-              errors << "#{cref} contains the literal token ALL (broad grants forbidden)"
-            end
+            err = ::System::Identity::FieldGrammar.sudo_command_error(cmd)
+            errors << "#{prefix}.commands[#{j}] #{err}" if err
           end
         end
       end

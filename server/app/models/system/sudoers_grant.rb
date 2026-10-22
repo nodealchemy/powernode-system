@@ -43,6 +43,7 @@ module System
     validates :state, inclusion: { in: STATES }
     validate :commands_are_absolute_paths
     validate :commands_reject_all_keyword
+    validate :fields_stay_in_their_slot
 
     scope :active,  -> { where(state: "active") }
     scope :removed, -> { where(state: "removed") }
@@ -60,6 +61,30 @@ module System
     end
 
     private
+
+    # IMP-01a0f109: runas, flags and every command are concatenated into one
+    # sudoers rule; a newline or separator would add a second rule.
+    def fields_stay_in_their_slot
+      grammar = ::System::Identity::FieldGrammar
+      [ [ :runas_user, runas_user ], [ :runas_group, runas_group ] ].each do |attr, v|
+        next if v.nil?
+        next if v.is_a?(String) && v.match?(::System::ServiceUser::USERNAME_RX)
+
+        errors.add(attr, "must be a user/group name matching #{::System::ServiceUser::USERNAME_RX.inspect}")
+      end
+      unless flags.is_a?(Array)
+        errors.add(:flags, "must be an array")
+        return
+      end
+      flags.each_with_index do |f, i|
+        err = grammar.sudo_flag_error(f)
+        errors.add(:flags, "[#{i}] #{err}") if err
+      end
+      Array(commands).each_with_index do |c, i|
+        err = grammar.sudo_command_error(c)
+        errors.add(:commands, "[#{i}] #{err}") if err
+      end
+    end
 
     def commands_are_absolute_paths
       return if commands.is_a?(Array) && commands.all? do |c|

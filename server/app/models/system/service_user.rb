@@ -67,6 +67,10 @@ module System
                     }
     validates :shell, presence: true, length: { maximum: 128 }
     validates :home,  presence: true, length: { maximum: 256 }
+    # IMP-01a0f109: every write path (manifest import, allocator, storage
+    # owner tool, console) — these fields land verbatim in /etc/passwd.
+    validate :passwd_fields_are_line_safe
+    validate :username_not_reserved, on: :create
     validates :state, inclusion: { in: STATES }
 
     scope :live,     -> { where(state: %w[pending active draining]) }
@@ -108,6 +112,25 @@ module System
     def primary_gid
       primary_group&.gid
     end
+
+    private
+
+    def passwd_fields_are_line_safe
+      grammar = ::System::Identity::FieldGrammar
+      { gecos: grammar.text_error(gecos, max: grammar::GECOS_MAX),
+        home:  grammar.path_error(home, max: grammar::HOME_MAX),
+        shell: grammar.path_error(shell, max: grammar::SHELL_MAX) }.each do |attr, err|
+        errors.add(attr, err) if err
+      end
+    end
+
+    def username_not_reserved
+      return unless ::System::Identity::FieldGrammar.reserved_username?(username)
+
+      errors.add(:username, "#{username.inspect} is reserved for a built-in account")
+    end
+
+    public
 
     def primary_groupname
       primary_group&.groupname

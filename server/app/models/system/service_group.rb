@@ -58,8 +58,18 @@ module System
                       less_than_or_equal_to:    GID_MAX
                     }
     validates :state, inclusion: { in: STATES }
+    # IMP-01a0f109: a platform group named after a privileged built-in one
+    # would let a module merge members into it on-node.
+    validate :groupname_not_privileged, on: :create
 
     scope :live,     -> { where(state: %w[pending active draining]) }
+
+    def groupname_not_privileged
+      return unless ::System::Identity::FieldGrammar.privileged_group?(groupname)
+
+      errors.add(:groupname, "#{groupname.inspect} is a privileged built-in group")
+    end
+    private :groupname_not_privileged
     scope :active,   -> { where(state: "active") }
     scope :draining, -> { where(state: "draining") }
     scope :removed,  -> { where(state: "removed") }
