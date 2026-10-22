@@ -70,6 +70,12 @@ func ApplyAt(grants []Grant, dir string, now func() time.Time) error {
 	idsByPath := map[string]map[identity]struct{}{}
 	for n, g := range grants {
 		path, err := g.PathIn(dir)
+		if err == nil {
+			// IMP-01a0f109: refuse a grant whose fields could leave their slot in
+			// the rendered rule, before it is rendered — visudo cannot tell an
+			// injected second rule from a legitimate one.
+			err = CheckGrant(g.Grant)
+		}
 		if err != nil {
 			refused = append(refused, &RefusedGrantError{ModuleName: g.ModuleName, GrantID: g.Grant.ID, Reason: err.Error()})
 			continue
