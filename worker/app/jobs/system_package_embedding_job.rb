@@ -19,6 +19,8 @@
 # for the same repo while a run is in flight returns `skipped: true` and
 # does not retry.
 class SystemPackageEmbeddingJob < BaseJob
+  include SystemConcurrencyLock
+
   sidekiq_options queue: "system", retry: 2
 
   LOCK_TTL_SEC      = 3 * 3600
@@ -90,17 +92,5 @@ class SystemPackageEmbeddingJob < BaseJob
     raise
   ensure
     release_lock(lock_key) if lock_key
-  end
-
-  private
-
-  def acquire_lock(key)
-    Sidekiq.redis { |c| c.set(key, Time.current.to_f, nx: true, ex: LOCK_TTL_SEC) }
-  end
-
-  def release_lock(key)
-    Sidekiq.redis { |c| c.del(key) }
-  rescue StandardError
-    nil
   end
 end

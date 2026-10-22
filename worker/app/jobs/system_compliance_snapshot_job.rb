@@ -13,6 +13,8 @@
 #
 # Reference: audit plan P2.8d.
 class SystemComplianceSnapshotJob < BaseJob
+  include SystemConcurrencyLock
+
   sidekiq_options queue: "maintenance", retry: 1
 
   CONCURRENCY_LOCK = "system:compliance_snapshot:lock"
@@ -37,17 +39,5 @@ class SystemComplianceSnapshotJob < BaseJob
     { ok: false, error: e.message }
   ensure
     release_lock
-  end
-
-  private
-
-  def acquire_lock
-    Sidekiq.redis { |c| c.set(CONCURRENCY_LOCK, Time.current.to_f, nx: true, ex: LOCK_TTL_SEC) }
-  end
-
-  def release_lock
-    Sidekiq.redis { |c| c.del(CONCURRENCY_LOCK) }
-  rescue StandardError
-    nil
   end
 end

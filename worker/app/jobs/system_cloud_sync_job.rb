@@ -29,6 +29,8 @@
 #
 # Reference: Golden Eclipse plan + comprehensive stabilization sweep P2.1.
 class SystemCloudSyncJob < BaseJob
+  include SystemConcurrencyLock
+
   sidekiq_options queue: "system", retry: 1
 
   # Single-flight guarantee: a slow tick (large fleet, slow cloud APIs)
@@ -69,16 +71,6 @@ class SystemCloudSyncJob < BaseJob
   end
 
   private
-
-  def acquire_lock
-    Sidekiq.redis { |c| c.set(CONCURRENCY_LOCK, Time.current.to_f, nx: true, ex: LOCK_TTL_SEC) }
-  end
-
-  def release_lock
-    Sidekiq.redis { |c| c.del(CONCURRENCY_LOCK) }
-  rescue StandardError
-    nil
-  end
 
   def total_region_count(results)
     Array(results).sum { |r| r["region_count"].to_i }

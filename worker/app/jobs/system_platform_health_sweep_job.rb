@@ -23,6 +23,8 @@
 # server-side where it can read the System/Ai models directly. This
 # preserves the worker-server boundary (worker is API-only).
 class SystemPlatformHealthSweepJob < BaseJob
+  include SystemConcurrencyLock
+
   sidekiq_options queue: "system", retry: 1
 
   # Self-rate-limiting via server-side due-checks per account, but a Redis
@@ -53,16 +55,6 @@ class SystemPlatformHealthSweepJob < BaseJob
   end
 
   private
-
-  def acquire_lock
-    Sidekiq.redis { |c| c.set(CONCURRENCY_LOCK, Time.current.to_f, nx: true, ex: LOCK_TTL_SEC) }
-  end
-
-  def release_lock
-    Sidekiq.redis { |c| c.del(CONCURRENCY_LOCK) }
-  rescue StandardError
-    nil
-  end
 
   def ran_count(results)
     Array(results).count { |r| r["ran"] }

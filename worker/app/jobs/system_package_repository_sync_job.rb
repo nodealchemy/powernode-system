@@ -11,6 +11,8 @@
 # Per-repo failures are isolated server-side; one bad repo (auth failure,
 # network timeout, malformed index) does not poison the tick.
 class SystemPackageRepositorySyncJob < BaseJob
+  include SystemConcurrencyLock
+
   sidekiq_options queue: "system", retry: 1
 
   CONCURRENCY_LOCK = "system:pkgrepo:sync:lock"
@@ -63,15 +65,5 @@ class SystemPackageRepositorySyncJob < BaseJob
   rescue BackendApiClient::ApiError => e
     log_error("[PackageRepoSync] On-demand API error", e)
     { ok: false, error: e.message }
-  end
-
-  def acquire_lock
-    Sidekiq.redis { |c| c.set(CONCURRENCY_LOCK, Time.current.to_f, nx: true, ex: LOCK_TTL_SEC) }
-  end
-
-  def release_lock
-    Sidekiq.redis { |c| c.del(CONCURRENCY_LOCK) }
-  rescue StandardError
-    nil
   end
 end

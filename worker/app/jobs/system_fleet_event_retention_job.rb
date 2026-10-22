@@ -11,6 +11,8 @@
 #
 # Reference: Golden Eclipse plan M-D2-1 — fleet event retention sweep.
 class SystemFleetEventRetentionJob < BaseJob
+  include SystemConcurrencyLock
+
   sidekiq_options queue: "maintenance", retry: 1
 
   CONCURRENCY_LOCK = "system:fleet_event_retention:lock"
@@ -36,17 +38,5 @@ class SystemFleetEventRetentionJob < BaseJob
     { ok: false, error: e.message }
   ensure
     release_lock
-  end
-
-  private
-
-  def acquire_lock
-    Sidekiq.redis { |c| c.set(CONCURRENCY_LOCK, Time.current.to_f, nx: true, ex: LOCK_TTL_SEC) }
-  end
-
-  def release_lock
-    Sidekiq.redis { |c| c.del(CONCURRENCY_LOCK) }
-  rescue StandardError
-    nil
   end
 end

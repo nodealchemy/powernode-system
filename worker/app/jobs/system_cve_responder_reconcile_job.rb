@@ -22,6 +22,8 @@
 # Reference: CVE Responder agent split (2026-05-10) + completion plan
 # we-need-an-agent-transient-zebra.md (2026-05-11).
 class SystemCveResponderReconcileJob < BaseJob
+  include SystemConcurrencyLock
+
   sidekiq_options queue: "system", retry: 1
 
   # Distinct Redis lock so a busy fleet tick doesn't starve CVE Responder.
@@ -50,16 +52,6 @@ class SystemCveResponderReconcileJob < BaseJob
   end
 
   private
-
-  def acquire_lock
-    Sidekiq.redis { |c| c.set(CONCURRENCY_LOCK, Time.current.to_f, nx: true, ex: LOCK_TTL_SEC) }
-  end
-
-  def release_lock
-    Sidekiq.redis { |c| c.del(CONCURRENCY_LOCK) }
-  rescue StandardError
-    nil
-  end
 
   def total_decision_count(results)
     Array(results).sum { |r| r["decision_count"].to_i }

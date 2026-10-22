@@ -9,6 +9,8 @@
 # the server-side lease is the real guard against double processing. A thin HTTP
 # shim; all logic is server-side (worker is API-only).
 class SystemSeedCleanupJob < BaseJob
+  include SystemConcurrencyLock
+
   sidekiq_options queue: "system", retry: 0
 
   ENDPOINT = "/api/v1/system/worker_api/seed_cleanup/sweep"
@@ -28,17 +30,5 @@ class SystemSeedCleanupJob < BaseJob
     { ok: false, error: e.message }
   ensure
     release_lock if locked
-  end
-
-  private
-
-  def acquire_lock
-    Sidekiq.redis { |c| c.set(CONCURRENCY_LOCK, Time.current.to_f, nx: true, ex: LOCK_TTL_SEC) }
-  end
-
-  def release_lock
-    Sidekiq.redis { |c| c.del(CONCURRENCY_LOCK) }
-  rescue StandardError
-    nil
   end
 end

@@ -15,6 +15,8 @@
 #
 # Reference: Golden Eclipse plan M7 — system_fleet_reconcile_job.
 class SystemFleetReconcileJob < BaseJob
+  include SystemConcurrencyLock
+
   sidekiq_options queue: "system", retry: 1
 
   # The reconcile loop is self-rate-limiting (the server checks heartbeat
@@ -45,16 +47,6 @@ class SystemFleetReconcileJob < BaseJob
   end
 
   private
-
-  def acquire_lock
-    Sidekiq.redis { |c| c.set(CONCURRENCY_LOCK, Time.current.to_f, nx: true, ex: LOCK_TTL_SEC) }
-  end
-
-  def release_lock
-    Sidekiq.redis { |c| c.del(CONCURRENCY_LOCK) }
-  rescue StandardError
-    nil
-  end
 
   def total_decision_count(results)
     Array(results).sum { |r| r["decision_count"].to_i }
