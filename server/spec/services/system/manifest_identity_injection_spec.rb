@@ -157,6 +157,23 @@ RSpec.describe System::ManifestImportService, type: :service do
         .to match(%r{users\[0\]\.home "/home/shared" is already the home of svcother})
     end
 
+    # Stored homes predate write-time cleaning, so the comparison must clean
+    # BOTH sides: a live "/home//shared" or "/home/./shared" is /home/shared.
+    %w[/home//shared /home/./shared /home/shared/].each do |stored|
+      it "treats a live #{stored.inspect} as holding /home/shared" do
+        other = ::System::Identity::UserAllocator.allocate!(username: "svcother", home: "/var/lib/svcother")
+        other.update_columns(home: stored)
+
+        expect(errors_for("users" => [ user("name" => "svcmine", "home" => "/home/shared") ]))
+          .to match(%r{users\[0\]\.home "/home/shared" is already the home of svcother})
+      end
+    end
+
+    it "stores a cleaned home at allocation time" do
+      allocated = ::System::Identity::UserAllocator.allocate!(username: "svcclean", home: "/home//svcclean/./")
+      expect(allocated.reload.home).to eq("/home/svcclean")
+    end
+
     it "lets a user keep its own home on re-import, and allows non-/home paths to be shared" do
       described_class.import!(node_module: mod, yaml: yaml_for("users" => [ user("home" => "/home/svcdemo") ]))
       result = described_class.validate_only(

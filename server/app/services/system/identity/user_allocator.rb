@@ -48,7 +48,12 @@ module System
         @username             = username.to_s
         @primary_group        = primary_group
         @shell                = shell.presence || DEFAULT_SHELL
-        @home                 = home.presence  || "/var/lib/#{@username}"
+        # Stored clean ("/home//x/./" -> "/home/x") so every home comparison
+        # (the agent's, and ManifestImportService#live_home_holder) sees one
+        # spelling. Only an absolute path is cleaned; anything else is left for
+        # ServiceUser's validation to refuse.
+        raw_home              = home.presence || "/var/lib/#{@username}"
+        @home                 = raw_home.start_with?("/") ? ::Pathname.new(raw_home).cleanpath.to_s : raw_home
         @gecos                = gecos.to_s
         @supplementary_groups = Array(supplementary_groups)
       end

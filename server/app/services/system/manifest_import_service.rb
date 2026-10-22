@@ -490,9 +490,13 @@ module System
       seen_homes[clean] ||= name
     end
 
+    # Stored homes are not guaranteed clean (rows written before
+    # UserAllocator cleaned them may hold "/home//x" or "/home/./x"), so the
+    # SQL only narrows to managed-home candidates and the comparison cleans
+    # both sides in Ruby.
     def live_home_holder(clean, name)
       ::System::ServiceUser.live
-                           .where("home = ? OR home LIKE ?", clean, "#{::ActiveRecord::Base.sanitize_sql_like(clean)}/%")
+                           .where("home LIKE ?", "/home/%")
                            .where.not(username: name.to_s)
                            .find { |u| ::System::Identity::FieldGrammar.managed_home(u.home) == clean }
                            &.username
