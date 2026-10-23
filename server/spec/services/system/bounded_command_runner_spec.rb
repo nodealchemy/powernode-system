@@ -9,6 +9,8 @@ require "tempfile"
 # real OS-level I/O and process signaling. A mock of Open3.popen3 would only
 # prove this class calls the mock the way it was told to.
 RSpec.describe System::BoundedCommandRunner do
+  include ProcessLivenessHelpers
+
   def run(argv, timeout_seconds: 5, max_output_bytes: 65_536)
     described_class.run(argv, timeout_seconds: timeout_seconds, max_output_bytes: max_output_bytes)
   end
@@ -19,11 +21,7 @@ RSpec.describe System::BoundedCommandRunner do
   def wait_until_gone(pid, timeout:)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
     loop do
-      begin
-        Process.kill(0, pid)
-      rescue Errno::ESRCH
-        return true
-      end
+      return true if process_dead?(pid)
       return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
       sleep 0.05

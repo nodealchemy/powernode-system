@@ -6,6 +6,8 @@ require "rails_helper"
 # cleanup left a 0600 private key in gitops-secrets-* under the work-tree root.
 # sync! sweeps stale ones first.
 RSpec.describe System::Gitops::RepoSyncService, "stale secret directories" do
+  include ProcessLivenessHelpers
+
   let(:account) { create(:account) }
   let(:root) { Pathname.new(Dir.mktmpdir("gitops-root-")) }
   let(:repository) do
@@ -79,16 +81,11 @@ RSpec.describe System::Gitops::RepoSyncService, "stale secret directories" do
 
         gone = 20.times.any? do
           sleep 0.1
-          begin
-            Process.kill(0, grandchild)
-            false
-          rescue Errno::ESRCH
-            true
-          end
+          process_dead?(grandchild)
         end
         expect(gone).to be(true), "the sleep started under the timed-out exec is still running (pid #{grandchild})"
       ensure
-        Process.kill("KILL", grandchild) if grandchild.to_i > 1 && (Process.kill(0, grandchild) rescue nil)
+        Process.kill("KILL", grandchild) if grandchild.to_i > 1 && !process_dead?(grandchild)
       end
     end
 
