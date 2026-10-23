@@ -77,8 +77,13 @@ require "pathname"
 # that GAINS a producer also reddens. The number can only go down.
 RSpec.describe "System::ProjectMetric producer census" do
   # spec/lint/ -> the extension's server/ root. Every relative path below is
-  # taken from there, which is where both census targets live.
-  SERVER_ROOT = Pathname.new(__dir__).join("..", "..").cleanpath
+  # taken from there, which is where both census targets live. A method on
+  # this example group, never a top-level constant: a constant assigned in a
+  # describe block lands on Object, where another spec file's same-named
+  # constant (a SERVER_ROOT String) replaced it in whichever process loaded both.
+  def self.server_root
+    Pathname.new(__dir__).join("..", "..").cleanpath
+  end
 
   COLLECTOR_REL = "app/services/system/project_metrics_collector.rb"
   SENSOR_REL    = "app/services/system/fleet/sensors/project_slo_sensor.rb"
@@ -106,7 +111,7 @@ RSpec.describe "System::ProjectMetric producer census" do
   }.freeze
 
   def self.read(rel)
-    path = SERVER_ROOT.join(rel)
+    path = server_root.join(rel)
     raise "census target missing: #{rel}" unless path.exist?
 
     path.read
@@ -224,7 +229,7 @@ RSpec.describe "System::ProjectMetric producer census" do
                         "#{metric}: the entry cites #{entry[:evidence]} in #{entry[:evidence_in]}, " \
                         "which does not contain it — the justification is not where the entry says it is"
 
-      ratchet = SERVER_ROOT.join(entry.fetch(:ratchet))
+      ratchet = self.class.server_root.join(entry.fetch(:ratchet))
       expect(ratchet).to exist,
                          "#{metric}: the entry names #{entry[:ratchet]} as the enforcement of its decision, " \
                          "and that file is gone — the decision is now only prose"
