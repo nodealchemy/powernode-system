@@ -82,4 +82,32 @@ RSpec.describe System::Providers::ProxmoxProvider do
       expect(client).not_to have_received(:upload_file)
     end
   end
+
+  describe "#list_cidata_isos (IMP-b7683fab758c)" do
+    subject(:provider) { provider_with("cidata_transport" => "iso", "cidata_iso_storage" => "isos") }
+
+    before { allow(provider).to receive(:require_client!).and_return(client) }
+
+    it "lists only cidata-*.iso on the cidata storage, per online node, de-duplicated by filename" do
+      allow(client).to receive(:get).with("/api2/json/nodes").and_return([ { "node" => "pve1", "status" => "online" }, { "node" => "pve2", "status" => "offline" }, { "node" => "pve3", "status" => "online" } ])
+      shared = [ { "volid" => "isos:iso/cidata-9000-aaaaaaaaaaaa.iso", "ctime" => 100 }, { "volid" => "isos:iso/debian.iso", "ctime" => 5 } ]
+      allow(client).to receive(:get).with("/api2/json/nodes/pve1/storage/isos/content", { "content" => "iso" }).and_return(shared)
+      allow(client).to receive(:get).with("/api2/json/nodes/pve3/storage/isos/content", { "content" => "iso" }).and_return(shared)
+
+      expect(provider.list_cidata_isos).to eq([ { node: "pve1", filename: "cidata-9000-aaaaaaaaaaaa.iso", ctime: 100 } ])
+    end
+  end
+
+  describe "#delete_cidata_iso_file" do
+    subject(:provider) { provider_with("cidata_transport" => "iso", "cidata_iso_storage" => "isos") }
+
+    before { allow(provider).to receive(:require_client!).and_return(client) }
+
+    it "deletes exactly the named volume and waits for the task" do
+      allow(client).to receive(:delete).and_return("UPID:pve1:0000ABCD:00001234:5F000000:imgdel:1:root@pam!t:")
+      allow(client).to receive(:wait_task)
+      provider.delete_cidata_iso_file(node: "pve1", filename: "cidata-9000-aaaaaaaaaaaa.iso")
+      expect(client).to have_received(:delete).with("/api2/json/nodes/pve1/storage/isos/content/isos%3Aiso%2Fcidata-9000-aaaaaaaaaaaa.iso")
+    end
+  end
 end
