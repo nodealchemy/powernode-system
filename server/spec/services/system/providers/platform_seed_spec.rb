@@ -660,20 +660,28 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
           allow(client).to receive(:delete).and_return(upid)
         end
 
-        it "queues the ide2 removal, then deletes the uploaded ISO after the stop" do
+        it "ejects the spent seed by a live media swap (ide2=none,media=cdrom), then deletes the ISO in the same pass" do
           allow(client).to receive(:get).with(config_path, { "current" => 1 })
-            .and_return(attached_config("ide2" => "isos:iso/#{iso},media=cdrom"), attached_config({}))
+            .and_return(attached_config("ide2" => "isos:iso/#{iso},media=cdrom"), attached_config("ide2" => "none,media=cdrom"))
 
-          first = provider.clear_enrollment_seed!(cloud_id, instance: instance)
-          expect(client).to have_received(:put).with(config_path, { "delete" => "ide2" })
-          expect(first).to include(outcome: :awaiting_stop)
-          expect(client).not_to have_received(:delete)
+          result = provider.clear_enrollment_seed!(cloud_id, instance: instance)
 
-          second = provider.clear_enrollment_seed!(cloud_id, instance: instance)
+          expect(client).to have_received(:put).with(config_path, { "ide2" => "none,media=cdrom" })
+          expect(client).not_to have_received(:put).with(config_path, hash_including("delete"))
           expect(client).to have_received(:delete)
             .with("/api2/json/nodes/pve1/storage/isos/content/isos%3Aiso%2F#{iso}")
           expect(client).to have_received(:wait_task).with(hash_including(node: "pve1", upid: upid))
-          expect(second).to include(outcome: :cleared)
+          expect(result).to include(outcome: :cleared)
+        end
+
+        it "stays awaiting_stop, keeping the ISO, when PVE did not apply the swap (seed still current on ide2)" do
+          allow(client).to receive(:get).with(config_path, { "current" => 1 })
+            .and_return(attached_config("ide2" => "isos:iso/#{iso},media=cdrom"))
+
+          result = provider.clear_enrollment_seed!(cloud_id, instance: instance)
+
+          expect(result).to include(outcome: :awaiting_stop)
+          expect(client).not_to have_received(:delete)
         end
 
         it "caps the awaited delete task well below the lease" do
@@ -720,6 +728,61 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
       it "skips LXC" do
         expect(client).not_to receive(:put)
         expect(provider.clear_enrollment_seed!("pve1/lxc/100", instance: instance)).to include(outcome: :noop)
+      end
+    end
+
+    context "terminate_instance removes its own seed ISO (IMP-b7683fab758c)" do
+      let(:disc) { instance.id.delete("-").first(12) }
+      let(:own_iso) { "cidata-100-#{disc}.iso" }
+      let(:destroy_upid) { "UPID:pve1:0000ABCD:00001234:5F000000:qmdestroy:100:root@pam!powernode:" }
+      let(:del_upid) { "UPID:pve1:0000ABCD:00001235:5F000000:imgdel:100:root@pam!powernode:" }
+      let(:iso_path) { "/api2/json/nodes/pve1/storage/isos/content/isos%3Aiso%2F#{own_iso}" }
+
+      before do
+        connection.config["cidata_transport"] = "iso"
+        connection.config["cidata_iso_storage"] = "isos"
+        allow(client).to receive(:put)
+        allow(client).to receive(:delete).with("/api2/json/nodes/pve1/qemu/100", anything).and_return(destroy_upid)
+        allow(client).to receive(:delete).with(iso_path).and_return(del_upid)
+      end
+
+      it "deletes exactly cidata-<vmid>-<its discriminator>.iso after the VM destroy, never a vmid glob" do
+        result = provider.terminate_instance(cloud_id)
+
+        expect(result[:success]).to be true
+        expect(client).to have_received(:delete).with(iso_path)
+        expect(client).not_to have_received(:get).with(%r{/storage/})
+        expect(client).to have_received(:delete).exactly(2).times
+      end
+
+      it "ends with no ISO left for a VM terminated while its seed cleanup was awaiting_stop" do
+        instance.merge_config!("seed_cleanup" => { "state" => "awaiting_stop", "requested_at" => Time.current.utc.iso8601 })
+        enroll!
+        provider.terminate_instance(cloud_id)
+        expect(client).to have_received(:delete).with(iso_path)
+      end
+
+      it "treats an ISO that is already gone as done" do
+        allow(client).to receive(:delete).with(iso_path).and_raise(System::Providers::Proxmox::Client::NotFoundError, "gone")
+        expect(provider.terminate_instance(cloud_id)).to include(success: true)
+      end
+
+      it "still reports the termination when the ISO delete fails (the reaper catches the leftover)" do
+        allow(client).to receive(:delete).with(iso_path).and_raise(System::Providers::Proxmox::Client::Error, "boom")
+        expect(provider.terminate_instance(cloud_id)).to include(success: true)
+      end
+
+      it "sends no ISO delete when the destroy itself failed" do
+        allow(client).to receive(:delete).with("/api2/json/nodes/pve1/qemu/100", anything)
+                                         .and_raise(System::Providers::Proxmox::Client::Error, "busy")
+        provider.terminate_instance(cloud_id)
+        expect(client).not_to have_received(:delete).with(iso_path)
+      end
+
+      it "does nothing extra on the snippet transport" do
+        connection.config.delete("cidata_transport")
+        provider.terminate_instance(cloud_id)
+        expect(client).not_to have_received(:delete).with(iso_path)
       end
     end
 

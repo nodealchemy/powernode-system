@@ -406,8 +406,9 @@ module System
       # D13 (best-effort, NEVER restarts the VM): detach the spent seed from an
       # ENROLLED, platform-seeded pivot-boot VM, then delete its files. Idempotent,
       # so each sweep just re-derives where it is from the LIVE config:
-      #   ISO transport: seed ISO still on ide2 -> queue `delete=ide2` (:awaiting_stop,
-      #     applied at the next natural stop); once detached, delete the ISO volume.
+      #   ISO transport: seed ISO still on ide2 -> live media swap to an empty drive
+      #     (`ide2=none,media=cdrom`, applies at once), then delete the ISO volume in
+      #     the same pass; :awaiting_stop only if PVE did not apply the swap.
       #   Snippet transport: cicustom still referenced -> `delete=cicustom`; if PVE only
       #     queued it, wait. Once gone, regenerate the attached cloud-init drive (it
       #     keeps the spent key until rewritten; on a running VM a CD media swap, not a
@@ -415,6 +416,8 @@ module System
       #     keeps :awaiting_stop.
       # A later D12 start finds seed_cleanup done and writes nothing. Never logs the seed.
       CLEANUP_CONNECT_TIMEOUT = 5
+      # PVE syntax for an empty CD drive (`qm set --ide2 none,media=cdrom`).
+      EMPTY_CDROM = "none,media=cdrom"
       CLEANUP_READ_TIMEOUT = 8
       CLEANUP_TASK_WAIT_CAP = 20
 
@@ -433,7 +436,16 @@ module System
           key = seed_discriminator(instance: record)
           if cidata_iso_transport?
             filename = "cidata-#{vmid}-#{key}.iso"
-            return queue_seed_detach(c, node, vmid, "ide2") if cfg["ide2"].to_s.include?(filename)
+            if cfg["ide2"].to_s.include?(filename)
+              # A CD-ROM cannot be hot-removed (`delete=ide2` only queues until a
+              # PVE-initiated stop, which a guest reboot never is), but its MEDIA
+              # can be ejected live: `none,media=cdrom` applies at once, no pending
+              # change, no restart. Enrolled means cloud-init already consumed it.
+              c.put(config_path, { "ide2" => EMPTY_CDROM })
+              after = c.get(config_path, { "current" => 1 })
+              # Not applied (older PVE / odd drive): keep the ISO and wait for a stop.
+              return awaiting_stop("ide2 eject not applied, waits for the next natural stop (no restart)") if after.is_a?(Hash) && after["ide2"].to_s.include?(filename)
+            end
 
             delete_cidata_iso(c, node, filename)
           else
@@ -509,6 +521,45 @@ module System
           path = File.join(dir, "#{seed_key}-#{part}.yml")
           File.delete(path) if File.file?(path)
         end
+      end
+
+      # IMP-b7683fab758c: seed ISOs on the cidata storage, for System::Providers::
+      # Proxmox::SeedIsoReaper. [{ node:, filename:, ctime: }], cidata-*.iso only,
+      # de-duplicated by filename across online nodes (shared storage lists on all).
+      def list_cidata_isos
+        c = require_client!(connect_timeout: CLEANUP_CONNECT_TIMEOUT, read_timeout: CLEANUP_READ_TIMEOUT)
+        storage = cidata_iso_storage_name
+        seen = {}
+        (c.get("/api2/json/nodes") || []).select { |n| n["status"] == "online" }.each do |n|
+          items = begin
+            c.get("/api2/json/nodes/#{n['node']}/storage/#{storage}/content", { "content" => "iso" })
+          rescue Proxmox::Client::Error
+            next # storage not present on this node
+          end
+          Array(items).each do |item|
+            name = item["volid"].to_s.split("/").last.to_s
+            next unless name.start_with?("cidata-") && name.end_with?(".iso")
+
+            seen[name] ||= { node: n["node"], filename: name, ctime: item["ctime"].to_i }
+          end
+        end
+        seen.values
+      end
+
+      # Deletes ONE named seed ISO (full filename, never a pattern). NotFound is done.
+      def delete_cidata_iso_file(node:, filename:)
+        raise ArgumentError, "not a seed iso name" unless filename.to_s.match?(/\Acidata-[\w-]+\.iso\z/)
+
+        delete_cidata_iso(require_client!(connect_timeout: CLEANUP_CONNECT_TIMEOUT, read_timeout: CLEANUP_READ_TIMEOUT), node, filename)
+      end
+      public :list_cidata_isos, :delete_cidata_iso_file
+
+      private def cidata_iso_storage_name
+        storage = connection&.config&.dig("cidata_iso_storage").presence ||
+                  pve_credential("default_storage", "default_storage").presence
+        raise ProviderError, "no ISO storage configured" if storage.blank?
+
+        storage
       end
 
       def stop_instance(instance_id, force: false)
@@ -678,6 +729,7 @@ module System
         delete_upid = c.delete("/api2/json/nodes/#{node}/#{kind}/#{vmid}",
                                { "purge" => 1, "destroy-unreferenced-disks" => 1 })
         c.wait_task(node: node, upid: delete_upid)
+        delete_own_seed_iso(c, node, kind, vmid, instance_id)
 
         build_instance_response(cloud_id: instance_id, status: STATUSES[:terminated])
       rescue Proxmox::Client::NotFoundError
@@ -705,6 +757,23 @@ module System
       rescue Proxmox::Client::Error => e
         logger.error("[#{self.class.name}] terminate_instance failed: #{e.class}: #{e.message}")
         build_error_response(::System::CallerFacingMessages::GENERIC)
+      end
+
+      # The VM is gone; `destroy-unreferenced-disks` does not touch the cidata ISO in
+      # ISO storage, so the instance removes its own seed here. Exact name from the
+      # instance's own discriminator, NEVER a vmid glob (vmids are reused). A
+      # NotFound is done; any failure is logged and swallowed (the VM is already
+      # destroyed; the system:proxmox:reap_seed_isos task catches a leftover).
+      def delete_own_seed_iso(c, node, kind, vmid, instance_id)
+        return unless kind == "qemu" && cidata_iso_transport?
+
+        record = seed_instance_for(instance_id)
+        key = record && self.class.seed_discriminator_for(record)
+        return if key.blank?
+
+        delete_cidata_iso(c, node, "cidata-#{vmid}-#{key}.iso")
+      rescue StandardError => e
+        logger.warn("[#{self.class.name}] terminate: seed ISO delete failed: #{e.class}")
       end
 
       # The "not on our node" answer for #terminate_instance: gone only when no
@@ -1299,8 +1368,12 @@ module System
       # can no longer overwrite this VM's seed on shared storage.
       def seed_discriminator(params)
         instance = params[:instance]
-        raw = instance.respond_to?(:id) ? instance.id.to_s.delete("-") : nil
-        raw.presence&.first(12) || SecureRandom.hex(6)
+        self.class.seed_discriminator_for(instance) || SecureRandom.hex(6)
+      end
+
+      # The platform-issued key in `cidata-<vmid>-<key>.iso`; nil without an id.
+      def self.seed_discriminator_for(instance)
+        instance.respond_to?(:id) ? instance.id.to_s.delete("-").presence&.first(12) : nil
       end
 
       # True when this connection delivers the NoCloud seed as an attached ISO
