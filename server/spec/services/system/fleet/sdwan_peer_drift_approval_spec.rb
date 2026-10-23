@@ -108,8 +108,15 @@ RSpec.describe "SDWAN peer drift approval lane" do
 
     let(:request) { pending_requests.sole }
 
-    it "rotates through PeerKeyRotationService on approval, revokes the old key, and audits signal and peer" do
-      request.record_decision!(approver: create(:user, account: account), decision: "approved")
+    let(:person) { create(:user, account: account) }
+
+    it "marks the park as needing a person's own session" do
+      expect(request.requires_human_session?).to be(true)
+    end
+
+    it "rotates through PeerKeyRotationService on a person's own-session approval, revokes the old key, and audits signal, peer and person" do
+      expect(request.record_decision!(approver: person, decision: "approved",
+                                      origin: Ai::ApprovalDecision::REST_SESSION)).to be_truthy
       expect(Sdwan::PeerKeyRotationService).to receive(:new).and_call_original
 
       result = engine.execute_approved!(request.reload)
@@ -122,14 +129,47 @@ RSpec.describe "SDWAN peer drift approval lane" do
       expect(result.to_json).to include(new_key.id)
 
       audit = AuditLog.where(action: Sdwan::PeerKeyRotationService::AUDIT_ACTION, resource_id: peer.id.to_s).sole
+      expect(audit.user_id).to eq(person.id)
       expect(audit.metadata["reason"]).to include(fingerprint).and include(request.id)
       expect(audit.metadata["new_key_id"]).to eq(new_key.id)
       expect(audit.metadata.to_json).not_to match(/private/i)
       expect(result.to_json).not_to match(/private/i)
     end
 
+    it "refuses a decision that names no own-session origin" do
+      expect(request.record_decision!(approver: person, decision: "approved")).to be_falsey
+      expect(request.reload).to be_pending
+    end
+
+    it "does not approve on a chain's approve-on-timeout: the request is rejected and nothing rotates" do
+      request.approval_chain.update!(timeout_action: "approve")
+      request.update_columns(expires_at: 1.minute.ago)
+      expect(Sdwan::KeyDistributor).not_to receive(:rotate!)
+
+      request.check_expiration!
+
+      expect(request.reload).to be_rejected
+      expect(service.execute_approved_actions!(engine)).to eq([])
+      expect(original_key.reload.revoked?).to be(false)
+    end
+
+    it "refuses to rotate for an approval recorded from a non-session door" do
+      Ai::ApprovalDecision.create!(approval_request: request, approver: person, decision: "approved",
+                                   step_number: 0, origin: Ai::Tools::CallOrigin::MCP_OAUTH)
+      request.update_columns(status: "approved")
+      expect(Sdwan::KeyDistributor).not_to receive(:rotate!)
+
+      result = engine.execute_approved!(request.reload)
+
+      expect(result[:applied]).to be(false)
+      expect(result[:reason]).to match(/person/i)
+      expect(peer.reload.active_key.id).to eq(original_key.id)
+      expect(original_key.reload.revoked?).to be(false)
+    end
+
     it "leaves the keyring untouched when the request is declined" do
-      request.record_decision!(approver: create(:user, account: account), decision: "rejected")
+      request.record_decision!(approver: create(:user, account: account), decision: "rejected",
+                              origin: Ai::ApprovalDecision::REST_SESSION)
       expect(Sdwan::KeyDistributor).not_to receive(:rotate!)
 
       # The act arm only replays APPROVED requests.

@@ -208,14 +208,14 @@ Triages an unhealthy iBGP session. v1 returns analysis only — does NOT auto-re
 
 Identifies hub-promotion candidates when a network's hub is unreachable. Returns spokes ranked by `last_handshake_at`. v1 only supports planning — operator manually flips `publicly_reachable=true` after review.
 
-### `sdwan_peer_remediate` — Peer key rotation
+### `sdwan_peer_remediate` — Peer drift diagnosis
 
 **Source:** `sdwan_peer_remediate_executor.rb`
 **Category:** `sre_observability` (subdomain: `sdwan`)
 **Inputs:** `peer_id`, `dry_run` (default false)
-**Outputs:** `resolved`, `rotated_from_key_id`, `new_key_id`, `new_public_key`
+**Outputs:** `resolved`, `would_rotate_from`, `would_rotate_from_pubkey`
 
-Rotates an SDWAN peer's WireGuard keypair. The agent re-establishes the tunnel from a clean key on its next reconcile.
+Diagnoses a drifted SDWAN peer and reports the key a rotation would revoke (`would_rotate_from*`); it never rotates a key. The drift lane files an approval request in `sdwan.peer_key_rotate`, and the key rotates only on a person's own-session approval, through `Sdwan::PeerKeyRotationService` (the same path as `system_sdwan_rotate_peer_key`).
 
 ### `sdwan_credential_refresh` — Membership credential re-issue
 
@@ -568,19 +568,19 @@ v1 is planning-only — never auto-restarts FRR. The recommended `clear ip bgp` 
 ### `sdwan_peer_remediate`
 
 ```json
-// Input
-{ "peer_id": "peer-abc", "dry_run": false }
+// Input (dry_run is the only mode; a non-dry run refuses)
+{ "peer_id": "peer-abc", "dry_run": true }
 
 // Output (success.data)
 {
-  "resolved": true,
-  "rotated_from_key_id": "key-old-abc",
-  "new_key_id": "key-new-def",
-  "new_public_key": "AbCd...EfGh="
+  "resolved": false,
+  "dry_run": true,
+  "would_rotate_from": "key-old-abc",
+  "would_rotate_from_pubkey": "AbCd...EfGh="
 }
 ```
 
-The agent picks up the new key on its next reconcile (~30 s) and re-establishes the WireGuard tunnel.
+This is a plan only: the skill never rotates a key. A rotation runs only on a person's approval of the `sdwan.peer_key_rotate` request.
 
 ### `sdwan_vip_failover`
 

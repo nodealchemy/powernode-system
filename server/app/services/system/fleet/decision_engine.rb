@@ -2334,6 +2334,14 @@ module System
                    reason: "a peer key rotation runs only from an approved sdwan.peer_key_rotate request" }
         end
 
+        # A person's own-session approval, read off the decision row. A timeout
+        # approve or an approval from any other door leaves this nil.
+        approver = request.respond_to?(:confirming_approver) ? request.confirming_approver : nil
+        unless approver
+          return { applied: false,
+                   reason: "a peer key rotation needs a person's own-session approval; this request has none" }
+        end
+
         payload = signal.payload.is_a?(Hash) ? signal.payload : {}
         peer = ::Sdwan::Peer.joins(:network)
                             .where(system_sdwan_networks: { account_id: account.id })
@@ -2343,7 +2351,7 @@ module System
         result = ::Sdwan::PeerKeyRotationService.new.rotate!(
           peer: peer,
           reason: "fleet drift remediation approved: signal #{signal.fingerprint}, approval request #{request.id}",
-          initiated_by: request.respond_to?(:confirming_approver) ? request.confirming_approver : nil
+          initiated_by: approver
         )
         { applied: true,
           peer_id: peer.id,
@@ -3730,6 +3738,12 @@ module System
           "signal_severity" => signal.severity.to_s,
           "signal_fingerprint" => signal.fingerprint
         ).compact
+        # IMP-01a0ed52 — a park that only a person, in their own session, may
+        # decide (FleetAutonomyService lifts this onto request_data, where
+        # Ai::Approvals::HumanSessionPolicy reads it). Without it a chain's
+        # approve-on-timeout or a tool-door approval would release a key
+        # rotation no person made.
+        base = base.merge("requires_human_session" => true) if ALWAYS_APPROVAL_KINDS.include?(signal.kind)
         if skill_result.is_a?(Hash) && skill_result[:data].is_a?(Hash)
           base.merge("skill_plan" => skill_result[:data])
         else

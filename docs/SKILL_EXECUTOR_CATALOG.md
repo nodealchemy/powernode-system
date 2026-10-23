@@ -90,7 +90,7 @@ For architecture context (agent bindings, plan vs. execute pattern, invocation s
 - [`sdwan_bgp_session_remediate`](#sdwan_bgp_session_remediate) — Triage an unhealthy iBGP session; returns a plan with likely cause + recommended next step. v1 does NOT auto-restart FRR.
 - [`sdwan_credential_refresh`](#sdwan_credential_refresh) — Re-issue an SDWAN peer's expiring membership credential server-side, without touching the WireGuard keypair
 - [`sdwan_failover`](#sdwan_failover) — Plan an SDWAN hub failover for an unreachable network; identifies promotion candidates without auto-flipping
-- [`sdwan_peer_remediate`](#sdwan_peer_remediate) — Rotate an SDWAN peer's keypair and force the agent to re-establish its tunnel on next reconcile
+- [`sdwan_peer_remediate`](#sdwan_peer_remediate) — Diagnose a drifted SDWAN peer and report the key a rotation would revoke; never rotates a key (rotation is the approval-gated system_sdwan_rotate_peer_key)
 - [`sdwan_vip_failover`](#sdwan_vip_failover) — Promote the next failover candidate of a silent-holder Sdwan::VirtualIp. Anycast VIPs return informational only.
 
 ### Security (3)
@@ -1736,7 +1736,7 @@ Plan an SDWAN hub failover for an unreachable network; identifies promotion cand
 
 ### `sdwan_peer_remediate`
 
-Rotate an SDWAN peer's keypair and force the agent to re-establish its tunnel on next reconcile
+Diagnose a drifted SDWAN peer and report the key a rotation would revoke; never rotates a key (rotation is the approval-gated system_sdwan_rotate_peer_key)
 
 - **Class:** `System::Ai::Skills::SdwanPeerRemediateExecutor`
 - **Source:** `extensions/system/server/app/services/system/ai/skills/sdwan_peer_remediate_executor.rb`
@@ -1746,15 +1746,14 @@ Rotate an SDWAN peer's keypair and force the agent to re-establish its tunnel on
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `peer_id` | string | Yes | Sdwan::Peer to remediate |
-| `dry_run` | boolean | No | Plan-only mode — return what would happen without rotating keys |
+| `peer_id` | string | Yes | Sdwan::Peer to diagnose |
+| `dry_run` | boolean | No | Plan-only mode — the only mode; a non-dry run refuses and points at the governed rotation |
 
 **Outputs**
 
 - `resolved`: boolean
-- `rotated_from_key_id`: string
-- `new_key_id`: string
-- `new_public_key`: string
+- `would_rotate_from`: string
+- `would_rotate_from_pubkey`: string
 
 ### `sdwan_vip_failover`
 

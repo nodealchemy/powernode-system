@@ -1171,6 +1171,11 @@ module System
           "agent_key" => @owner_key
         }
 
+        # IMP-01a0ed52 — the policy reads this at the TOP of request_data
+        # (Ai::Approvals::HumanSessionPolicy#required?); the engine stamps it in
+        # the payload for the kinds that need a person.
+        request_data["requires_human_session"] = true if request_data["payload"]["requires_human_session"] == true
+
         # Specific dedup based on the action's natural key (instance/template/module/cve).
         if (key = dedup_key_for(action_category, metadata))
           name, value = key

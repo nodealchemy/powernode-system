@@ -14,7 +14,7 @@ End-to-end operator guide for the system extension's SDWAN layer: WireGuard-base
 |---|---|---|
 | **Network** | An IPv6 overlay (`/64` prefix) — the topology container | `Sdwan::Network` |
 | **Peer** | An endpoint on the network — typically a NodeInstance, but also user devices and federation peers | `Sdwan::Peer` |
-| **PeerKey** | Active WireGuard keypair for a peer; rotates on `sdwan_peer_remediate` | `Sdwan::PeerKey` |
+| **PeerKey** | Active WireGuard keypair for a peer; rotates only through `Sdwan::PeerKeyRotationService` (`system_sdwan_rotate_peer_key`, or a person approving the `sdwan.peer_key_rotate` request the drift lane files) | `Sdwan::PeerKey` |
 | **Virtual IP (VIP)** | First-class `/128` address with primary + failover holders (slice 3) | `Sdwan::VirtualIp`, `Sdwan::VirtualIpAssignment` |
 | **PortMapping** | Maps an external port → internal `/128:port` for inbound traffic | `Sdwan::PortMapping` |
 | **FirewallRule** | nft rule applied per-peer with selectors (peer, tag, cidr) | `Sdwan::FirewallRule` |
@@ -75,7 +75,7 @@ Status transitions:
 
 **Common failures:**
 - `EndpointUnreachableError` — peer's NAT punching failed. Set `publicly_reachable: true` on at least one hub peer (the rest connect outbound through it).
-- `KeysOutOfSync` — agent applied stale config. Run `sdwan_peer_remediate` skill to rotate keys + force re-handshake.
+- `KeysOutOfSync` — agent applied stale config. Run `sdwan_peer_remediate` to diagnose; the drift lane files a `sdwan.peer_key_rotate` approval request, and the key rotates (forcing a re-handshake) only when a person approves it.
 
 ## Phase 3 — Allocate Virtual IPs (slice 3) ✅
 
@@ -344,7 +344,7 @@ platform.system_sdwan_list_federation_peers({})
 | Peer stuck `handshaking` | NAT / firewall blocks WireGuard UDP | Make at least one peer `publicly_reachable: true` with port 51820/udp open; others connect outbound through it |
 | Peer goes `silent` after working | Connection lost / node rebooted | `sdwan_reachability_sensor` fires `system.sdwan_hub_unreachable`; `sdwan_failover` skill emits hub-promotion plan |
 | BGP session stuck `Idle` | Wrong AS number or unreachable neighbor | Run `sdwan_bgp_session_remediate` skill (planning) → operator runs `vtysh` per recommendation |
-| BGP session stuck `Active` | Neighbor doesn't respond to Open message | Verify the neighbor is up + has the route to this peer's `/128`; `sdwan_peer_remediate` if mTLS is the issue |
+| BGP session stuck `Active` | Neighbor doesn't respond to Open message | Verify the neighbor is up + has the route to this peer's `/128`; `sdwan_peer_remediate` to diagnose the peer if mTLS is the issue (key rotation is a separate, approval-gated act) |
 | VIP failover doesn't promote | `sdwan_vip_failover` blocked by `require_approval` policy | Check approval queue UI; operator approves → executor runs |
 | VIP failover marks `anycast: true` | Anycast VIP — failover is informational only | This is expected; routing handles failover for anycast |
 | Firewall rule shadows another | Selector specificity — more-specific selectors match first | Review `system_sdwan_list_firewall_rules` output manually — there is no automated shadow-detection today |
