@@ -2,6 +2,7 @@
 
 require "spec_helper"
 require "open3"
+require "etc"
 require "tmpdir"
 
 # IMP-01a0e40a-c0ef — an out-of-band `bundle exec rails console`/`runner`,
@@ -202,8 +203,18 @@ RSpec.describe "powernode-rails-exec: out-of-band bundle wrapper (IMP-01a0e40a-c
     end
 
     it "refuses when the real (non-root) caller running this spec is neither root nor RAILS_USER" do
+      # The branch under test is "a NON-root caller that is not RAILS_USER".
+      # CI runs this suite as root, so there the caller is made genuinely
+      # non-root: the snippet runs as the unprivileged `nobody` account via
+      # setpriv (real setuid/setgid, so `id -un` really answers "nobody").
+      # Outside root the caller is simply this process's own user.
+      argv = [ "bash", "-c" ]
       real_user = `id -un`.strip
-      raise "this spec must not itself run as root" if real_user == "root"
+      if Process.euid.zero?
+        nobody = Etc.getpwnam("nobody")
+        real_user = nobody.name
+        argv = [ "setpriv", "--reuid=#{nobody.uid}", "--regid=#{nobody.gid}", "--clear-groups", "bash", "-c" ]
+      end
 
       snippet = <<~BASH
         set -euo pipefail
@@ -211,9 +222,10 @@ RSpec.describe "powernode-rails-exec: out-of-band bundle wrapper (IMP-01a0e40a-c
         #{identity_branch}
         echo "needs_runuser=$needs_runuser"
       BASH
-      out, err, status = Open3.capture3("bash", "-c", snippet)
+      out, err, status = Open3.capture3(*argv, snippet)
       expect(status.success?).to be(false), "expected a refusal, got: #{out} / #{err}"
       expect(err).to include("must run as root")
+      expect(err).to include("refusing to run as #{real_user}")
     end
   end
 

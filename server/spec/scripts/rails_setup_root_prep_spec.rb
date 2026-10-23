@@ -5,6 +5,7 @@ require "open3"
 require "tmpdir"
 require "fileutils"
 require "yaml"
+require "etc"
 
 # IMP-94977647c24c part A — rails-setup.sh is the root-only oneshot that
 # does every root-requiring step for the now-non-root `rails` service.
@@ -26,6 +27,25 @@ require "yaml"
 # right relative source order, worded the way the review rounds asked
 # for.
 RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
+  # A real, resolvable account that is NOT the user running this suite, so
+  # every entry in a tmpdir we create (owned by the current user) is a
+  # genuine ownership mismatch against it. Hard-coding "root" only works for
+  # a non-root runner: CI runs the suite AS root, where the tmpdir already
+  # belongs to "root" and the mismatch predicate (correctly) surfaces nothing.
+  # The script's find tests `-user NAME -group NAME`, so NAME must resolve as
+  # both a user and a group (Debian/Ubuntu's `nobody` has no group of that
+  # name; `daemon` does).
+  def user_other_than_current
+    me = Process.euid
+    name = %w[root nobody daemon].find do |candidate|
+      Etc.getgrnam(candidate)
+      Etc.getpwnam(candidate).uid != me
+    rescue ArgumentError
+      false
+    end
+    name || raise("no resolvable account other than uid #{me} to mismatch ownership against")
+  end
+
   let(:extension_root) { File.expand_path("../../..", __dir__) }
   let(:script_path) do
     File.join(extension_root, "modules/powernode-hub-backend/rootfs/usr/local/bin/rails-setup.sh")
@@ -1191,7 +1211,7 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
         # example needs to discriminate.
         snippet = <<~BASH
           set -euo pipefail
-          RAILS_USER="root"
+          RAILS_USER="#{user_other_than_current}"
           target=#{cache_dir}
           #{find_line} | tr '\\0' '\\n'
         BASH
@@ -2018,7 +2038,7 @@ RSpec.describe "rails-setup.sh: root-only prep (IMP-94977647c24c part A)" do
         # the `! -type l` exclusion can still keep the symlink out.
         snippet = <<~BASH
           set -euo pipefail
-          RAILS_USER="root"
+          RAILS_USER="#{user_other_than_current}"
           STATE_DIR=#{state_dir}
           #{find_line} | tr '\\0' '\\n'
         BASH
