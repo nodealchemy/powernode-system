@@ -31,6 +31,23 @@ RSpec.describe "db/seeds/fleet_operator_agent.rb", type: :seed do
       expect(roster.fetch("fleet-operator")).to include(tier: "standard", agent_type: "monitor", name: "Fleet Operator")
     end
 
+    it "absorbs the whole System Operations roster (the eleven domain agents; the team's manager is the concierge's)" do
+      expect(roster.fetch("fleet-operator")[:absorbs]).to match_array(
+        %w[fleet-autonomy sdwan-manager cve-responder disk-image-manager runtime-manager gitops-reconciler
+           system-topology-designer topology-designer capacity-manager storage-manager ingress-manager
+           supply-chain-manager]
+      )
+      expect(roster.absorbing("storage-manager")).to eq("fleet-operator")
+      expect(roster.absorbing("topology-designer")).to eq("fleet-operator")
+    end
+
+    it "absorbs exactly the member slugs of the System Operations template, less its manager" do
+      members = %w[infrastructure-generalist fleet-autonomy sdwan-manager cve-responder disk-image-manager runtime-manager
+                   gitops-reconciler system-topology-designer capacity-manager storage-manager ingress-manager supply-chain-manager]
+      (members - %w[infrastructure-generalist]).each { |slug| expect(roster.absorbing(slug)).to eq("fleet-operator"), slug }
+      expect(roster.absorbing("infrastructure-generalist")).to eq("powernode-concierge")
+    end
+
     it "gives it the system domains as its ceiling, a whole-server grant without a code shell, and an assembly charter" do
       spec = roster.fetch("fleet-operator")
 

@@ -1009,6 +1009,12 @@ module PowernodeSystem
           "fleet-operator",
           {
             name: "Fleet Operator",
+            # The whole System Operations roster (the template's eleven domain agents; its
+            # manager, System Concierge / infrastructure-generalist, is the concierge's).
+            # topology-designer is the System Topology Designer's source_key.
+            absorbs: %w[fleet-autonomy sdwan-manager cve-responder disk-image-manager runtime-manager
+                        gitops-reconciler system-topology-designer topology-designer capacity-manager
+                        storage-manager ingress-manager supply-chain-manager],
             agent_type: "monitor",
             tier: "standard",
             description: "Operates the running Powernode fleet: nodes, instances, capacity, storage, networking, " \
