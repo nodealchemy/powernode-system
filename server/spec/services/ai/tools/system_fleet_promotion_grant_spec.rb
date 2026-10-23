@@ -161,4 +161,69 @@ RSpec.describe Ai::Tools::SystemFleetTool, "promotion grants" do
       expect(audit.user_id).to be_nil
     end
   end
+
+  # The agent-requested, session-bound grant end to end over the MCP door:
+  # the agent asks through request_promotion_grant on its own session, a person
+  # approves the card in their own session, and the promotion then proceeds
+  # only for calls arriving on THAT session.
+  describe "a session-bound grant the agent requested" do
+    let!(:person) do
+      create(:user, account: account, permissions: %w[system.nodes.read system.modules.update ai.agents.read
+                                                      ai.autonomy.approve ai.promotion_grants.manage])
+    end
+    let(:session) { McpSession.create!(user: person, account: account, ai_agent: agent) }
+    let(:other_session) { McpSession.create!(user: person, account: account, ai_agent: agent) }
+
+    def over_mcp(tool_name, params, on_session:)
+      Ai::Tools::McpPlatformToolRegistrar.execute_tool(
+        "platform.#{tool_name}", params: params, account: account, user: person, mcp_agent: agent,
+        origin: Ai::Tools::CallOrigin::MCP_OAUTH, mcp_session: on_session
+      )
+    end
+
+    def promote_on(on_session)
+      over_mcp("system_promote_module_version", { module_id: mod.id, environment: "ops", version_id: v1.id },
+               on_session: on_session)
+    end
+
+    before do
+      asked = over_mcp("request_promotion_grant",
+                       { environment: "ops", module_ids: [ mod.id ], max_uses: 2, expires_in_hours: 2,
+                         reason: "ship hub-backend", bind: "session" }, on_session: session)
+      expect(asked[:success]).to be(true)
+      grant_request = Ai::PromotionGrantRequest.find(asked[:promotion_grant_request][:id])
+      approved = Ai::Autonomy::ApprovalWorkflowService.new(account: account)
+                   .approve(request: grant_request.approval_request, approver: person,
+                            origin: Ai::ApprovalDecision::REST_SESSION)
+      expect(approved).to be(true)
+      @grant = grant_request.reload.promotion_grant
+    end
+
+    it "is issued in the approver's name, bound to the requesting session" do
+      expect(@grant).to have_attributes(granted_by_id: person.id, ai_agent_id: agent.id, binding_kind: "mcp_session",
+                                        binding_id: session.id, module_ids: [ mod.id ], max_uses: 2)
+    end
+
+    it "parks the same agent's promotion from another session" do
+      expect(promote_on(other_session).dig(:data, :pending)).to be(true)
+      expect(@grant.reload.uses_count).to eq(0)
+      expect(mod.served_version_for(ops)).to be_nil
+    end
+
+    it "promotes on the bound session and records the session on the use" do
+      result = promote_on(session)
+
+      expect(result.dig(:data, :pending)).to be_nil
+      expect(mod.served_version_for(ops)).to eq(v1)
+      audit = AuditLog.where(account_id: account.id, action: "ai.promotion_grant.used").sole
+      expect(audit.metadata).to include("binding_kind" => "mcp_session", "binding_id" => session.id)
+      expect(audit.metadata["principal"]).to include("mcp_session_id" => session.id)
+    end
+
+    it "parks once the session has ended" do
+      session.update!(status: "expired")
+      expect(promote_on(session).dig(:data, :pending)).to be(true)
+      expect(@grant.reload).to be_revoked
+    end
+  end
 end
