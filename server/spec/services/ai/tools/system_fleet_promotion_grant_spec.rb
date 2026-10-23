@@ -61,6 +61,21 @@ RSpec.describe Ai::Tools::SystemFleetTool, "promotion grants" do
     expect(promote.dig(:data, :pending)).to be(true) # max_uses spent
   end
 
+  # Core's Grantable spec names these categories by string; this pins the
+  # strings to the constants that declare them, so a rename cannot slip past.
+  it "keeps its key and operator-key categories hard-excluded from grants, by their declared names" do
+    pinned = {
+      ::Sdwan::PeerKeyRotationService::ACTION_CATEGORY => "sdwan.peer_key_rotate",
+      described_class::BOOTSTRAP_TOKEN_REVEAL_CATEGORY => "system.bootstrap_token.reveal",
+      described_class::BOOTSTRAP_TOKEN_REVOKE_CATEGORY => "system.bootstrap_token.revoke"
+    }
+    pinned.each do |declared, named|
+      expect(declared).to eq(named)
+      expect(Ai::PromotionGrants::Grantable.hard_excluded?(declared)).to be(true)
+    end
+    expect(Ai::PromotionGrants::Grantable.hard_excluded?(described_class::RELEASE_PROMOTE_CATEGORY)).to be(false)
+  end
+
   it "declares the catalog core reads: the verb's permission and this account's modules" do
     catalog = Ai::PromotionGrants::Catalog
     expect(catalog.required_permission("release.promote")).to eq("system.modules.update")
