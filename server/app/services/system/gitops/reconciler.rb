@@ -202,10 +202,10 @@ module System
 
         # Mirror the operator approval flow (proposal.approve!(user)) but
         # record that no human reviewed it — gitops auto-apply approved it.
+        # approve!(nil) is the platform's one approval funnel: it audits the approval and
+        # records the (gitops) handoff; the apply below is what implements it.
+        proposal.approve!(nil, origin: ::Ai::AgentProposals::Decision::INTERNAL, principal: "gitops_reconciler")
         proposal.update!(
-          status: "approved",
-          reviewed_by: nil,
-          reviewed_at: Time.current,
           impact_assessment: (proposal.impact_assessment || {}).merge(
             "auto_applied" => true,
             "approved_by" => "gitops_auto_apply",

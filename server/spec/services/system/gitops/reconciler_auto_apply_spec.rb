@@ -79,6 +79,15 @@ RSpec.describe System::Gitops::Reconciler, "#reconcile! auto-apply" do
       expect(proposal.status).to eq("implemented")
       # the module was actually created
       expect(::System::NodeModule.where(account: account, name: "nginx-public")).to exist
+      # implemented carries its proof, and the auto-approval is audited like any other
+      expect(proposal.implemented_ref).to start_with("gitops:")
+      expect(proposal.implemented_at).to be_present
+      expect(proposal.handoff_kind).to eq("gitops")
+      expect(AuditLog.where(resource_id: proposal.id).pluck(:action))
+        .to include("ai.proposal.approved", "ai.proposal.handed_off", "ai.proposal.implemented")
+      approved = AuditLog.find_by!(resource_id: proposal.id, action: "ai.proposal.approved")
+      expect(approved.source).to eq("system")
+      expect(approved.metadata).to include("principal" => "gitops_reconciler", "origin" => "internal")
     end
 
     it "records audit metadata noting the AUTO approval (no human reviewer)" do

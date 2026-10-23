@@ -299,6 +299,9 @@ module Ai
           proposal_type: "configuration",
           status: "pending_review",
           priority: "medium",
+          # Only the tool's own owner-resolved MCP session (set by the MCP controller),
+          # never a param: lets a chat-filed proposal be decided in that same live session.
+          origin_mcp_session_id: mcp_session_id,
           proposed_changes: {
             "resource"   => "system.node_architecture",
             "action"     => "create",

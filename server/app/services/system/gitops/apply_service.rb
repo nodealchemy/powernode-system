@@ -65,7 +65,7 @@ module System
         ::ActiveRecord::Base.transaction do
           result = apply_diff(kind: kind, change: change, diff: diff)
           # Result = Struct.new(:ok?, ...) — accessor is `ok?`, not `success?`.
-          mark_implemented! if result.ok?
+          mark_implemented!(result) if result.ok?
           result
         end
       rescue StaleConflictError => e
@@ -344,17 +344,26 @@ module System
         end
       end
 
-      def mark_implemented!
-        # AgentProposal table has status + reviewed_at but no implemented_at /
-        # implementation_notes columns. Stash apply-time metadata in
-        # impact_assessment (a JSONB field operator UI already renders).
+      # implement!(ref:) stamps implemented_at/implemented_ref and writes the
+      # ai.proposal.implemented audit row; the ref is what proves the apply: the
+      # resource the diff produced (or, for a diff with no resource, the commit the
+      # desired state came from). impact_assessment keeps the apply-time metadata the
+      # operator UI already renders.
+      def mark_implemented!(result)
+        ref = result.resource_id.presence&.to_s || commit_ref
         @proposal.update!(
-          status: "implemented",
           impact_assessment: (@proposal.impact_assessment || {}).merge(
             "applied_at" => Time.current.iso8601,
             "apply_service_version" => "v1"
           )
         )
+        @proposal.implement!(ref: "gitops:#{ref}")
+      end
+
+      def commit_ref
+        changes = @proposal.proposed_changes
+        sha = changes.is_a?(Hash) ? changes["commit_sha"].presence : nil
+        sha || @proposal.id
       end
 
       def failure(message)
