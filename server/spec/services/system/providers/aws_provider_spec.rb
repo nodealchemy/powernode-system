@@ -8,7 +8,11 @@ RSpec.describe System::Providers::AwsProvider do
     instance_double("System::ProviderConnection",
       access_key: "AKIATEST12345",
       secret_key: "secret-key-12345",
-      config: {}
+      config: {},
+      # start_instance re-seeds user-data (D12) and EnrollmentSeed.resolve_instance
+      # scopes the lookup by the connection's account and provider. nil/nil is its
+      # "no platform-seeded instance" answer, so the reseed is a no-op here.
+      account_id: nil, provider_id: nil
     )
   end
   let(:region) { instance_double("System::ProviderRegion", region_code: "us-east-1") }
