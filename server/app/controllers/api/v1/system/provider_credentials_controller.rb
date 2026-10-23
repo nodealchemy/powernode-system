@@ -310,10 +310,9 @@ module Api
           else            [ !!result, nil ]
           end
         rescue StandardError => e
-          Rails.logger.error(
-            "[ProviderCredentialsController] validation failed: #{e.class}: #{e.message}"
-          )
-          [ false, e.message ]
+          # The raw message can name the upstream host and port, so it is logged
+          # (redacted, by safe_error_text) and never returned to the caller.
+          [ false, ::System::CredentialValidationService.safe_error_text(e, provider: provider) ]
         end
 
         def serialize(cred)

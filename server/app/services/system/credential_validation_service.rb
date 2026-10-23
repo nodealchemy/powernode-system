@@ -19,6 +19,15 @@ module System
       new(provider: provider, credentials: credentials).test
     end
 
+    # Authored, caller-facing text for a failure raised AROUND #test (e.g. by a
+    # caller's own plumbing), with the raw message logged redacted. Callers must
+    # use this instead of echoing the exception's #message.
+    #
+    # @return [String]
+    def self.safe_error_text(error, provider:)
+      new(provider: provider, credentials: {}).send(:safe_error_text, error)
+    end
+
     def initialize(provider:, credentials:)
       @provider = provider
       @credentials = credentials || {}
