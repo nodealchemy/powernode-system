@@ -61,6 +61,19 @@ RSpec.describe "stage15.sh hub-backend frozen-equivalence check (IMP-094d900f909
     expect(check_code_lines).to include("ensure_equivalent_gemfile_and_lockfile")
   end
 
+  # A minimal system PATH, plus the directory of the ruby running THIS
+  # suite appended LAST. The system dirs stay first so a distro ruby still
+  # wins where one exists (the shape this spec was written against); the
+  # appended dir is only reached where there is no system ruby -- CI's
+  # ruby/setup-ruby lives in /opt/hostedtoolcache/Ruby/<v>/x64/bin, so
+  # without it `ruby` raises Errno::ENOENT on the cleaned PATH. A standalone
+  # ruby sees its own default gem dir plus whatever GEM_*/BUNDLE_* name
+  # (`unsetenv_others: true` strips those), so this adds no worktree gems.
+  def clean_path_with_ruby
+    [ "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+      File.dirname(RbConfig.ruby) ].uniq.join(":")
+  end
+
   # Runs the extracted block exactly the way stage15.sh does: cwd is the
   # app dir, POWERNODE_DEPLOYED=1, BUNDLE_FROZEN=1, BUNDLE_GEMFILE points
   # at the real Gemfile, and BUNDLE_APP_CONFIG points at a FRESH, EMPTY
@@ -75,7 +88,7 @@ RSpec.describe "stage15.sh hub-backend frozen-equivalence check (IMP-094d900f909
   # unstripped sandbox did.
   def run_check(app_dir:)
     scratch_config = Dir.mktmpdir
-    clean_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    clean_path = clean_path_with_ruby
     Open3.capture3(
       { "PATH" => clean_path,
         "POWERNODE_DEPLOYED" => "1",
@@ -99,7 +112,7 @@ RSpec.describe "stage15.sh hub-backend frozen-equivalence check (IMP-094d900f909
   # pure-Ruby, no-native-extension gems so this stays fast and needs no
   # compilation or network beyond what is already cached locally.
   def build_real_app(dir)
-    clean_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    clean_path = clean_path_with_ruby
     probe = <<~RUBY
       %w[rake matrix].each do |name|
         spec = Gem::Specification.find_by_name(name)

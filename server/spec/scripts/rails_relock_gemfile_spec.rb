@@ -497,6 +497,31 @@ RSpec.describe "rails-relock-gemfile.sh (IMP-01a0e40a-c0ef, IMP-094d900f9093 par
     # build_gem_stubs/build_isolated_gem_home exported as FUNCTIONS
     # (`export -f`) so the `bash -c` child `timeout` starts can see them
     # at all.
+    # A minimal system PATH with the running suite's own ruby dir appended
+    # LAST. System dirs stay first, so a distro ruby/bundler still wins where
+    # one exists; the appended dir is only reached where there is none --
+    # CI's ruby/setup-ruby lives in /opt/hostedtoolcache/Ruby/<v>/x64/bin,
+    # so a bare `ruby` on the cleaned PATH raised Errno::ENOENT there. A
+    # standalone ruby sees its own default gem dir plus whatever
+    # GEM_*/BUNDLE_* name (`unsetenv_others: true` strips those), so this
+    # adds no worktree gems.
+    def clean_path_with_ruby
+      [ "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+        File.dirname(RbConfig.ruby) ].uniq.join(":")
+    end
+
+    # The real bundler binstub the "stub bundle" examples hand the script as
+    # BUNDLE_BIN: the script's own production default (/usr/local/bin/bundle)
+    # where it exists, else the bundle that ships beside the running ruby (a
+    # toolcache ruby has no /usr/local/bin/bundle, so `env` failed with
+    # "No such file or directory" and the resolve never ran).
+    def bundle_bin_for_clean_path
+      default = "/usr/local/bin/bundle"
+      return default if File.executable?(default)
+
+      File.join(File.dirname(RbConfig.ruby), "bundle")
+    end
+
     def relock_preamble(rails_dir:, stub_path:)
       <<~BASH
         set -euo pipefail
@@ -786,7 +811,7 @@ RSpec.describe "rails-relock-gemfile.sh (IMP-01a0e40a-c0ef, IMP-094d900f9093 par
         # the main relock invocation below for the full reasoning) so this
         # reflects the real, system-wide Gem.path a genuinely standalone
         # process would see, not this test run's own bundled environment.
-        clean_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        clean_path = clean_path_with_ruby
         real_gem_path = `env -i PATH=#{clean_path} ruby -e 'puts Gem.path.join(":")'`.strip
 
         # Resolve rake/matrix's version AND cached .gem path from the SAME
@@ -853,9 +878,9 @@ RSpec.describe "rails-relock-gemfile.sh (IMP-01a0e40a-c0ef, IMP-094d900f9093 par
         # (a bare systemd ExecStartPre/rails-setup.sh subprocess call,
         # never itself launched via `bundle exec`).
         out, err, status = Open3.capture3(
-          { "PATH" => "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" },
+          { "PATH" => clean_path_with_ruby },
           "bash", "-c",
-          relock_preamble(rails_dir: rails_dir, stub_path: "/usr/local/bin/bundle") + <<~BASH,
+          relock_preamble(rails_dir: rails_dir, stub_path: bundle_bin_for_clean_path) + <<~BASH,
             relock_gemfile_for_this_node
             echo "RELOCK_EXIT=$?"
           BASH
@@ -881,7 +906,7 @@ RSpec.describe "rails-relock-gemfile.sh (IMP-01a0e40a-c0ef, IMP-094d900f9093 par
         boot_bundle_path = File.join(dir, "boot-bundle-path")
         FileUtils.mkdir_p(boot_bundle_path)
         boot_out, boot_err, boot_status = Open3.capture3(
-          { "PATH" => "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          { "PATH" => clean_path_with_ruby,
             "BUNDLE_GEMFILE" => File.join(rails_dir, "Gemfile"),
             "BUNDLE_PATH" => boot_bundle_path,
             "BUNDLE_FROZEN" => "1" },
@@ -907,7 +932,7 @@ RSpec.describe "rails-relock-gemfile.sh (IMP-01a0e40a-c0ef, IMP-094d900f9093 par
         gemfile_path = File.join(rails_dir, "Gemfile")
         gemfile_lock_path = File.join(rails_dir, "Gemfile.lock")
 
-        clean_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        clean_path = clean_path_with_ruby
         probe = <<~RUBY
           spec = Gem::Specification.find_by_name("rake")
           puts [spec.version, File.join(Gem.dir, "cache", "\#{spec.full_name}.gem")].join(" ")
@@ -924,7 +949,7 @@ RSpec.describe "rails-relock-gemfile.sh (IMP-01a0e40a-c0ef, IMP-094d900f9093 par
         out, err, status = Open3.capture3(
           { "PATH" => clean_path },
           "bash", "-c",
-          relock_preamble(rails_dir: rails_dir, stub_path: "/usr/local/bin/bundle") + <<~BASH,
+          relock_preamble(rails_dir: rails_dir, stub_path: bundle_bin_for_clean_path) + <<~BASH,
             gem_stub_dir="$(mktemp -d)"
             chmod 0755 "$gem_stub_dir"
             mkdir -p "$gem_stub_dir/specifications"
@@ -977,7 +1002,7 @@ RSpec.describe "rails-relock-gemfile.sh (IMP-01a0e40a-c0ef, IMP-094d900f9093 par
         File.write(gemfile_path, "source \"https://rubygems.org\"\ngem \"widget\", \"1.0.0\"\n")
         File.write(gemfile_lock_path, "GEM\n  remote: https://rubygems.org/\n")
 
-        clean_path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        clean_path = clean_path_with_ruby
         empty_stub_dir = Dir.mktmpdir
         FileUtils.mkdir_p(File.join(empty_stub_dir, "specifications")) # "widget" NOT registered here
 
@@ -988,7 +1013,7 @@ RSpec.describe "rails-relock-gemfile.sh (IMP-01a0e40a-c0ef, IMP-094d900f9093 par
           # populated system Gem.path would take.
           { "PATH" => clean_path, "GEM_PATH" => fake_ambient_gem_path, "GEM_HOME" => fake_ambient_gem_path },
           "bash", "-c",
-          relock_preamble(rails_dir: rails_dir, stub_path: "/usr/local/bin/bundle") + <<~BASH,
+          relock_preamble(rails_dir: rails_dir, stub_path: bundle_bin_for_clean_path) + <<~BASH,
             BUNDLE_APP_CONFIG="$(mktemp -d)"
             HOME="$(mktemp -d)"
             TMPDIR="$(mktemp -d)"
