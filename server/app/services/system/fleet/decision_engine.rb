@@ -454,17 +454,30 @@ module System
           skill: nil,
           action_category: "system.observation"
         },
-        # Slice 5 + 5.5 of the SDWAN plan. peer_drift gets the auto-execute
-        # path (notify_and_proceed → SdwanPeerRemediateExecutor rotates the
-        # keypair). hub_unreachable stays plan-only (require_approval →
-        # SdwanFailoverExecutor returns candidate spokes; operator promotes).
+        # Slice 5 of the SDWAN plan; REBOUND by IMP-01a0ed52. peer_drift used
+        # to be notify_and_proceed -> SdwanPeerRemediateExecutor ROTATING the
+        # keypair, i.e. a sensor tick revoked a peer's working key with no
+        # person involved; a peer that has not polled yet loses a working
+        # tunnel (see the credential_expiring note below). Now the automatic
+        # step is DIAGNOSIS (the executor reports the key a rotation would
+        # revoke) plus ONE approval request in sdwan.peer_key_rotate,
+        # require_approval, FORCED in code (ALWAYS_APPROVAL_KINDS) so a
+        # loosened or stale policy row cannot make this lane proceed. The
+        # rotation is #rotate_drifted_peer_key, run only from the approved
+        # replay, through Sdwan::PeerKeyRotationService — the path
+        # system_sdwan_rotate_peer_key takes. hub_unreachable stays plan-only
+        # (require_approval -> SdwanFailoverExecutor returns candidate spokes;
+        # operator promotes).
         "system.sdwan_peer_drift" => {
           skill: ::System::Ai::Skills::SdwanPeerRemediateExecutor,
-          action_category: "system.sdwan_peer_remediate",
+          action_category: ::Sdwan::PeerKeyRotationService::ACTION_CATEGORY,
           owner: "sdwan-manager",
-          side_effectful: true, # rotates the peer keypair
+          # The executor only plans; the applier is the actuation and refuses
+          # outside an approved request. Not side-effectful, so the plan is
+          # produced under every verdict and rides into the approval card.
+          side_effectful: false,
           dry_run_supported: true,
-          input_mapper: ->(signal) { { peer_id: signal.dig(:payload, "peer_id") } }
+          input_mapper: ->(signal) { { peer_id: signal.dig(:payload, "peer_id"), dry_run: true } }
         },
         "system.sdwan_hub_unreachable" => {
           skill: ::System::Ai::Skills::SdwanFailoverExecutor,
@@ -858,7 +871,7 @@ module System
         # active key, so hubs drop the old pubkey on their next compile and
         # the still-connected, not-yet-polling peer loses a WORKING tunnel.
         # Key rotation stays bound to the drift signal
-        # (system.sdwan_peer_drift above).
+        # (system.sdwan_peer_drift above), now as an approval request.
         "system.sdwan_credential_expiring" => {
           skill: ::System::Ai::Skills::SdwanCredentialRefreshExecutor,
           action_category: "system.sdwan_credential_refresh",
@@ -1505,7 +1518,12 @@ module System
           end
         end
 
-        result = apply_remediation!(signal, skill_result)
+        result = begin
+          @approved_request = request
+          apply_remediation!(signal, skill_result)
+        ensure
+          @approved_request = nil
+        end
         # Surface what the executor actually did in the execution stamp — for
         # skills whose work IS the dispatch (no REMEDIATION_APPLIERS entry, e.g.
         # the boot-image drift rollout), apply_remediation! reports "no applier",
@@ -1752,7 +1770,14 @@ module System
       # even in an unprotected plane.
       FORCE_APPROVAL_FLAG_KINDS = %w[system.template_closure_drift system.instance_abandoned].freeze
 
+      # IMP-01a0ed52 — kinds whose gate is require_approval WHATEVER any policy
+      # row says. The act is a key rotation that revokes a working key; rows
+      # already seeded on running installs are not rewritten by a declaration
+      # change, so the guarantee is code, not data.
+      ALWAYS_APPROVAL_KINDS = %w[system.sdwan_peer_drift].freeze
+
       def force_policy_for(signal)
+        return "require_approval" if ALWAYS_APPROVAL_KINDS.include?(signal.kind)
         return nil unless FORCE_APPROVAL_FLAG_KINDS.include?(signal.kind)
 
         payload = signal.payload.is_a?(Hash) ? signal.payload : {}
@@ -2149,6 +2174,8 @@ module System
         "system.module_drift" => { command: "sync_modules" },
         "system.config_drift" => { command: "apply_config" },
         "system.storage_assignment_drift" => { method: :reconcile_storage_assignment },
+        # IMP-01a0ed52 — approved replay ONLY (see #rotate_drifted_peer_key).
+        "system.sdwan_peer_drift" => { method: :rotate_drifted_peer_key },
         # IMP-c22215ae9546 (APO-5 door 2). Both halves of the snapshot
         # schedule actuate — a proceed on either that dispatched nothing would
         # rebuild the very "declared but never enforced" defect the sensor was
@@ -2286,6 +2313,47 @@ module System
         end
       rescue StandardError => e
         Rails.logger.error("[FleetDecisionEngine] remediation apply failed: #{e.class}: #{e.message}")
+        { applied: false, reason: e.message }
+      end
+
+      # IMP-01a0ed52 — the system.sdwan_peer_drift applier: rotate the drifted
+      # peer's key, but ONLY for an approved sdwan.peer_key_rotate request.
+      #
+      # @approved_request is set by #execute_approved! alone, so the proceed lane
+      # (apply_remediation! straight after the gate) has none and refuses — a
+      # policy that wrongly said proceed still cannot rotate. The rotation is
+      # Sdwan::PeerKeyRotationService#rotate!, the one author of the in-place
+      # rotation and of its audit row; this adds nothing parallel. The reason
+      # names the drift signal and the request, so both ride into the audit row
+      # and the FleetEvent. The result carries ids and PUBLIC-key fingerprints
+      # only; the new private half is written straight to Vault and never read.
+      def rotate_drifted_peer_key(signal, _skill_result)
+        request = @approved_request
+        unless request
+          return { applied: false,
+                   reason: "a peer key rotation runs only from an approved sdwan.peer_key_rotate request" }
+        end
+
+        payload = signal.payload.is_a?(Hash) ? signal.payload : {}
+        peer = ::Sdwan::Peer.joins(:network)
+                            .where(system_sdwan_networks: { account_id: account.id })
+                            .find_by(id: payload["peer_id"])
+        return { applied: false, reason: "peer not found in account" } unless peer
+
+        result = ::Sdwan::PeerKeyRotationService.new.rotate!(
+          peer: peer,
+          reason: "fleet drift remediation approved: signal #{signal.fingerprint}, approval request #{request.id}",
+          initiated_by: request.respond_to?(:confirming_approver) ? request.confirming_approver : nil
+        )
+        { applied: true,
+          peer_id: peer.id,
+          signal_fingerprint: signal.fingerprint,
+          approval_request_id: request.id,
+          previous_key_id: result.previous_key&.id,
+          new_key_id: result.new_key.id,
+          new_public_key_fingerprint: result.new_key.public_key_fingerprint,
+          membership_credential_reissued: result.membership_credential_reissued }
+      rescue ::Sdwan::PeerKeyRotationService::Refused => e
         { applied: false, reason: e.message }
       end
 
@@ -3691,6 +3759,8 @@ module System
             parts << "version=#{signal.payload['module_version_id']}"
           elsif signal.payload["certificate_id"]
             parts << "cert=#{signal.payload['certificate_id']}"
+          elsif signal.payload["peer_id"]
+            parts << "peer=#{signal.payload['peer_id']}"
           end
         end
         if skill_result.is_a?(Hash) && skill_result[:data].is_a?(Hash) && skill_result[:data][:disruption_pct]

@@ -824,7 +824,12 @@ module System
 
         # Phase 3 (SDWAN autonomous remediation). Autonomy levels preserved from
         # the original SDWAN Manager seed.
-        "system.sdwan_peer_remediate"        => "notify_and_proceed",
+        # IMP-01a0ed52: was notify_and_proceed, back when SdwanPeerRemediateExecutor
+        # ROTATED the key on a drift signal. The lane now files sdwan.peer_key_rotate
+        # and the executor is diagnosis only, so nothing routes here; kept (not
+        # retired like system.sdwan_key_rotate) at require_approval so a skill-door
+        # run or a stale row can never be looser than the governed rotation.
+        "system.sdwan_peer_remediate"        => "require_approval",
         # (system.sdwan_key_rotate, auto_approve, lived here with no producer
         # from IMP-df40782d3f4d until IMP-2e7816b5ee95 RETIRED it: a governed
         # key rotation is sdwan.peer_key_rotate in SDWAN_OPERATOR_POLICIES,

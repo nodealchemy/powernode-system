@@ -85,8 +85,9 @@ RSpec.describe "fleet proceed-lane actuation", type: :service do
         system.pool_guest_orphaned
         system.sdwan_bgp_session_unhealthy
         system.sdwan_credential_expiring
-        system.sdwan_peer_drift
       ])
+      # system.sdwan_peer_drift left this pin with IMP-01a0ed52: it now files a
+      # sdwan.peer_key_rotate approval request (require_approval) and never proceeds.
     end
 
     it "wires the three lanes the operator ruled IMPLEMENT" do

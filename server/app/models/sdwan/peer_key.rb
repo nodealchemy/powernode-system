@@ -26,11 +26,10 @@ module Sdwan
     # 410 Gone. So a rotation leaves every previously-issued client holding a
     # key the hub no longer has, and its tunnel stops handshaking OUTRIGHT —
     # strictly worse than the narrowed-AllowedIPs drift the staleness sensor
-    # was built for. Rotation runs on an autonomous lane with no approval
-    # gate: SdwanDriftSensor's system.sdwan_peer_drift routes to
-    # SdwanPeerRemediateExecutor under action_category
-    # "system.sdwan_peer_remediate", seeded notify_and_proceed. It also runs
-    # on the governed operator verb system_sdwan_rotate_peer_key
+    # was built for. Rotation no longer runs on an autonomous lane
+    # (IMP-01a0ed52): SdwanDriftSensor's system.sdwan_peer_drift files an
+    # approval request in sdwan.peer_key_rotate, and the approved replay and
+    # the governed operator verb system_sdwan_rotate_peer_key both rotate through
     # (Sdwan::PeerKeyRotationService, sdwan.peer_key_rotate — IMP-2e7816b5ee95),
     # which replaced the producer-less "system.sdwan_key_rotate" placeholder.
     #

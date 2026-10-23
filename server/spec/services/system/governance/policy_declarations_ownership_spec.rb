@@ -39,7 +39,7 @@ RSpec.describe System::Governance::PolicyDeclarations, "ownership (HIER-P2A)" do
   let(:verbs_before) do
     {
       "system.federation_peer_remediate" => "notify_and_proceed",
-      "system.sdwan_peer_remediate" => "notify_and_proceed",
+      "system.sdwan_peer_remediate" => "require_approval", # IMP-01a0ed52: was notify_and_proceed; deliberate tightening
       "system.sdwan_failover" => "require_approval",
       "system.sdwan_user_device_revoke" => "require_approval",
       "system.sdwan_bgp_session_remediate" => "notify_and_proceed",

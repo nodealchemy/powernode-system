@@ -44,22 +44,23 @@ RSpec.describe System::Ai::Skills::SdwanPeerRemediateExecutor do
       expect(old_key.reload.revoked?).to be false
     end
 
-    it "rotates the keypair, revokes the old key, chains the audit trail, and resets the peer to pending" do
-      old_key = peer.reload.active_key
+    # IMP-01a0ed52 — the executor is diagnosis only. Safety in code: it never
+    # reaches Sdwan::KeyDistributor, whatever a policy row says.
+    [ "notify_and_proceed", "auto_approve" ].each do |verb|
+      it "refuses to rotate and writes nothing when system.sdwan_peer_remediate is #{verb}" do
+        Ai::InterventionPolicy.create!(account: account, scope: "global", action_category: "system.sdwan_peer_remediate",
+                                       policy: verb, is_active: true)
+        old_key = peer.reload.active_key
+        expect(Sdwan::KeyDistributor).not_to receive(:rotate!)
 
-      r = exec.execute(peer_id: peer.id)
+        r = exec.execute(gated: true, peer_id: peer.id)
 
-      expect(r[:success]).to be true
-      expect(r.dig(:data, :resolved)).to be true
-      expect(r.dig(:data, :rotated_from_key_id)).to eq(old_key.id)
-
-      new_key = peer.reload.active_key
-      expect(new_key.id).to eq(r.dig(:data, :new_key_id))
-      expect(new_key.id).not_to eq(old_key.id)
-      expect(new_key.rotated_from_id).to eq(old_key.id) # rotation chain preserved
-      expect(old_key.reload.revoked?).to be true
-      expect(peer.status).to eq("pending")
-      expect(peer.last_compiled_at).to be_nil
+        expect(r[:success]).to be false
+        expect(r[:error]).to match(/system_sdwan_rotate_peer_key|approval/i)
+        expect(peer.reload.active_key.id).to eq(old_key.id)
+        expect(old_key.reload.revoked?).to be false
+        expect(r.to_json).not_to match(/private/i)
+      end
     end
   end
 end

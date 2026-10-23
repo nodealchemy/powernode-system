@@ -292,7 +292,7 @@ Reaper-owned members are dropped in SQL before `max_per_tick`, so they never tak
 **Watches:** Agent-reported wg interface state vs platform desired config
 **Threshold:** Interface missing or wrong AllowedIPs → `system.sdwan_peer_drift` signal
 **Signals:** `system.sdwan_peer_drift` — the only kind this sensor emits. No recovery counterpart exists; recovery is the fingerprint's absence on a later tick.
-**Recommended remediation:** `sdwan_peer_remediate` skill — rotate keys + force tunnel re-establish.
+**Recommended remediation:** the `sdwan_peer_remediate` skill diagnoses (reports the key a rotation would revoke) and the lane files ONE approval request in `sdwan.peer_key_rotate`; the key rotates only on approval, through `Sdwan::PeerKeyRotationService`. A drift signal never rotates a key on its own.
 
 ### `sdwan_bgp_session_health_sensor` — iBGP session health
 
@@ -1152,7 +1152,7 @@ Source: `PolicyDeclarations::SDWAN_MANAGER_POLICIES` = `SDWAN_OPERATOR_POLICIES`
 | Action category | Default policy | Why |
 |---|---|---|
 | `system.federation_peer_remediate` | `notify_and_proceed` | Re-handshake / degrade / alert on a stale or cert-expiring federation peer; low-to-medium blast radius, dedup TTL throttles repeats |
-| `system.sdwan_peer_remediate` | `notify_and_proceed` | Peer key rotation on drift (`SdwanPeerRemediateExecutor`) |
+| `system.sdwan_peer_remediate` | `require_approval` | Orphaned since the drift lane moved to `sdwan.peer_key_rotate`; kept at the strict tier (`SdwanPeerRemediateExecutor` is diagnosis only) |
 | `system.sdwan_failover` | `require_approval` | Hub failover is a holder promotion; the executor returns the candidate-spoke plan for the approval |
 | `system.sdwan_user_device_revoke` | `require_approval` | Withdraws a person's VPN access |
 | `system.sdwan_bgp_session_remediate` | `notify_and_proceed` | Restarting FRR is low blast radius |

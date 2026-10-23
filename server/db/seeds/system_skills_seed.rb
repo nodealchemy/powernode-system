@@ -299,16 +299,17 @@ SKILLS_DATA = [
   {
     name: "SDWAN Peer Remediate",
     slug: "system-sdwan-peer-remediate",
-    description: "Rotate an SDWAN peer's keypair and force the agent to re-establish its tunnel on next reconcile",
+    description: "Diagnose a drifted SDWAN peer and report the key a rotation would revoke; never rotates a key (rotation is the approval-gated system_sdwan_rotate_peer_key)",
     category: "sre_observability",
     subdomain: "sdwan",
     executor: "System::Ai::Skills::SdwanPeerRemediateExecutor",
     tags: %w[sdwan peers key-rotation tunnel],
     system_prompt: <<~PROMPT.strip
-      Recover a degraded or stuck SDWAN peer.
+      Diagnose a degraded or stuck SDWAN peer.
       Inputs: peer_id, dry_run.
-      Rotates the peer's WireGuard keypair so the agent re-establishes the tunnel
-      from a clean key on its next reconcile.
+      Reports the key a rotation would revoke (would_rotate_from*). Never rotates
+      a WireGuard key: rotation is a separate act, gated by sdwan.peer_key_rotate
+      (system_sdwan_rotate_peer_key, or the approval request the drift lane files).
     PROMPT
   },
   {

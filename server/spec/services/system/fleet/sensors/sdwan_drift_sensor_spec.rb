@@ -17,7 +17,7 @@ RSpec.describe System::Fleet::Sensors::SdwanDriftSensor do
       expect(sig.kind).to eq("system.sdwan_peer_drift")
       expect(sig.severity).to eq(:medium)
       expect(sig.payload["peer_id"]).to eq(peer.id)
-      expect(sig.payload["remediation_action"]).to eq("system.sdwan_peer_remediate")
+      expect(sig.payload["remediation_action"]).to eq("sdwan.peer_key_rotate")
     end
 
     # A peer that has never handshaked has no handshake_age to measure — the
@@ -30,10 +30,11 @@ RSpec.describe System::Fleet::Sensors::SdwanDriftSensor do
     end
   end
 
-  it "binds system.sdwan_peer_drift to the sdwan_peer_remediate gate in SIGNAL_BINDINGS" do
+  it "binds system.sdwan_peer_drift to the sdwan.peer_key_rotate approval gate in SIGNAL_BINDINGS" do
     binding = System::Fleet::DecisionEngine::SIGNAL_BINDINGS["system.sdwan_peer_drift"]
 
     expect(binding).to be_present
-    expect(binding[:action_category]).to eq("system.sdwan_peer_remediate")
+    expect(binding[:action_category]).to eq("sdwan.peer_key_rotate")
+    expect(binding[:side_effectful]).to be(false) # the executor only plans; the approved applier rotates
   end
 end

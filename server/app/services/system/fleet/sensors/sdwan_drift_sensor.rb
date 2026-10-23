@@ -6,10 +6,9 @@
 # WireGuard tunnel hasn't rekeyed recently, which usually signals network
 # trouble (NAT timeout, ISP flap, key mismatch).
 #
-# Emits one signal per drifted peer; the DecisionEngine routes them to
-# the system.sdwan_peer_remediate action_category. Default policy is
-# notify_and_proceed (re-issue config + restart wg interface auto-fires;
-# operators get a notification).
+# Emits one signal per drifted peer; the DecisionEngine diagnoses it and files
+# ONE approval request in sdwan.peer_key_rotate (IMP-01a0ed52). A stale handshake
+# never rotates a key by itself: the rotation runs only when a person approves.
 #
 # Slice 5 of the SDWAN plan (we-are-continuing-development-spicy-bear.md).
 module System
@@ -40,7 +39,7 @@ module System
                   status: peer.status,
                   last_handshake_at: peer.last_handshake_at.utc.iso8601,
                   handshake_age_seconds: age.to_i,
-                  remediation_action: "system.sdwan_peer_remediate"
+                  remediation_action: "sdwan.peer_key_rotate"
                 },
                 fingerprint: "sdwan_peer_drift:#{peer.id}"
               )

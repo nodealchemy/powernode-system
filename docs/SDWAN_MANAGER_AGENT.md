@@ -155,7 +155,7 @@ To add additional approvers (e.g., a security review for `federation_peer_*` act
 The four autonomous SDWAN remediation executors (`app/services/system/ai/skills/`) are surfaced via bound skills. Note these skills are still **bound to Fleet Autonomy** (`binds_to`), and are invoked with the SDWAN Manager as the acting agent when the corresponding `system.sdwan_*` policy — owned by the SDWAN Manager since HIER-P2A — fires; re-binding the skills is a separate increment:
 
 - `sdwan_failover_executor` — hub failover planner
-- `sdwan_peer_remediate_executor` — peer key rotation + re-enrollment
+- `sdwan_peer_remediate_executor` — peer drift diagnosis (never rotates; rotation is the approval-gated `sdwan.peer_key_rotate`)
 - `sdwan_bgp_session_remediate_executor` — iBGP session restart + reconfiguration
 - `sdwan_vip_failover_executor` — VIP holder promotion
 
@@ -173,7 +173,7 @@ These autonomous remediations are triggered by Fleet sensors emitting `system.sd
 
 | Sensor → Signal | Triggers action | Policy default |
 |---|---|---|
-| `sdwan.peer_reachability` → drift | `system.sdwan_peer_remediate` | `notify_and_proceed` |
+| `sdwan.peer_reachability` → drift | `sdwan.peer_key_rotate` (approval request; rotation only on approval) | `require_approval` (forced in code) |
 | `sdwan.bgp_session` → down | `system.sdwan_bgp_session_remediate` | `notify_and_proceed` |
 | `sdwan.vip_reachability` → primary unhealthy | `system.sdwan_vip_failover` | `require_approval` |
 | `sdwan.hub_reachability` → hub unreachable | `system.sdwan_failover` | `require_approval` |

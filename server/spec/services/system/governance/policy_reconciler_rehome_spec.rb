@@ -59,7 +59,7 @@ RSpec.describe System::Governance::PolicyReconciler, "owner re-homing" do
       result = reconciler.reconcile!
 
       expect(row(sdwan, moved)).to be_present
-      expect(row(sdwan, moved).policy).to eq("notify_and_proceed")
+      expect(row(sdwan, moved).policy).to eq("require_approval") # IMP-01a0ed52
       expect(row(fleet, moved)).to be_nil
       expect(result.rehomed).to be_empty
       expect(result.created_categories).to include("sdwan-manager/#{moved}")

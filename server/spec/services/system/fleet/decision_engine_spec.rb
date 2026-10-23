@@ -1497,20 +1497,27 @@ RSpec.describe System::Fleet::DecisionEngine do
     # to `else nil`), so peer key rotation and BGP session remediation never
     # ran. Dispatch now flows through each binding's input_mapper.
     context "with SDWAN signals (executor dispatch)" do
-      it "invokes SdwanPeerRemediateExecutor with peer_id and proceeds via notify_and_proceed" do
+      # IMP-01a0ed52 — the drift lane DIAGNOSES (plan-only, no policy resolution
+      # needed, so gated: false) and parks under sdwan.peer_key_rotate; it never
+      # proceeds on its own, whatever the old system.sdwan_peer_remediate row says.
+      it "invokes SdwanPeerRemediateExecutor plan-only and parks the rotation for approval" do
         Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
                                        action_category: "system.sdwan_peer_remediate",
                                        policy: "notify_and_proceed", is_active: true)
+        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
+                                       action_category: "sdwan.peer_key_rotate",
+                                       policy: "require_approval", is_active: true)
         executor = instance_double(System::Ai::Skills::SdwanPeerRemediateExecutor)
         allow(System::Ai::Skills::SdwanPeerRemediateExecutor).to receive(:new).and_return(executor)
-        expect(executor).to receive(:execute).with(gated: true, peer_id: "peer-1")
-                                             .and_return({ success: true, data: { resolved: true } })
+        expect(executor).to receive(:execute).with(gated: false, peer_id: "peer-1", dry_run: true)
+                                             .and_return({ success: true, data: { dry_run: true } })
 
         d = engine.decide(kind: "system.sdwan_peer_drift", severity: :high,
                           payload: { peer_id: "peer-1", network_id: "net-1" },
                           fingerprint: "sdwan_peer_drift:peer-1")
-        expect(d[:decision]).to eq(:proceed)
-        expect(d[:skill_result]).to eq({ success: true, data: { resolved: true } })
+        expect(d[:decision]).to eq(:pending)
+        expect(d[:action_category]).to eq("sdwan.peer_key_rotate")
+        expect(d[:skill_result]).to eq({ success: true, data: { dry_run: true } })
       end
 
       it "invokes SdwanFailoverExecutor with the network_id" do
@@ -1700,20 +1707,6 @@ RSpec.describe System::Fleet::DecisionEngine do
                           fingerprint: "fed:fp-1")
         expect(d[:decision]).to eq(:pending)
         expect(d[:skill_result]).to eq({ success: true, data: { plan: "degrade" } })
-      end
-
-      it "runs SdwanPeerRemediateExecutor plan-only (dry_run) when approval is required" do
-        Ai::InterventionPolicy.create!(account: account, ai_agent_id: agent.id, scope: "agent",
-                                       action_category: "system.sdwan_peer_remediate",
-                                       policy: "require_approval", is_active: true)
-        executor = instance_double(System::Ai::Skills::SdwanPeerRemediateExecutor)
-        allow(System::Ai::Skills::SdwanPeerRemediateExecutor).to receive(:new).and_return(executor)
-        expect(executor).to receive(:execute).with(gated: true, peer_id: "peer-9", dry_run: true)
-                                             .and_return({ success: true, data: {} })
-
-        engine.decide(kind: "system.sdwan_peer_drift", severity: :high,
-                      payload: { peer_id: "peer-9" },
-                      fingerprint: "sdwan_peer_drift:peer-9")
       end
     end
 
