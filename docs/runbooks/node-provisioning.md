@@ -519,6 +519,9 @@ Cascade actions (FK + service-level):
 - `Sdwan::VirtualIp` failover triggered if this instance was a holder (slice 3)
 - `NodeCertificate` rows revoked
 - `BootstrapToken` rows expired
+- Proxmox ISO-transport seed (`cidata-<vmid>-<key>.iso`) deleted by the terminate itself
+
+**Orphaned Proxmox seed ISOs.** Run `rake system:proxmox:reap_seed_isos` (dry run) after the first week, then `APPLY=1` to delete what it lists. It keeps any file matching a live instance's current key (any account) and anything newer than `GRACE_HOURS` (default 6).
 
 **The `Node` row remains** by design — re-provisioning into the same logical Node preserves history and audit chain. Delete the Node explicitly via `system_delete_node` only if it's truly retired.
 

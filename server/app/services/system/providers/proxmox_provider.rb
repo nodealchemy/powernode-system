@@ -691,6 +691,8 @@ module System
                                              expected_name: expected_name)
         end
 
+        attached_iso = attached_seed_iso_name(c, node, kind, vmid)
+
         # Best-effort graceful stop first; ignore failures (the guest may
         # already be off, or it may refuse to shut down). Then destroy.
         begin
@@ -729,7 +731,7 @@ module System
         delete_upid = c.delete("/api2/json/nodes/#{node}/#{kind}/#{vmid}",
                                { "purge" => 1, "destroy-unreferenced-disks" => 1 })
         c.wait_task(node: node, upid: delete_upid)
-        delete_own_seed_iso(c, node, kind, vmid, instance_id)
+        delete_own_seed_iso(c, node, kind, vmid, instance_id, attached_iso)
 
         build_instance_response(cloud_id: instance_id, status: STATUSES[:terminated])
       rescue Proxmox::Client::NotFoundError
@@ -764,16 +766,36 @@ module System
       # instance's own discriminator, NEVER a vmid glob (vmids are reused). A
       # NotFound is done; any failure is logged and swallowed (the VM is already
       # destroyed; the system:proxmox:reap_seed_isos task catches a leftover).
-      def delete_own_seed_iso(c, node, kind, vmid, instance_id)
+      def delete_own_seed_iso(c, node, kind, vmid, instance_id, attached_iso = nil)
         return unless kind == "qemu" && cidata_iso_transport?
 
-        record = seed_instance_for(instance_id)
-        key = record && self.class.seed_discriminator_for(record)
-        return if key.blank?
+        names = []
+        begin
+          record = seed_instance_for(instance_id)
+          key = record && self.class.seed_discriminator_for(record)
+          names << "cidata-#{vmid}-#{key}.iso" if key.present?
+        rescue StandardError => e
+          logger.warn("[#{self.class.name}] terminate: could not resolve the instance seed key: #{e.class}")
+        end
+        names << attached_iso if attached_iso.present?
+        names.uniq.each do |name|
+          delete_cidata_iso(c, node, name)
+        rescue StandardError => e
+          logger.warn("[#{self.class.name}] terminate: seed ISO delete failed for #{name}: #{e.class}")
+        end
+      end
 
-        delete_cidata_iso(c, node, "cidata-#{vmid}-#{key}.iso")
-      rescue StandardError => e
-        logger.warn("[#{self.class.name}] terminate: seed ISO delete failed: #{e.class}")
+      # The exact seed ISO this VM has attached on ide2 (read BEFORE the destroy),
+      # for staging that had no instance row to derive the key from. Only a name
+      # for THIS vmid in the seed shape is returned; never a pattern.
+      def attached_seed_iso_name(c, node, kind, vmid)
+        return nil unless kind == "qemu" && cidata_iso_transport?
+
+        cfg = c.get("/api2/json/nodes/#{node}/qemu/#{vmid}/config", { "current" => 1 })
+        name = cfg.is_a?(Hash) ? cfg["ide2"].to_s[%r{iso/(cidata-#{Regexp.escape(vmid.to_s)}-[\w]+\.iso)}, 1] : nil
+        name.presence
+      rescue Proxmox::Client::Error
+        nil
       end
 
       # The "not on our node" answer for #terminate_instance: gone only when no

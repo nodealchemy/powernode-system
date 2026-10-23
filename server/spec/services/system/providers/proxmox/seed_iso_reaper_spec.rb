@@ -90,6 +90,16 @@ RSpec.describe System::Providers::Proxmox::SeedIsoReaper do
     expect(reap.orphans).to be_empty
   end
 
+  it "keeps the current ISO of a live instance in ANOTHER account" do
+    other = create(:system_node_instance, status: "running")
+    other.merge_config!("cloud_instance_id" => "pve1/qemu/9004")
+    expect(other.account_id).not_to eq(connection.account_id)
+    name = "cidata-9004-#{disc(other)}.iso"
+    allow(adapter).to receive(:list_cidata_isos).and_return([ entry(name) ])
+    expect(reap.orphans).to be_empty
+    expect(reap.kept_live).to eq(1)
+  end
+
   it "treats the ISO of a terminated instance as an orphan" do
     dead = live_instance(9003, status: "terminated")
     name = "cidata-9003-#{disc(dead)}.iso"

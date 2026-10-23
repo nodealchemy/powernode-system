@@ -742,6 +742,7 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
         connection.config["cidata_transport"] = "iso"
         connection.config["cidata_iso_storage"] = "isos"
         allow(client).to receive(:put)
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/100/config", { "current" => 1 }).and_return({})
         allow(client).to receive(:delete).with("/api2/json/nodes/pve1/qemu/100", anything).and_return(destroy_upid)
         allow(client).to receive(:delete).with(iso_path).and_return(del_upid)
       end
@@ -777,6 +778,34 @@ RSpec.describe "Platform-injected enrolment seed per provider" do
                                          .and_raise(System::Providers::Proxmox::Client::Error, "busy")
         provider.terminate_instance(cloud_id)
         expect(client).not_to have_received(:delete).with(iso_path)
+      end
+
+      it "also deletes the exact seed ISO the VM had attached when no instance row names its key (instance-less staging)" do
+        orphan_key_iso = "cidata-100-0123456789ab.iso"
+        allow(provider).to receive(:seed_instance_for).and_return(nil)
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/100/config", { "current" => 1 })
+          .and_return("ide2" => "isos:iso/#{orphan_key_iso},media=cdrom")
+        allow(client).to receive(:delete).with("/api2/json/nodes/pve1/storage/isos/content/isos%3Aiso%2F#{orphan_key_iso}").and_return(del_upid)
+
+        provider.terminate_instance(cloud_id)
+
+        expect(client).to have_received(:delete).with("/api2/json/nodes/pve1/storage/isos/content/isos%3Aiso%2F#{orphan_key_iso}")
+      end
+
+      it "never deletes an attached ISO that belongs to another vmid" do
+        allow(provider).to receive(:seed_instance_for).and_return(nil)
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/100/config", { "current" => 1 })
+          .and_return("ide2" => "isos:iso/cidata-101-0123456789ab.iso,media=cdrom")
+        provider.terminate_instance(cloud_id)
+        expect(client).to have_received(:delete).exactly(1).times # the VM destroy only
+      end
+
+      it "names the file (never contents) in the warn line when the ISO delete is swallowed" do
+        allow(client).to receive(:delete).with(iso_path).and_raise(System::Providers::Proxmox::Client::Error, "boom")
+        io = StringIO.new
+        allow(provider).to receive(:logger).and_return(Logger.new(io))
+        provider.terminate_instance(cloud_id)
+        expect(io.string).to include(own_iso)
       end
 
       it "does nothing extra on the snippet transport" do
