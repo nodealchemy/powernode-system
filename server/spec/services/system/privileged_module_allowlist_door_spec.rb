@@ -14,7 +14,7 @@ RSpec.describe "site_setting_set_protected writes the privileged-module allowlis
   let(:tool) { ::Ai::Tools::SiteSettingTool.new(account: account, user: admin) }
   let(:node_instance) { double("NodeInstance", id: "bb11cc22-0000-4000-8000-000000000003", account: account) }
 
-  after { ::Mcp::Principal.reset! }
+  include_context "restores Mcp::Principal resolvers (system)"
 
   def key = System::PrivilegedModuleAllowlist::SETTING_KEY
 

@@ -17,7 +17,7 @@ RSpec.describe "extension tool-specific gate parks record the originating princi
   let(:other_instance) { Struct.new(:id).new(SecureRandom.uuid) }
   let(:not_found) { { success: false, error: "Approval request not found" } }
 
-  after { ::Mcp::Principal.reset! }
+  include_context "restores Mcp::Principal resolvers (system)"
 
   def run_as_instance(tool_id, params, node_instance:)
     ::Ai::Tools::McpPlatformToolRegistrar.execute_tool(

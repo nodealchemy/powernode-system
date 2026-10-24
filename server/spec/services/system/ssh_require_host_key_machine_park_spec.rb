@@ -19,7 +19,7 @@ RSpec.describe "system.ssh.require_host_key: a machine may only tighten it" do
     ::Mcp::Principal.tool_grant_resolver = ->(_instance) { [ "platform.site_setting_set_protected" ] }
   end
 
-  after { ::Mcp::Principal.reset! }
+  include_context "restores Mcp::Principal resolvers (system)"
 
   def park(value)
     tool = ::Ai::Tools::SiteSettingTool.new(account: account)

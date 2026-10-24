@@ -38,7 +38,7 @@ RSpec.describe "site_setting_set_protected arms the self-management fence" do
     end.new
   end
 
-  after { ::Mcp::Principal.reset! }
+  include_context "restores Mcp::Principal resolvers (system)"
 
   def key = ::System::Autonomy::SelfManagementFence::SELF_HOSTING_NODE_ID_KEY
 
