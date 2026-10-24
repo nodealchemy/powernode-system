@@ -145,11 +145,20 @@ fi
 # must never read like a successful one. No remote is recorded (a clone URL can
 # carry a token). The tag is null and release false: the extension is versioned
 # by its sha, not by release tags.
-ext_sha="$(git -C "$WORKSPACE" rev-parse --verify HEAD 2>/dev/null || true)"
+# Only a .git of the workspace's OWN counts: `git -C` would otherwise walk up
+# into an enclosing repository and record ITS sha as the extension's.
+ext_sha=""
+if [ -e "$WORKSPACE/.git" ]; then
+  ext_sha="$(git -C "$WORKSPACE" rev-parse --verify HEAD 2>/dev/null || true)"
+fi
+[ -n "$ext_sha" ] || ext_sha="${GITHUB_SHA:-}"
 [ -n "$ext_sha" ] || ext_sha="unknown"
 ext_short="$(printf '%s' "$ext_sha" | cut -c1-7)"
-ext_branch="$(git -C "$WORKSPACE" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-case "$ext_branch" in ''|HEAD) ext_branch="${BUILD_BRANCH:-unknown}" ;; esac
+ext_branch=""
+if [ -e "$WORKSPACE/.git" ]; then
+  ext_branch="$(git -C "$WORKSPACE" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+fi
+case "$ext_branch" in ''|HEAD) ext_branch="${GITHUB_REF_NAME:-unknown}" ;; esac
 printf '{"version":"ext+%s","sha":"%s","short_sha":"%s","branch":"%s","tag":null,"release":false,"built_at":"%s","source":"module-build"}\n' \
   "$ext_short" "$ext_sha" "$ext_short" "$ext_branch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   > "$EXT_ROOT/BUILD_INFO.json"

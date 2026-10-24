@@ -149,6 +149,24 @@ echo "=== build identity: a workspace with no git records sha=unknown, never omi
   rm -rf "$WS" "$FAT"
 }
 
+echo "=== build identity: no .git of its own falls back to GITHUB_SHA, and never an enclosing repo's sha ==="
+{
+  OUTER=$(mktemp -d)
+  FAT=$(mktemp -d)
+  git -C "$OUTER" init -q -b main
+  echo x > "$OUTER/f"; git -C "$OUTER" add -A
+  git -C "$OUTER" -c user.email=t@example.invalid -c user.name=t commit -q -m outer
+  WS="$OUTER/inner"; mkdir -p "$WS"; make_full_workspace "$WS"
+
+  RUN_OUT=$(GITHUB_SHA=feedface00000000000000000000000000000000 GITHUB_REF_NAME=feature/x bash "$SCRIPT" --workspace "$WS" --fat-root "$FAT" 2>&1); RUN_RC=$?
+  info="$FAT/opt/powernode/extensions/system/BUILD_INFO.json"
+  assert_eq "exit 0" "0" "$RUN_RC"
+  assert_eq "sha is GITHUB_SHA, not the enclosing repo's HEAD" "feedface00000000000000000000000000000000" "$(jq -r .sha "$info" 2>/dev/null)"
+  assert_eq "branch from GITHUB_REF_NAME" "feature/x" "$(jq -r .branch "$info" 2>/dev/null)"
+
+  rm -rf "$OUTER" "$FAT"
+}
+
 echo "=== unit: config/ missing from workspace — RED, exit 1, names config/ ==="
 {
   WS=$(mktemp -d)
