@@ -194,7 +194,9 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # 278 -> 279 when the system_fleet_tool gate-site enumeration above it grew
       # by a line; RE-AUDITED, unchanged (still `::System::Task.new(command:
       # command, ...)` in #command_insertable?, .new + .valid? only).
-      "integration/gate_composed_task_categories_spec.rb" => [ 279 ],
+      # 279 -> 277 when the gate spec dropped its per-site :line pins; RE-AUDITED,
+      # unchanged.
+      "integration/gate_composed_task_categories_spec.rb" => [ 277 ],
       # The #task! helper's `create(:system_task, ..., command: command, ...)`.
       # `command` is a keyword defaulting to the migration's own COMMAND
       # ("storage.smb_user.apply", a COMMANDS member); the only explicit
