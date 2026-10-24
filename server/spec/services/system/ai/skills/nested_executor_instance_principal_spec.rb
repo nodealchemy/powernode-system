@@ -31,14 +31,11 @@ RSpec.describe "instance principal → nested skill executor → tool" do
 
   let(:node_instance) { double("NodeInstance", id: SecureRandom.uuid, account: account) }
 
-  # Save/restore rather than Mcp::Principal.reset! — reset! also clears
-  # instance_resolver, which the system extension's engine injects once at boot.
-  around do |example|
-    previous = ::Mcp::Principal.tool_grant_resolver
-    ::Mcp::Principal.tool_grant_resolver = ->(_i) { [ granted_name ] }
-    example.run
-    ::Mcp::Principal.tool_grant_resolver = previous
-  end
+  # The shared context restores both resolvers after each example (even a failing
+  # one); reset! would clear instance_resolver, which the engine injects at boot.
+  include_context "restores Mcp::Principal resolvers (system)"
+
+  before { ::Mcp::Principal.tool_grant_resolver = ->(_i) { [ granted_name ] } }
 
   let(:principal) do
     ::Mcp::Principal.new(kind: :instance, account: account,
