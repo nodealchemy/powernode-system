@@ -45,6 +45,10 @@ module Acme
     # against — a peer-CA cert must NOT validate here.
     INTERNAL_CA_FILENAME = "internal-ca.pem"
 
+    # Name of the middleware that deletes client-supplied forwarded-client-cert
+    # headers; shared with core so both ingress writers agree.
+    STRIP_FORWARDED_CLIENT_CERT_MW = ::Core::IngressConfigWriter::STRIP_FORWARDED_CLIENT_CERT_MW
+
     # Traefik's CLIENT-cert trust bundle: our CA + every reachable federation
     # peer's CA (symmetric peers sign with their own). Written by
     # `write_client_auth_bundle!`; referenced from the shared mTLS YAML via
@@ -208,6 +212,20 @@ module Acme
           },
           "http" => {
             "middlewares" => {
+              # Deletes any CLIENT-supplied X-Forwarded-Tls-Client-Cert[-Info]
+              # before a backend router sees it (same definition as
+              # Core::IngressConfigWriter#strip_forwarded_client_cert_middleware).
+              # pass-tls below only sets those headers when a cert was negotiated
+              # and the mode is VerifyClientCertIfGiven, so without this a
+              # cert-less caller could forge the CN the backend trusts.
+              STRIP_FORWARDED_CLIENT_CERT_MW => {
+                "headers" => {
+                  "customRequestHeaders" => {
+                    ::Security::MtlsTrust::PEM_HEADER     => "",
+                    ::Security::MtlsTrust::SUBJECT_HEADER => ""
+                  }
+                }
+              },
               "pass-tls-client-cert" => {
                 "passTLSClientCert" => {
                   # pem:true forwards the full client cert (X-Forwarded-Tls-
@@ -593,12 +611,21 @@ module Acme
           else
             "#{hosts_matcher} && PathPrefix(`#{router[:path_prefix]}`)"
           end
-        [ router[:name], {
+        rendered = {
           "rule"        => rule,
           "service"     => router[:backend_service],
           "entryPoints" => [ router[:entrypoint] ],
           "tls"         => { "options" => router[:tls_resolver] }
-        } ]
+        }
+        # Every router that reaches the Rails backend strips a client-supplied
+        # forwarded-client-cert header FIRST, then pass-tls re-adds the real one
+        # (Traefik runs the entrypoint's pass-tls before a router's own chain, so
+        # a strip alone would delete the genuine CN). Exactly what
+        # Core::IngressConfigWriter#render_routers does for the core routers.
+        if router[:backend_service] == "powernode-backend"
+          rendered["middlewares"] = [ STRIP_FORWARDED_CLIENT_CERT_MW.dup, "pass-tls-client-cert" ]
+        end
+        [ router[:name], rendered ]
       end
     end
 

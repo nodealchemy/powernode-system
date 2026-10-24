@@ -299,14 +299,14 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
         },
         "http" => {
           "routers" => {
-            "#{slug}-node-api"       => { "rule" => "#{host} && PathPrefix(`/api/v1/system/node_api`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
-            "#{slug}-federation-api" => { "rule" => "#{host} && PathPrefix(`/api/v1/system/federation_api`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
-            "#{slug}-internal-api"   => { "rule" => "#{host} && PathPrefix(`/api/v1/internal`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
-            "#{slug}-worker-api"     => { "rule" => "#{host} && PathPrefix(`/api/v1/system/worker_api`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
-            "#{slug}-worker-auth"    => { "rule" => "#{host} && PathPrefix(`/api/v1/worker_auth`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
-            "#{slug}-api"            => { "rule" => "#{host} && PathPrefix(`/api`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
-            "#{slug}-agent"          => { "rule" => "#{host} && PathPrefix(`/agent`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
-            "#{slug}-cable"          => { "rule" => "#{host} && PathPrefix(`/cable`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
+            "#{slug}-node-api"       => { "rule" => "#{host} && PathPrefix(`/api/v1/system/node_api`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" }, "middlewares" => [ "strip-forwarded-client-cert", "pass-tls-client-cert" ] },
+            "#{slug}-federation-api" => { "rule" => "#{host} && PathPrefix(`/api/v1/system/federation_api`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" }, "middlewares" => [ "strip-forwarded-client-cert", "pass-tls-client-cert" ] },
+            "#{slug}-internal-api"   => { "rule" => "#{host} && PathPrefix(`/api/v1/internal`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" }, "middlewares" => [ "strip-forwarded-client-cert", "pass-tls-client-cert" ] },
+            "#{slug}-worker-api"     => { "rule" => "#{host} && PathPrefix(`/api/v1/system/worker_api`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" }, "middlewares" => [ "strip-forwarded-client-cert", "pass-tls-client-cert" ] },
+            "#{slug}-worker-auth"    => { "rule" => "#{host} && PathPrefix(`/api/v1/worker_auth`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" }, "middlewares" => [ "strip-forwarded-client-cert", "pass-tls-client-cert" ] },
+            "#{slug}-api"            => { "rule" => "#{host} && PathPrefix(`/api`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" }, "middlewares" => [ "strip-forwarded-client-cert", "pass-tls-client-cert" ] },
+            "#{slug}-agent"          => { "rule" => "#{host} && PathPrefix(`/agent`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" }, "middlewares" => [ "strip-forwarded-client-cert", "pass-tls-client-cert" ] },
+            "#{slug}-cable"          => { "rule" => "#{host} && PathPrefix(`/cable`)", "service" => "powernode-backend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" }, "middlewares" => [ "strip-forwarded-client-cert", "pass-tls-client-cert" ] },
             "#{slug}-sidekiq"        => { "rule" => "#{host} && PathPrefix(`/sidekiq`)", "service" => "powernode-worker-web", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } },
             "#{slug}-frontend"       => { "rule" => host, "service" => "powernode-frontend", "entryPoints" => [ "websecure" ], "tls" => { "options" => "mtls-optional@file" } }
           },
@@ -523,6 +523,48 @@ RSpec.describe Acme::TraefikConfigWriter, type: :service do
             .to contain_exactly(::Security::CaFingerprint.of(ours),
                                 ::Security::CaFingerprint.of(theirs))
         end
+      end
+    end
+
+    # SECURITY: MtlsTrust#verify_request's no-PEM branch trusts the forwarded
+    # subject CN, and pass-tls only SETS the header when a cert was negotiated
+    # (the mode is VerifyClientCertIfGiven). A router with no strip lets a
+    # cert-less caller send its own X-Forwarded-Tls-Client-Cert[-Info] and
+    # authenticate as any worker/node whose CN it can guess. Every backend router
+    # strips first, then pass-tls re-adds the real CN (the entrypoint's pass-tls
+    # runs BEFORE a router's chain, so a strip alone would delete the real CN).
+    describe "forged client-cert headers" do
+      let(:cert) do
+        create(:system_acme_certificate, :valid, account: account, dns_credential: dns_cred,
+                                                 common_name: "ops.example.test")
+      end
+
+      it "defines a strip middleware that blanks both forwarded headers" do
+        out = described_class.write_mtls_shared_dynamic!(dynamic_dir: tmp_dynamic_dir, ca_dir: tmp_ca_dir)
+        headers = YAML.load_file(out).dig("http", "middlewares", "strip-forwarded-client-cert",
+                                          "headers", "customRequestHeaders")
+
+        expect(headers).to eq("X-Forwarded-Tls-Client-Cert" => "", "X-Forwarded-Tls-Client-Cert-Info" => "")
+      end
+
+      it "lists strip first, then pass-tls, on EVERY router that reaches the backend" do
+        materialize_cert(cert, cert_dir: tmp_cert_dir)
+        result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+        routers = YAML.load_file(result[:output_path])["http"]["routers"].values
+        backend = routers.select { |r| r["service"] == "powernode-backend" }
+
+        expect(backend.size).to be >= 8
+        expect(backend.map { |r| r["middlewares"] })
+          .to all(eq([ "strip-forwarded-client-cert", "pass-tls-client-cert" ]))
+      end
+
+      it "strips the internal-api router, which authenticates workers by that header" do
+        materialize_cert(cert, cert_dir: tmp_cert_dir)
+        result = described_class.write!(account: account, dynamic_dir: tmp_dynamic_dir, cert_dir: tmp_cert_dir)
+        internal = YAML.load_file(result[:output_path])["http"]["routers"].values
+                       .find { |r| r["rule"].include?("/api/v1/internal") }
+
+        expect(internal["middlewares"].first).to eq("strip-forwarded-client-cert")
       end
     end
 
