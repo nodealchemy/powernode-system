@@ -72,18 +72,26 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # can carry is a member by construction. RE-AUDITED for IMP-9951cbf20bb0
       # (-> 147: the probe.node_inspect and unit.dropin option arms above it);
       # still `command: cmd` over COMMANDS itself.
-      "models/system/task_spec.rb" => [ 147 ],
+      "models/system/task_spec.rb" => [
+        "task = build(:system_task, account: account, operable: node, command: cmd, options: options)"
+      ],
       # `command` is a keyword param defaulting to a listed literal
       # ("sync_modules"); every caller in the file passes a listed literal.
-      "models/system/preserves_task_history_spec.rb" => [ 28 ],
+      "models/system/preserves_task_history_spec.rb" => [
+        "t = create(:system_task, account: account, operable: operable, command: command, status: status)"
+      ],
       # MOVED 27 -> 28 when that spec's header gained the note recording
       # WorkerApi::TasksController's deletion. RE-AUDITED — still the
       # `create(:system_task, ..., command: command, ...)` inside #stuck_task,
       # whose `command:` keyword still defaults to the listed literal
       # "sync_modules", and every caller in the file still takes that default
       # or passes one.
-      "requests/api/v1/system/worker_api/janitor_spec.rb" => [ 28 ],
-      "services/system/fleet/sensors/stuck_task_backlog_sensor_spec.rb" => [ 31 ],
+      "requests/api/v1/system/worker_api/janitor_spec.rb" => [
+        "task = create(:system_task, account: account, operable: node, command: command, status: status)"
+      ],
+      "services/system/fleet/sensors/stuck_task_backlog_sensor_spec.rb" => [
+        "t = create(:system_task, account: acct || account, operable: node,"
+      ],
       # `command` is a keyword param of the local #task_with helper, defaulting
       # to "sync_modules". CURRENT AUDIT (IMP-ad746acac343, review round 2 —
       # corrects earlier drafts of this note, which cited line numbers for
@@ -163,7 +171,7 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # (12 lines above the site). RE-AUDITED — 525 is still the
       # `::System::Task.create!(` head inside that <<~RUBY heredoc, synthetic
       # source handed to the scanner as a string, constructing nothing.
-      "lint/on_node_task_producer_census_spec.rb" => [ 525 ],
+      "lint/on_node_task_producer_census_spec.rb" => [ "::System::Task.create!(" ],
       # (spec/services/system/runtime/control_instance_spec.rb was acknowledged
       # here until increment 3 DELETED it, along with the
       # System::Runtime::ControlInstance class it covered and the server
@@ -196,7 +204,9 @@ RSpec.describe "System::Task command membership across the spec tree" do
       # command, ...)` in #command_insertable?, .new + .valid? only).
       # 279 -> 277 when the gate spec dropped its per-site :line pins; RE-AUDITED,
       # unchanged.
-      "integration/gate_composed_task_categories_spec.rb" => [ 277 ],
+      "integration/gate_composed_task_categories_spec.rb" => [
+        'task = ::System::Task.new(command: command, status: "pending", progress: 0)'
+      ],
       # The #task! helper's `create(:system_task, ..., command: command, ...)`.
       # `command` is a keyword defaulting to the migration's own COMMAND
       # ("storage.smb_user.apply", a COMMANDS member); the only explicit
