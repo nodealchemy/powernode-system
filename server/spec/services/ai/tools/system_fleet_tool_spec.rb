@@ -313,7 +313,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       create(:system_node_instance, account: account,
              config: { "storage_volume" => { "volume_id" => nfs_volume.id, "transport" => "nfs" } })
 
-      r = call("system_delete_volume", volume_id: nfs_volume.id)
+      r = call_direct("system_delete_volume", volume_id: nfs_volume.id)
 
       expect(r[:success]).to be false
       expect(r[:error]).to match(/attached/i)
@@ -321,7 +321,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     end
 
     it "allows deletion of an unreferenced network-FS volume" do
-      r = call("system_delete_volume", volume_id: nfs_volume.id)
+      r = call_direct("system_delete_volume", volume_id: nfs_volume.id)
 
       expect(r[:success]).to be true
       expect(System::ProviderVolume.exists?(nfs_volume.id)).to be false
@@ -332,7 +332,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       block_volume = create(:system_provider_volume, :attached, account: account,
                             node_instance: block_instance)
 
-      r = call("system_delete_volume", volume_id: block_volume.id)
+      r = call_direct("system_delete_volume", volume_id: block_volume.id)
 
       expect(r[:success]).to be false
       expect(r[:error]).to match(/attached/i)
@@ -451,7 +451,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
           .with(instance: instance, action: op, operation_id: "op-1", force: true)
           .and_return(::System::Runtime::Result.ok(data: { status: "ok" }))
 
-        r = call("system_#{op}_instance", instance_id: instance.id, operation_id: "op-1", force: true)
+        r = call_direct("system_#{op}_instance", instance_id: instance.id, operation_id: "op-1", force: true)
 
         expect(r[:success]).to be true
         expect(r[:data][:instance]).to be_present
@@ -463,7 +463,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       allow(::System::InstanceControlService).to receive(:execute)
         .and_return(::System::Runtime::Result.err(error: "Cannot stop instance in pending status"))
 
-      r = call("system_stop_instance", instance_id: instance.id)
+      r = call_direct("system_stop_instance", instance_id: instance.id)
 
       expect(r[:success]).to be false
       expect(r[:error]).to include("Cannot stop")
@@ -503,7 +503,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         runner.stub(:shutdown_domain!, { ok: false, error: leaked })
         allow(Rails.logger).to receive(:error)
 
-        r = call("system_stop_instance", instance_id: qemu_instance.id)
+        r = call_direct("system_stop_instance", instance_id: qemu_instance.id)
         payload = r.to_json
 
         # Proves the leak site was actually REACHED — a false pass (the call
@@ -764,7 +764,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       allow(::System::ProvisioningService).to receive(:terminate_instance)
         .and_return(double(success?: true, error: nil))
 
-      r = fleet_tool.execute(params: { action: "system_reap_agent_fleet", mission_id: mission.id })
+      r = fleet_tool.send(:call, { action: "system_reap_agent_fleet", mission_id: mission.id })
 
       expect(r[:success]).to be true
       expect(r[:data][:reap][:ok]).to be true
@@ -1966,7 +1966,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       credential = ::System::Storage::CredentialIssuer.new(assignment: smb_assignment).issue!
       before_ids = smb_tasks.pluck(:id)
 
-      r = call("system_destroy_instance", instance_id: target_instance.id)
+      r = call_direct("system_destroy_instance", instance_id: target_instance.id)
 
       expect(r[:success]).to be true
       new_tasks = smb_tasks.where.not(id: before_ids)
@@ -1980,7 +1980,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       ::System::Storage::CredentialIssuer.new(assignment: smb_assignment).issue!.update!(status: "revoked")
       before_count = smb_tasks.count
 
-      r = call("system_destroy_instance", instance_id: target_instance.id)
+      r = call_direct("system_destroy_instance", instance_id: target_instance.id)
 
       expect(r[:success]).to be true
       expect(smb_tasks.count).to eq(before_count)
@@ -2016,7 +2016,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         "seed-ext-dependent", [ SecureRandom.uuid, inst.id ]
       )
 
-      r = call("system_destroy_instance", instance_id: inst.id)
+      r = call_direct("system_destroy_instance", instance_id: inst.id)
 
       expect(r[:success]).to be(true), r.inspect
       expect(::System::NodeInstance.where(id: inst.id)).not_to exist
@@ -2033,7 +2033,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       # Logged too, so a mistyped registration shows up for an operator.
       allow(Rails.logger).to receive(:warn).and_call_original
 
-      r = call("system_destroy_instance", instance_id: inst.id)
+      r = call_direct("system_destroy_instance", instance_id: inst.id)
 
       expect(Rails.logger).to have_received(:warn).with(a_string_including("zz_ext_unmigrated_rows.node_instance_id"))
 
@@ -2055,7 +2055,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         %(INSERT INTO "order" (id, "user") VALUES ($1, $2)), "seed-reserved", [ SecureRandom.uuid, inst.id ]
       )
 
-      r = call("system_destroy_instance", instance_id: inst.id)
+      r = call_direct("system_destroy_instance", instance_id: inst.id)
 
       expect(r[:success]).to be(true), r.inspect
       expect(ActiveRecord::Base.connection.select_value(%(SELECT count(*) FROM "order")).to_i).to eq(0)
@@ -2070,7 +2070,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
                  described_class::DESTROY_INSTANCE_FKS + [ [ "zz_static_typo_rows", "node_instance_id" ] ])
       inst = create(:system_node_instance, account: account, name: "static-typo-instance")
 
-      expect { call("system_destroy_instance", instance_id: inst.id) }
+      expect { call_direct("system_destroy_instance", instance_id: inst.id) }
         .to raise_error(ActiveRecord::StatementInvalid, /zz_static_typo_rows/)
     end
   end
@@ -2093,7 +2093,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
             'foreign key constraint "fk_rails_def456" on table "system_slo_definitions"'
       allow_any_instance_of(System::NodeInstance).to receive(:destroy!).and_raise(ActiveRecord::InvalidForeignKey, raw)
 
-      r = call("system_destroy_instance", instance_id: inst.id)
+      r = call_direct("system_destroy_instance", instance_id: inst.id)
 
       expect(r[:success]).to be false
       expect(r[:error]).to eq(
@@ -2111,7 +2111,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       allow_any_instance_of(System::NodeInstance).to receive(:destroy!).and_raise(ActiveRecord::InvalidForeignKey, raw)
       expect(Rails.logger).to receive(:warn).with(a_string_including("fk_rails_uvw321"))
 
-      call("system_destroy_instance", instance_id: inst.id)
+      call_direct("system_destroy_instance", instance_id: inst.id)
     end
   end
 
@@ -3738,7 +3738,7 @@ end
           provider_region: provider_region,
           provider_instance_type: provider_instance_type
         )
-        r = call("system_delete_instance_pool", pool_id: empty_pool.id)
+        r = call_direct("system_delete_instance_pool", pool_id: empty_pool.id)
         expect(r[:success]).to be true
         expect(r[:data][:deleted]).to be true
         expect(::System::InstancePool.where(id: empty_pool.id)).to be_empty
@@ -3750,7 +3750,7 @@ end
                instance_pool_id: pool.id, pool_state: "ready",
                provider_region: provider_region,
                provider_instance_type: provider_instance_type)
-        r = call("system_delete_instance_pool", pool_id: pool.id)
+        r = call_direct("system_delete_instance_pool", pool_id: pool.id)
         expect(r[:success]).to be false
         expect(r[:error]).to include("drain first")
       end
@@ -3764,7 +3764,7 @@ end
           provider_region: create(:system_provider_region, account: other_account),
           provider_instance_type: create(:system_provider_instance_type, account: other_account)
         )
-        r = call("system_delete_instance_pool", pool_id: other_pool.id)
+        r = call_direct("system_delete_instance_pool", pool_id: other_pool.id)
         expect(r[:success]).to be false
       end
     end
@@ -4031,7 +4031,7 @@ end
       it "system_terminate_ci_worker revokes the worker" do
         provision_r = call("system_provision_ci_worker", name: "terminate-test-1")
         worker_id = provision_r[:data][:ci_worker][:id]
-        r = call("system_terminate_ci_worker", worker_id: worker_id)
+        r = call_direct("system_terminate_ci_worker", worker_id: worker_id)
         expect(r[:success]).to be true
         expect(r[:data][:revoked]).to be true
         expect(::Worker.find(worker_id).status).to eq("revoked")
@@ -4039,7 +4039,7 @@ end
 
       it "system_terminate_ci_worker refuses to revoke non-ci workers" do
         member_worker = ::Worker.create_worker!(name: "member-worker-2", account: account, roles: [ "member" ])
-        r = call("system_terminate_ci_worker", worker_id: member_worker.id)
+        r = call_direct("system_terminate_ci_worker", worker_id: member_worker.id)
         expect(r[:success]).to be false
         expect(r[:error]).to include("not a ci_worker")
       end

@@ -99,7 +99,7 @@ RSpec.describe Ai::Tools::SystemFleetTool, "APO-1a declarations are non-enforcin
         d[:gate_context].present? && d[:on_proceed].present?
     end
 
-    expect(gated).to contain_exactly("system_delete_node", "system_promote_module_version", "system_deploy_platform")
+    expect(gated).to contain_exactly("system_delete_node", "system_destroy_instance", "system_promote_module_version", "system_deploy_platform")
   end
 
   it "keeps system_terminate_instance, gate-routed since before APO-1a, gate-routed" do

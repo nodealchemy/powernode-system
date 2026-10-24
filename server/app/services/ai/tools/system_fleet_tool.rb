@@ -839,7 +839,11 @@ module Ai
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :deferred_tool_call_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_delete_instance_pool", mutating: true, destructive: true
+      declare_action "system_delete_instance_pool", mutating: true, destructive: true,
+                     action_category: "system.instance_pool_delete",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_delete_module", mutating: true, destructive: true,
                      action_category: "system.module.delete",
                      executor_class: "Ai::Executors::DeferredToolCall",
@@ -860,7 +864,11 @@ module Ai
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :deferred_tool_call_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_delete_volume", mutating: true, family: "storage", destructive: true
+      declare_action "system_delete_volume", mutating: true, family: "storage", destructive: true,
+                     action_category: "system.volume.delete",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_deploy_inference_server", mutating: true
       # HIER-P2B-ENG — approval-gated on core's release.deploy_platform (the
       # Release Manager's require_approval row; never unlocked by trust — a
@@ -877,7 +885,11 @@ module Ai
                      gate_context: :deploy_platform_gate_context,
                      on_proceed: :deferred_tool_call_result,
                      ungated_when: :deploy_platform_wizard_read?
-      declare_action "system_destroy_instance", mutating: true, destructive: true
+      declare_action "system_destroy_instance", mutating: true, destructive: true,
+                     action_category: "system.instance_destroy",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_detach_volume", mutating: true, family: "storage"
       # APO-5 / DR-2 (IMP-4b4bed6967ed). Snapshot create / list / restore keep
       # the APO-1a declaration shape (`mutating:` only, so BaseTool
@@ -1068,7 +1080,11 @@ module Ai
                      on_proceed: :deferred_tool_call_result
       declare_action "system_provision_ci_worker", mutating: true, family: "devops"
       declare_action "system_provision_instance", mutating: true
-      declare_action "system_reap_agent_fleet", mutating: true, destructive: true
+      declare_action "system_reap_agent_fleet", mutating: true, destructive: true,
+                     action_category: "system.agent_fleet.reap",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       # IMP-4e49eb79c5e0 — THE DR LANE'S SECOND DOOR (the destructive half).
       #
       # APO-4 landed System::Ai::Skills::ReapInstanceExecutor behind the
@@ -1119,7 +1135,11 @@ module Ai
                      executor_class: "System::Ai::Skills::ReapInstanceExecutor",
                      gate_context: :reap_instance_gate_context,
                      on_proceed: :dr_lane_gate_result
-      declare_action "system_reboot_instance", mutating: true, destructive: true, returns: "action and the instance, re-read"
+      declare_action "system_reboot_instance", mutating: true, destructive: true, returns: "action and the instance, re-read",
+                     action_category: "system.instance_reboot_request",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_readvance_module_build_batch", mutating: true
       declare_action "system_recent_signals", mutating: false, returns: "events, count and the live channel name"
       declare_action "system_recycle_pool", mutating: true, destructive: true
@@ -1320,8 +1340,16 @@ module Ai
                      gate_context: :set_disk_image_retention_gate_context,
                      on_proceed: :deferred_tool_call_result
       declare_action "system_start_instance", mutating: true, returns: "action and the instance, re-read"
-      declare_action "system_stop_instance", mutating: true, destructive: true
-      declare_action "system_terminate_ci_worker", mutating: true, family: "devops", destructive: true
+      declare_action "system_stop_instance", mutating: true, destructive: true,
+                     action_category: "system.instance_stop",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
+      declare_action "system_terminate_ci_worker", mutating: true, family: "devops", destructive: true,
+                     action_category: "system.ci_worker.terminate",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_test_nfs_export", mutating: false, family: "storage"
       declare_action "system_unassign_module_from_template", mutating: true
       # IMP-0467eee9fc57 — see system_cordon_instance above.
