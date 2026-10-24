@@ -187,7 +187,7 @@ module System
 
       # `force: true` deallocates (releases compute, no charge);
       # otherwise just powers off (still allocated, still charged).
-      def stop_instance(instance_id, force: false)
+      def stop_instance(instance_id, force: false, expected_name: nil)
         rg = resource_group
         endpoint = force ? "deallocate" : "powerOff"
         response = arm_post(
@@ -201,7 +201,7 @@ module System
       # Renamed from restart_instance to match BaseProvider#reboot_instance.
       # The underlying Azure REST endpoint is still /restart — that's the
       # ARM verb name, distinct from our platform vocabulary.
-      def reboot_instance(instance_id)
+      def reboot_instance(instance_id, expected_name: nil)
         rg = resource_group
         response = arm_post(
           "/subscriptions/#{subscription_id}/resourceGroups/#{rg}/providers/Microsoft.Compute/virtualMachines/#{instance_id}/restart",

@@ -174,7 +174,7 @@ module System
         build_instance_response(cloud_id: instance_id, status: "starting")
       end
 
-      def stop_instance(instance_id, force: false)
+      def stop_instance(instance_id, force: false, expected_name: nil)
         runner = self.class.runner
         result = force ? runner.destroy_domain!(name: instance_id) : runner.shutdown_domain!(name: instance_id)
         if !result[:ok]
@@ -184,7 +184,7 @@ module System
         build_instance_response(cloud_id: instance_id, status: "stopping")
       end
 
-      def reboot_instance(instance_id)
+      def reboot_instance(instance_id, expected_name: nil)
         runner = self.class.runner
         result = runner.reboot_domain!(name: instance_id)
         if !result[:ok]

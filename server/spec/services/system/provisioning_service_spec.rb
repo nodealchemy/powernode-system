@@ -183,7 +183,10 @@ RSpec.describe System::ProvisioningService do
         .to receive(:update!).and_raise(StandardError, "db write failed")
 
       # Compensating action: the live cloud instance must be terminated by id.
-      expect(adapter).to receive(:terminate_instance).with("i-orphan-1").and_return(success: true)
+      # ...verified by the name the guest was created with: a freed vmid is
+      # reused at once, so an unverified rollback could destroy another record's guest.
+      expect(adapter).to receive(:terminate_instance)
+        .with("i-orphan-1", expected_name: a_string_matching(/\A.+\z/)).and_return(success: true)
 
       result = provision
 
@@ -1510,6 +1513,104 @@ RSpec.describe System::ProvisioningService do
         expect(result.success?).to be(true)
         expect(result.data[:instance].reload.status).to eq("running")
       end
+    end
+  end
+
+  # The vmid-reuse race: allocate_next_vmid! hands a destroyed vmid straight to
+  # the next guest, so a STALE record's teardown (or a failed create's rollback)
+  # addressed to that vmid must be refused when the VM there carries another
+  # guest's name. These drive the REAL ProxmoxProvider over a stubbed client.
+  describe "vmid-reuse race against a real Proxmox provider" do
+    let(:proxmox_client) { instance_double(System::Providers::Proxmox::Client) }
+    let(:proxmox) do
+      conn = instance_double("System::ProviderConnection",
+                             access_key: "root@pam!powernode", secret_key: "00000000-0000-0000-0000-000000000000",
+                             endpoint_url: "https://pve.example:8006", config: { "verify_ssl" => "false" },
+                             account_id: nil, provider_id: nil,
+                             provider: instance_double("System::Provider", config: {}))
+      System::Providers::ProxmoxProvider.new(conn, region: instance_double("System::ProviderRegion", region_code: "pve1"))
+    end
+    let(:config_url) { "/api2/json/nodes/pve1/qemu/9000/config" }
+    let(:pool) do
+      System::InstancePool.create!(
+        account: account, node_template: create(:system_node_template, account: account), name: "race-pool",
+        target_size: 1, min_size: 1, max_size: 2, lifecycle_class: "ephemeral", status: "active",
+        provider_region: region, provider_instance_type: instance_type
+      )
+    end
+
+    before do
+      allow(System::Providers::Proxmox::Client).to receive(:new).and_return(proxmox_client)
+      allow(System::Providers::Registry).to receive(:for_instance).and_return(proxmox)
+      # B's fresh VM now holds vmid 9000.
+      allow(proxmox_client).to receive(:get).with(config_url).and_return("name" => "pool-member-B")
+    end
+
+    def expect_nothing_destroyed
+      expect(proxmox_client).not_to receive(:post)
+      expect(proxmox_client).not_to receive(:put)
+      expect(proxmox_client).not_to receive(:delete)
+    end
+
+    it "does not destroy record B's VM when record A's stale pool teardown targets the same vmid" do
+      stale = create(:system_node_instance, node: node, name: "pool-member-A", status: "running",
+                     instance_pool_id: pool.id, pool_state: "errored",
+                     config: { "cloud_instance_id" => "pve1/qemu/9000", "provider_guest_name" => "pool-member-A" })
+      expect_nothing_destroyed
+
+      result = described_class.terminate_instance(instance: stale)
+
+      expect(result.success?).to be(false)
+      expect(stale.reload.status).not_to eq("terminated")
+    end
+
+    it "uses the row's own name for a pool member that predates provider_guest_name, so it is still refused" do
+      stale = create(:system_node_instance, node: node, name: "pool-member-A", status: "running",
+                     instance_pool_id: pool.id, pool_state: "errored",
+                     config: { "cloud_instance_id" => "pve1/qemu/9000" })
+      expect(stale.provider_guest_name).to be_blank
+      expect_nothing_destroyed
+
+      expect(described_class.terminate_instance(instance: stale).success?).to be(false)
+    end
+
+    it "refuses to terminate a pool member that has no guest name at all, sending nothing" do
+      stale = create(:system_node_instance, node: node, status: "running", instance_pool_id: pool.id,
+                     pool_state: "errored", config: { "cloud_instance_id" => "pve1/qemu/9000" })
+      allow_any_instance_of(System::NodeInstance).to receive(:expected_guest_name).and_return(nil)
+      expect_nothing_destroyed
+
+      result = described_class.terminate_instance(instance: stale)
+
+      expect(result.success?).to be(false)
+      expect(result.error).to match(/no recorded guest name/i)
+    end
+
+    it "does not destroy another record's VM when a failed create rolls back its orphaned id" do
+      allow(proxmox).to receive(:create_instance)
+        .and_return(success: true, cloud_instance_id: "pve1/qemu/9000", status: "running")
+      allow_any_instance_of(System::NodeInstance).to receive(:update!).and_raise(StandardError, "db write failed")
+      allow(proxmox).to receive(:provider_type).and_return("proxmox")
+      allow(proxmox).to receive(:supports?).and_return(true)
+      allow(System::Providers::Registry).to receive(:for_node).and_return(proxmox)
+      expect_nothing_destroyed
+
+      provision
+
+      # Non-vacuous: the rollback really tried, and was stopped by the identity read.
+      expect(proxmox_client).to have_received(:get).with(config_url)
+    end
+
+    it "still terminates a pool member whose VM carries its own name" do
+      mine = create(:system_node_instance, node: node, name: "pool-member-B", status: "running",
+                    instance_pool_id: pool.id, pool_state: "errored",
+                    config: { "cloud_instance_id" => "pve1/qemu/9000", "provider_guest_name" => "pool-member-B" })
+      allow(proxmox_client).to receive(:post).and_return("UPID:x")
+      allow(proxmox_client).to receive(:wait_task)
+      allow(proxmox_client).to receive(:put)
+      expect(proxmox_client).to receive(:delete).with("/api2/json/nodes/pve1/qemu/9000", anything).and_return("UPID:d")
+
+      expect(described_class.terminate_instance(instance: mine).success?).to be(true)
     end
   end
 end

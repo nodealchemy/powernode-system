@@ -562,14 +562,24 @@ module System
         storage
       end
 
-      def stop_instance(instance_id, force: false)
+      # expected_name: the guest name this instance was created with. When
+      # given, the guest at node/kind/vmid must carry it before anything is sent
+      # (a vmid is reused at once after a destroy, so a stale row would otherwise
+      # stop whichever guest now holds the number). Omitted: legacy unguarded.
+      def stop_instance(instance_id, force: false, expected_name: nil)
         log_operation("stop_instance", instance_id: instance_id, force: force)
         node, kind, vmid = parse_instance_id!(instance_id)
         c = require_client!
+        if expected_name.to_s.strip.present? &&
+           (refusal = guest_identity_refusal(c, node: node, kind: kind, vmid: vmid, expected_name: expected_name))
+          raise ResourceNotFoundError, "#{node}/#{kind}/#{vmid} is not present" if refusal == :absent_here
+
+          return refusal
+        end
         action = force ? "stop" : "shutdown"
         upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/#{action}")
         c.wait_task(node: node, upid: upid)
-        sync_status(instance_id)
+        sync_status(instance_id, expected_name: expected_name)
       rescue Proxmox::Client::NotFoundError => e
         raise ResourceNotFoundError, e.message
       rescue Proxmox::Client::Error => e
@@ -577,10 +587,17 @@ module System
         build_error_response(::System::CallerFacingMessages::GENERIC)
       end
 
-      def reboot_instance(instance_id)
+      def reboot_instance(instance_id, expected_name: nil)
         log_operation("reboot_instance", instance_id: instance_id)
         node, kind, vmid = parse_instance_id!(instance_id)
         c = require_client!
+
+        # Same vmid-reuse guard as #stop_instance: a graceful reboot of a vmid a
+        # different guest now holds is as disruptive as a stop.
+        if expected_name.to_s.strip.present? &&
+           (refusal = guest_identity_refusal(c, node: node, kind: kind, vmid: vmid, expected_name: expected_name))
+          return refusal == :absent_here ? build_error_response(::System::CallerFacingMessages::GENERIC) : refusal
+        end
 
         # Graceful first: PVE's `reboot` shuts the guest down (ACPI /
         # qemu-guest-agent) then starts it — cheap and RAM-warm when the guest
@@ -596,7 +613,7 @@ module System
         begin
           upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/reboot", { "timeout" => timeout })
           c.wait_task(node: node, upid: upid, timeout: timeout + REBOOT_TASK_WAIT_GRACE_SEC)
-          return sync_status(instance_id)
+          return sync_status(instance_id, expected_name: expected_name)
         rescue Proxmox::Client::TaskFailedError, Proxmox::Client::TaskTimeoutError => e
           Rails.logger.warn(
             "[ProxmoxProvider] graceful reboot of #{instance_id} did not complete (#{e.message}); " \
@@ -604,8 +621,10 @@ module System
           )
         end
 
-        force_stop_then_start!(c, node: node, kind: kind, vmid: vmid)
-        sync_status(instance_id)
+        refusal = force_stop_then_start!(c, node: node, kind: kind, vmid: vmid, expected_name: expected_name)
+        return refusal if refusal
+
+        sync_status(instance_id, expected_name: expected_name)
       rescue Proxmox::Client::Error => e
         logger.error("[#{self.class.name}] reboot_instance failed: #{e.class}: #{e.message}")
         build_error_response(::System::CallerFacingMessages::GENERIC)
@@ -620,12 +639,20 @@ module System
       # (heartbeat set, drops out of the reaper's eligibility query) or hits
       # its attempt cap. instance_id is the same composite "<node>/<kind>/
       # <vmid>" locator every other instance method here takes.
-      def power_cycle_instance(instance_id)
+      #
+      # expected_name is REQUIRED: a power cycle is a stop + start of whatever
+      # holds the vmid, and a freed vmid is reused at once, so a blank name is
+      # refused (an error response, nothing sent) rather than acting blind. A
+      # guest that carries a different name is refused with GUEST_NAME_MISMATCH;
+      # a VM that no longer exists raises ResourceNotFoundError.
+      def power_cycle_instance(instance_id, expected_name: nil)
         log_operation("power_cycle_instance", instance_id: instance_id)
         node, kind, vmid = parse_instance_id!(instance_id)
         c = require_client!
-        reload_cloudinit_seed!(c, node: node, kind: kind, vmid: vmid)
-        sync_status(instance_id)
+        refusal = reload_cloudinit_seed!(c, node: node, kind: kind, vmid: vmid, expected_name: expected_name)
+        return refusal if refusal
+
+        sync_status(instance_id, expected_name: expected_name)
       rescue Proxmox::Client::NotFoundError => e
         raise ResourceNotFoundError, e.message
       rescue Proxmox::Client::Error => e
@@ -655,16 +682,52 @@ module System
       # hits the attempt cap. Best-effort: a cycle that fails here just gets
       # retried next tick (or, past the cap, falls back to the normal
       # warming_timeout recycle), so we log rather than raise.
-      def reload_cloudinit_seed!(c, node:, kind:, vmid:)
+      #
+      # Returns nil when the cycle ran (or failed best-effort), or the refusal
+      # response when the guest at this vmid is not `expected_name` (blank
+      # expected_name is refused too). Identity is checked before the stop AND
+      # again before the start, because the stop can take up to 60s. Raises
+      # ResourceNotFoundError when the VM does not exist.
+      def reload_cloudinit_seed!(c, node:, kind:, vmid:, expected_name:)
+        if (refusal = required_identity_refusal(c, node: node, kind: kind, vmid: vmid,
+                                                   expected_name: expected_name, operation: "power cycle"))
+          return refusal
+        end
+
         stop_upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/stop")
         c.wait_task(node: node, upid: stop_upid, timeout: 60)
+
+        if (refusal = required_identity_refusal(c, node: node, kind: kind, vmid: vmid,
+                                                   expected_name: expected_name, operation: "power cycle"))
+          return refusal
+        end
+
         start_upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/start")
         c.wait_task(node: node, upid: start_upid, timeout: 60)
+        nil
       rescue Proxmox::Client::Error => e
         Rails.logger.warn(
           "[ProxmoxProvider] cloud-init seed reload (stop+start) failed for " \
           "#{node}/#{kind}/#{vmid}: #{e.message}"
         )
+        nil
+      end
+
+      # guest_identity_refusal for callers that must NOT run without an identity:
+      # a blank expected_name is itself a refusal. A config missing on the node
+      # raises ResourceNotFoundError (there is no guest here to act on).
+      def required_identity_refusal(c, node:, kind:, vmid:, expected_name:, operation:)
+        if expected_name.to_s.strip.empty?
+          message = "PVE #{operation} refused: no expected guest name for #{node}/#{kind}/#{vmid}; " \
+                    "a vmid is reused after a destroy, so it is not acted on without an identity"
+          Rails.logger.warn("[ProxmoxProvider] #{message}")
+          return build_error_response(message)
+        end
+
+        refusal = guest_identity_refusal(c, node: node, kind: kind, vmid: vmid, expected_name: expected_name)
+        raise ResourceNotFoundError, "#{node}/#{kind}/#{vmid} is not present" if refusal == :absent_here
+
+        refusal
       end
 
       def terminate_instance(instance_id, expected_name: nil)
@@ -811,6 +874,41 @@ module System
         else
           build_instance_response(cloud_id: instance_id, status: STATUSES[:terminated])
         end
+      end
+
+      # Cheap, cluster-aware existence probe for a guest known by id + name (no
+      # guest-agent call, unlike #get_instance). Returns
+      #   :present  - the guest is there (or found on ANOTHER node: live
+      #               migration / HA relocation moves a guest without changing its
+      #               vmid, so "not on its node" alone proves nothing)
+      #   :recycled - the vmid now belongs to a guest with a different name
+      #   :absent   - gone from the WHOLE cluster
+      # Raises ProviderError when the answer cannot be established (transport or
+      # API failure): callers must treat that as transient, never as gone.
+      def probe_guest(instance_id, expected_name: nil)
+        node, kind, vmid = parse_instance_id!(instance_id)
+        c = require_client!
+        begin
+          current = c.get("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/current") || {}
+          found = current["name"].to_s.strip
+          expected = expected_name.to_s.strip
+          return :recycled if expected.present? && found.present? && found != expected
+
+          :present
+        rescue Proxmox::Client::NotFoundError
+          resources = c.get("/api2/json/cluster/resources", { "type" => "vm" })
+          raise ProviderError, "cluster resource listing unavailable" unless resources.is_a?(Array)
+
+          hit = resources.find do |r|
+            r["vmid"].to_s == vmid.to_s && r["type"].to_s == kind.to_s && r["node"].to_s != node.to_s
+          end
+          return :absent unless hit
+
+          recycled_vmid?(hit, expected_name) ? :recycled : :present
+        end
+      rescue Proxmox::Client::Error => e
+        logger.error("[#{self.class.name}] probe_guest failed: #{e.class}: #{e.message}")
+        raise ProviderError, ::System::CallerFacingMessages::GENERIC
       end
 
       def get_instance(instance_id, expected_name: nil)
@@ -1082,7 +1180,16 @@ module System
       # reboot, since the start below is what actually brings it back. The start
       # (and its wait) is NOT swallowed: a genuine failure to power the VM back
       # on propagates to reboot_instance's rescue and surfaces as an error.
-      def force_stop_then_start!(c, node:, kind:, vmid:)
+      #
+      # Returns nil once started, or the refusal response when expected_name is
+      # given and the guest at this vmid is not it (checked before the stop and
+      # again before the start). Without expected_name it is unguarded, as before.
+      def force_stop_then_start!(c, node:, kind:, vmid:, expected_name: nil)
+        guarded = expected_name.to_s.strip.present?
+        if guarded && (refusal = guest_identity_refusal(c, node: node, kind: kind, vmid: vmid, expected_name: expected_name))
+          return refusal == :absent_here ? build_error_response(::System::CallerFacingMessages::GENERIC) : refusal
+        end
+
         begin
           stop_upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/stop")
           c.wait_task(node: node, upid: stop_upid, timeout: reboot_force_cycle_timeout)
@@ -1093,8 +1200,13 @@ module System
           )
         end
 
+        if guarded && (refusal = guest_identity_refusal(c, node: node, kind: kind, vmid: vmid, expected_name: expected_name))
+          return refusal == :absent_here ? build_error_response(::System::CallerFacingMessages::GENERIC) : refusal
+        end
+
         start_upid = c.post("/api2/json/nodes/#{node}/#{kind}/#{vmid}/status/start")
         c.wait_task(node: node, upid: start_upid, timeout: reboot_force_cycle_timeout)
+        nil
       end
 
       def graceful_reboot_timeout

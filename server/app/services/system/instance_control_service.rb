@@ -300,21 +300,30 @@ module System
         result[:status] = "running" if result[:success]
         result
       when :stop
-        result = provider_adapter.stop_instance(instance.cloud_instance_id, force: force)
+        result = provider_adapter.stop_instance(instance.cloud_instance_id, force: force,
+                                                **guest_identity_kwargs(instance))
         result[:status] = "stopped" if result[:success]
         result
       when :reboot
-        result = provider_adapter.reboot_instance(instance.cloud_instance_id)
+        result = provider_adapter.reboot_instance(instance.cloud_instance_id, **guest_identity_kwargs(instance))
         result[:status] = "running" if result[:success]
         result
       when :terminate
         result = provider_adapter.terminate_instance(instance.cloud_instance_id,
-                                                     expected_name: instance.provider_guest_name)
+                                                     expected_name: instance.expected_guest_name)
         result[:status] = "terminated" if result[:success]
         result
       else
         { success: false, error: "Unknown action: #{action}" }
       end
+    end
+
+    # The guest name the provider must verify before stopping or rebooting by
+    # vmid; omitted entirely when unknown so the legacy unguarded call (and every
+    # provider that ignores it) is unchanged.
+    def guest_identity_kwargs(instance)
+      name = instance.expected_guest_name
+      name.present? ? { expected_name: name } : {}
     end
 
     def execute_physical_action(instance, action)

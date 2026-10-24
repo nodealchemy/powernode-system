@@ -668,6 +668,11 @@ module System
       # further down) behind every cycle. See reload_pending_seeds! for the
       # eligibility rules + why this exists (deferred cloud-init seed reload,
       # replacing an ineffective immediate in-create power cycle).
+      #
+      # Before it, fail any warming member whose provider VM is explicitly gone,
+      # so a vanished VM costs one tick instead of the 30 min warming timeout
+      # (and is never power-cycled).
+      fail_vanished_warming_members!(pool: pool)
       seed_reload_count = reload_pending_seeds!(pool: pool)
 
       now = Time.current
@@ -1052,29 +1057,106 @@ module System
         provider = resolve_seed_reload_provider(member)
         next unless provider&.respond_to?(:power_cycle_instance)
 
+        # A vmid is reused the moment it is freed, so the power cycle only runs
+        # against a guest proven to be this member's. No name to prove it with:
+        # refuse (counted against the cap) rather than cycle whatever holds it.
+        expected_name = member.expected_guest_name
+        if expected_name.blank?
+          Rails.logger.warn(
+            "[InstancePoolService] reload_pending_seeds!: refusing to power-cycle instance=#{member.id} " \
+            "pool='#{pool.name}' — no guest name to verify the VM against"
+          )
+          record_seed_reload_attempt!(member, now: now, attempts: attempts)
+          next
+        end
+
         begin
-          provider.power_cycle_instance(member.config["cloud_instance_id"])
+          result = provider.power_cycle_instance(member.config["cloud_instance_id"], expected_name: expected_name)
+        rescue ::System::Providers::BaseProvider::ResourceNotFoundError => e
+          # Not found on its NODE only: confirm against the whole cluster first.
+          verdict = cluster_verdict_for(provider, member, expected_name)
+          reason = vanished_reason_for(verdict)
+          if reason
+            fail_warming_member_vm_gone!(member, pool: pool, reason: reason, attempts: attempts, now: now,
+                                                 detail: e.message)
+          else
+            Rails.logger.warn(
+              "[InstancePoolService] reload_pending_seeds!: instance=#{member.id} pool='#{pool.name}' not found " \
+              "on its node but not confirmed gone cluster-wide (#{verdict.inspect}); leaving it warming"
+            )
+            record_seed_reload_attempt!(member, now: now, attempts: attempts)
+          end
+          next
         rescue StandardError => e
           Rails.logger.warn(
             "[InstancePoolService] reload_pending_seeds!: power_cycle_instance failed " \
             "(instance=#{member.id} pool='#{pool.name}'): #{e.class}: #{e.message}"
           )
+          record_seed_reload_attempt!(member, now: now, attempts: attempts)
           next
         end
 
-        # Two keys only — see System::ConfigDocument. `member` came out of the
-        # query at the top of this loop and has since survived a provider
-        # power-cycle round trip, so its document is stale by construction.
-        member.merge_config!(
-          "last_seed_reload_at" => now.iso8601,
-          "seed_reload_count" => attempts + 1
-        )
+        # The provider reports a refusal or failure as a Result hash, not a raise.
+        if result.is_a?(Hash) && result[:success] == false
+          if result[:error_code] == ::System::Providers::BaseProvider::GUEST_NAME_MISMATCH
+            fail_warming_member_vm_gone!(member, pool: pool, reason: VM_RECYCLED_REASON, attempts: attempts,
+                                                 now: now, detail: result[:error])
+          else
+            Rails.logger.warn(
+              "[InstancePoolService] reload_pending_seeds!: power_cycle_instance did not succeed " \
+              "(instance=#{member.id} pool='#{pool.name}'): #{result[:error]}"
+            )
+            record_seed_reload_attempt!(member, now: now, attempts: attempts)
+          end
+          next
+        end
+
+        record_seed_reload_attempt!(member, now: now, attempts: attempts)
         cycled += 1
       end
 
       Rails.logger.info("[InstancePoolService] reload_pending_seeds!: cycled=#{cycled} in '#{pool.name}'") if cycled.positive?
 
       cycled
+    end
+
+    VM_GONE_REASON = "provider VM no longer exists"
+    VM_RECYCLED_REASON = "provider vmid now belongs to a different guest"
+
+    # A warming member whose provider VM is EXPLICITLY gone can never enroll, so
+    # it is errored now rather than left to the warming timeout (the errored
+    # cleanup then confirms the absence through the identity-checked terminate).
+    # Only the provider's cluster-wide verdict counts (probe_guest: :absent from the
+    # WHOLE cluster, or :recycled by another guest): a guest merely off its node
+    # (live migration / HA relocation), a transport error or any other answer
+    # leaves the member warming. Members that have
+    # heartbeated are alive by the agent's own word and are not probed, and a
+    # member with no guest name to verify is skipped (the probe cannot tell the
+    # member's VM from whatever else holds the id). Proxmox-style providers only
+    # (the ones that expose power_cycle_instance), the same gate the seed reload
+    # uses. Returns the number of members errored.
+    def fail_vanished_warming_members!(pool:)
+      failed = 0
+      pool.warming_members
+          .where(last_heartbeat_at: nil)
+          .where("config->>'cloud_instance_id' IS NOT NULL")
+          .find_each do |member|
+        provider = resolve_seed_reload_provider(member)
+        next unless provider&.respond_to?(:power_cycle_instance) && provider.respond_to?(:probe_guest)
+
+        expected_name = member.expected_guest_name
+        next if expected_name.blank?
+
+        verdict = cluster_verdict_for(provider, member, expected_name)
+        reason = vanished_reason_for(verdict)
+        detail = verdict.to_s
+        next unless reason
+
+        failed += 1 if fail_warming_member_vm_gone!(member, pool: pool, reason: reason,
+                                                            attempts: member.config["seed_reload_count"].to_i,
+                                                            now: Time.current, detail: detail)
+      end
+      failed
     end
 
     # The pool statuses whose members the reaper sweeps: the worker's
@@ -1837,6 +1919,55 @@ module System
         "[InstancePoolService] reload_pending_seeds!: no provider for instance=#{member.id}: #{e.class}: #{e.message}"
       )
       nil
+    end
+
+    # The provider's cluster-wide answer for a member's guest: :present,
+    # :recycled, :absent, or :unknown when it could not be established (a
+    # transport/API error is transient and must never read as gone).
+    def cluster_verdict_for(provider, member, expected_name)
+      return :unknown unless provider.respond_to?(:probe_guest)
+
+      provider.probe_guest(member.config["cloud_instance_id"], expected_name: expected_name)
+    rescue StandardError => e
+      Rails.logger.warn(
+        "[InstancePoolService] could not confirm provider state (instance=#{member.id}): #{e.class}: #{e.message}"
+      )
+      :unknown
+    end
+
+    def vanished_reason_for(verdict)
+      case verdict
+      when :absent then VM_GONE_REASON
+      when :recycled then VM_RECYCLED_REASON
+      end
+    end
+
+    # Two keys only — see System::ConfigDocument. `member` came out of a query
+    # earlier in the loop and has since survived a provider round trip, so its
+    # document is stale by construction.
+    def record_seed_reload_attempt!(member, now:, attempts:)
+      member.merge_config!(
+        "last_seed_reload_at" => now.iso8601,
+        "seed_reload_count" => attempts + 1
+      )
+    end
+
+    # Terminal: the member's VM does not exist (or is another guest's). Counts the
+    # attempt, records why, and errors the member so it leaves warming_members —
+    # which is what ends the per-tick retry. Teardown of whatever is left is the
+    # errored-member cleanup's job, through the identity-checked terminate.
+    def fail_warming_member_vm_gone!(member, pool:, reason:, attempts:, now:, detail: nil)
+      member.merge_config!(
+        "last_seed_reload_at" => now.iso8601,
+        "seed_reload_count" => attempts + 1,
+        "seed_reload_error" => reason
+      )
+      errored = member.mark_pool_errored!
+      Rails.logger.warn(
+        "[InstancePoolService] warming member instance=#{member.id} pool='#{pool.name}' errored: " \
+        "#{reason} (#{detail.to_s.first(200)})"
+      )
+      errored
     end
 
     attr_reader :account

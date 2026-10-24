@@ -293,16 +293,20 @@ module System
       #
       # @param instance_id [String] Cloud instance ID
       # @param force [Boolean] Force stop without graceful shutdown
+      # @param expected_name [String, nil] The guest name this instance was created
+      #   with; same contract as #terminate_instance's. Only Proxmox acts on it
+      #   (a freed vmid is reused at once); every other provider accepts and ignores it.
       # @return [Hash] Result with :success, :status
-      def stop_instance(instance_id, force: false)
+      def stop_instance(instance_id, force: false, expected_name: nil)
         raise NotImplementedError, "#{self.class} must implement #stop_instance"
       end
 
       # Reboot an instance
       #
       # @param instance_id [String] Cloud instance ID
+      # @param expected_name [String, nil] See #stop_instance.
       # @return [Hash] Result with :success, :status
-      def reboot_instance(instance_id)
+      def reboot_instance(instance_id, expected_name: nil)
         raise NotImplementedError, "#{self.class} must implement #reboot_instance"
       end
 

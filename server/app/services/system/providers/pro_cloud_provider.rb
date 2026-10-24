@@ -148,7 +148,7 @@ module System
         handle_api_error(e)
       end
 
-      def stop_instance(instance_id, force: false)
+      def stop_instance(instance_id, force: false, expected_name: nil)
         log_operation("stop_instance", instance_id: instance_id, force: force)
         api_client.stop_instance(instance_id)
         build_instance_response(cloud_id: instance_id, status: "stopping")
@@ -156,7 +156,7 @@ module System
         handle_api_error(e)
       end
 
-      def reboot_instance(instance_id)
+      def reboot_instance(instance_id, expected_name: nil)
         log_operation("reboot_instance", instance_id: instance_id)
         # Vultr models reboot as halt + start; honor that explicitly so
         # callers see the intermediate state if they poll.

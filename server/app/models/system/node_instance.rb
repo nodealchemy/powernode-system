@@ -561,6 +561,17 @@ module System
       instance_pool_id.present?
     end
 
+    # The guest name every vmid-keyed provider call must verify before it acts.
+    # provider_guest_name is the stamped value; a pool member from before it was
+    # captured falls back to its own row name, which is exactly what
+    # ProvisioningService passed the provider as the guest name at create (the
+    # same derivation InstancePoolService#provider_guest_confirmed_gone? records).
+    # Non-pool rows keep the stamped value only (nil = the provider's legacy,
+    # unguarded behaviour), since their row names may have been edited by hand.
+    def expected_guest_name
+      provider_guest_name.presence || (in_pool? ? name.presence : nil)
+    end
+
     # True when an operator has placed a cordon on this instance
     # (system_cordon_instance). See the .cordoned / .not_cordoned scopes.
     def cordoned?

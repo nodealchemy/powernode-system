@@ -441,4 +441,34 @@ RSpec.describe System::InstanceControlService do
       expect(instance.reload.status).to eq('starting') # best-effort: strand beats a false revert
     end
   end
+
+  # The vmid-reuse race: stop and reboot address node/kind/vmid, and a freed vmid
+  # is reused at once, so the guest name must travel with them. Unknown name
+  # (a non-pool row from before it was stamped) keeps the legacy call shape.
+  describe '#execute — stop and reboot carry the guest name for the provider to verify' do
+    let(:adapter) { instance_double('System::Providers::ProxmoxProvider', provider_type: 'proxmox') }
+
+    before { allow(System::Providers::Registry).to receive(:for_instance).and_return(adapter) }
+
+    it 'passes the stamped provider_guest_name on stop and reboot' do
+      instance = create(:system_node_instance, node: node, status: 'running',
+                        config: { 'cloud_instance_id' => 'pve1/qemu/9000', 'provider_guest_name' => 'guest-A' })
+      expect(adapter).to receive(:stop_instance).with('pve1/qemu/9000', force: false, expected_name: 'guest-A')
+                                                .and_return(success: true)
+      expect(adapter).to receive(:reboot_instance).with('pve1/qemu/9000', expected_name: 'guest-A')
+                                                  .and_return(success: true)
+
+      described_class.execute(instance: instance, action: :stop)
+      instance.update_columns(status: 'running')
+      described_class.execute(instance: instance, action: :reboot)
+    end
+
+    it 'keeps the legacy call shape when no guest name is known (non-pool row without a stamp)' do
+      instance = create(:system_node_instance, node: node, status: 'running',
+                        config: { 'cloud_instance_id' => 'pve1/qemu/9000' })
+      expect(adapter).to receive(:stop_instance).with('pve1/qemu/9000', force: false).and_return(success: true)
+
+      described_class.execute(instance: instance, action: :stop)
+    end
+  end
 end

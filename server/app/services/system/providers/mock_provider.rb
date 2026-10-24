@@ -88,7 +88,7 @@ module System
         )
       end
 
-      def stop_instance(instance_id, force: false)
+      def stop_instance(instance_id, force: false, expected_name: nil)
         log_operation("stop_instance", instance_id: instance_id, force: force)
 
         instance = @@instances[instance_id]
@@ -117,7 +117,7 @@ module System
         )
       end
 
-      def reboot_instance(instance_id)
+      def reboot_instance(instance_id, expected_name: nil)
         log_operation("reboot_instance", instance_id: instance_id)
 
         instance = @@instances[instance_id]

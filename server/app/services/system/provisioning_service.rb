@@ -330,7 +330,8 @@ module System
       # exception must never leave it orphaned in :pending. Transition it to
       # the terminal :error state so it's visible as failed (and reapable).
       mark_instance_errored(instance)
-      terminate_orphaned_cloud_instance(provider_adapter, created_cloud_instance_id)
+      terminate_orphaned_cloud_instance(provider_adapter, created_cloud_instance_id,
+                                        expected_name: provider_params&.dig(:name))
       # IMP-88ad4adbf97d (review round): static class-based phrase, same as
       # InstanceControlService/VolumeManagementService — never e.message.
       safe_error = ::System::CallerFacingMessages.for_provider_error(e)
@@ -344,7 +345,8 @@ module System
     rescue StandardError => e
       Rails.logger.error("[ProvisioningService] Provisioning failed: #{e.class}: #{e.message}")
       mark_instance_errored(instance)
-      terminate_orphaned_cloud_instance(provider_adapter, created_cloud_instance_id)
+      terminate_orphaned_cloud_instance(provider_adapter, created_cloud_instance_id,
+                                        expected_name: provider_params&.dig(:name))
       emit_provision_event(
         account: node.account, kind: "system.instance_provision_failed", severity: :high,
         instance: instance, node: node, payload: { error: ::System::CallerFacingMessages::GENERIC }
@@ -394,8 +396,21 @@ module System
       # expected_name lets the provider distinguish a migrated guest from a
       # recycled vmid; without it a stale row whose id was reused elsewhere can
       # never finish terminating (IMP-708079f866d9).
+      #
+      # A pool member is never torn down blind: its name is the stamped
+      # provider_guest_name, or (rows from before it was captured) the row's own
+      # name, and a member with neither is refused rather than destroyed by vmid
+      # alone — a freed vmid is reused at once, so a stale pool record's
+      # teardown would otherwise destroy the NEW guest that took the number.
+      expected_name = instance.expected_guest_name
+      if expected_name.blank? && instance.in_pool?
+        Rails.logger.error("[ProvisioningService] Terminate refused for pool member #{instance.id}: no guest name to verify " \
+                           "#{instance.cloud_instance_id} against")
+        return Runtime::Result.err(error: "Refusing to terminate a pool member with no recorded guest name")
+      end
+
       result = provider_adapter.terminate_instance(instance.cloud_instance_id,
-                                                   expected_name: instance.provider_guest_name)
+                                                   expected_name: expected_name)
 
       # IMP-64d9f2cdff63 — the id now names someone else's guest, and the
       # provider refused to touch it. Keeping the id would aim every later
@@ -632,16 +647,24 @@ module System
     # raised before its id reached the DB — leaving the reaper unable to reclaim
     # it. Best-effort terminate it by the id captured at create time. Guarded by
     # its own rescue so a terminate failure never masks the original error.
-    def terminate_orphaned_cloud_instance(provider_adapter, cloud_instance_id)
+    def terminate_orphaned_cloud_instance(provider_adapter, cloud_instance_id, expected_name: nil)
       return if cloud_instance_id.blank?
       return unless provider_adapter.respond_to?(:terminate_instance)
 
+      # The id was allocated seconds ago, but "seconds" is enough: a vmid freed by
+      # a concurrent teardown is reused at once, so a failure here must not
+      # destroy another record's fresh guest that drew the same number. The
+      # guest is verified by the name it was created with (provider_params[:name]);
+      # with no name to verify against, nothing is destroyed (the orphan
+      # pool-guest sensor reaches it by name).
+      if expected_name.blank?
+        Rails.logger.error("[ProvisioningService] Not terminating orphaned cloud instance #{cloud_instance_id}: " \
+                           "no guest name to verify it against")
+        return
+      end
+
       Rails.logger.warn("[ProvisioningService] Post-create failure — terminating orphaned cloud instance #{cloud_instance_id} to avoid a billable leak")
-      # No expected_name deliberately: this id was allocated seconds ago in this
-      # same call, so it cannot yet have been recycled onto another node, and the
-      # conservative default (refuse to call a cluster-visible guest gone) is the
-      # right behaviour for a compensating rollback.
-      provider_adapter.terminate_instance(cloud_instance_id)
+      provider_adapter.terminate_instance(cloud_instance_id, expected_name: expected_name)
     rescue StandardError => e
       Rails.logger.error("[ProvisioningService] Failed to terminate orphaned cloud instance #{cloud_instance_id}: #{e.class}: #{e.message}")
     end

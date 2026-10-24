@@ -449,7 +449,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
         allow(client).to receive(:post).with("/api2/json/nodes/pve1/qemu/200/status/stop").and_return("UPID:stop")
         allow(client).to receive(:post).with("/api2/json/nodes/pve1/qemu/200/status/start").and_return("UPID:start")
 
-        provider.send(:reload_cloudinit_seed!, client, node: "pve1", kind: "qemu", vmid: 200)
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/200/config").and_return("name" => "uefi-vm")
+
+        provider.send(:reload_cloudinit_seed!, client, node: "pve1", kind: "qemu", vmid: 200, expected_name: "uefi-vm")
 
         expect(client).to have_received(:post).with("/api2/json/nodes/pve1/qemu/200/status/stop")
         expect(client).to have_received(:post).with("/api2/json/nodes/pve1/qemu/200/status/start")
@@ -469,7 +471,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
           .with("/api2/json/nodes/pve1/qemu/200/status/current")
           .and_return({ "status" => "running", "name" => "uefi-vm" })
 
-        result = provider.power_cycle_instance("pve1/qemu/200")
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/200/config").and_return("name" => "uefi-vm")
+
+        result = provider.power_cycle_instance("pve1/qemu/200", expected_name: "uefi-vm")
 
         expect(client).to have_received(:post).with("/api2/json/nodes/pve1/qemu/200/status/stop")
         expect(client).to have_received(:post).with("/api2/json/nodes/pve1/qemu/200/status/start")
@@ -493,7 +497,9 @@ RSpec.describe System::Providers::ProxmoxProvider do
         # host:port) now reaches only the log — never the returned hash.
         allow(provider.logger).to receive(:error)
 
-        result = provider.power_cycle_instance("pve1/qemu/200")
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/200/config").and_return("name" => "uefi-vm")
+
+        result = provider.power_cycle_instance("pve1/qemu/200", expected_name: "uefi-vm")
         expect(result[:success]).to be false
         expect(result[:error]).to eq(::System::CallerFacingMessages::GENERIC)
       end
@@ -1893,6 +1899,179 @@ RSpec.describe System::Providers::ProxmoxProvider do
 
       expect(result[:success]).to be true
       expect(result[:error_code]).not_to eq(System::Providers::BaseProvider::GUEST_NAME_MISMATCH)
+    end
+  end
+
+  # The vmid-reuse race (ci-native-builders-amd64, vmid 9000): allocate_next_vmid!
+  # hands a freed id straight to the next guest, so a STALE record's teardown,
+  # power cycle or stop lands on the NEW guest that took its number. Every
+  # vmid-keyed power/destructive call must therefore prove the guest's identity
+  # first, and a pool member with no name to prove it against must be refused.
+  describe "vmid-reuse identity guard on power and destructive calls" do
+    let(:old_name) { "ci-native-builders-amd64-pool-1000-0" }
+    let(:new_name) { "ci-native-builders-amd64-pool-2000-0" }
+    let(:config_url) { "/api2/json/nodes/pve1/qemu/9000/config" }
+    let(:mismatch) { System::Providers::BaseProvider::GUEST_NAME_MISMATCH }
+    let(:not_found) { System::Providers::Proxmox::Client::NotFoundError }
+
+    def stub_guest(name)
+      allow(client).to receive(:get).with(config_url).and_return("name" => name)
+    end
+
+    def expect_no_power_calls
+      expect(client).not_to receive(:post)
+      expect(client).not_to receive(:put)
+      expect(client).not_to receive(:delete)
+    end
+
+    describe "#power_cycle_instance" do
+      it "refuses to stop or start a vmid that now belongs to a different guest" do
+        stub_guest(new_name)
+        expect_no_power_calls
+
+        result = provider.power_cycle_instance("pve1/qemu/9000", expected_name: old_name)
+
+        expect(result[:success]).to be false
+        expect(result[:error_code]).to eq(mismatch)
+      end
+
+      it "refuses a blank expected_name instead of acting on a vmid blind" do
+        allow(client).to receive(:get).with(config_url).and_return("name" => new_name)
+        expect_no_power_calls
+
+        [ nil, "", "  " ].each do |blank|
+          result = provider.power_cycle_instance("pve1/qemu/9000", expected_name: blank)
+          expect(result[:success]).to be false
+          expect(result[:error_code]).not_to eq(mismatch)
+        end
+      end
+
+      it "raises ResourceNotFoundError, sending nothing, when the VM no longer exists" do
+        allow(client).to receive(:get).with(config_url).and_raise(not_found, "no config")
+        expect_no_power_calls
+
+        expect { provider.power_cycle_instance("pve1/qemu/9000", expected_name: old_name) }
+          .to raise_error(System::Providers::BaseProvider::ResourceNotFoundError)
+      end
+
+      it "re-verifies after the (slow) stop and does not start a guest that took the vmid meanwhile" do
+        names = [ { "name" => old_name }, { "name" => new_name } ]
+        allow(client).to receive(:get).with(config_url) { names.size > 1 ? names.shift : names.first }
+        allow(client).to receive(:post).with("/api2/json/nodes/pve1/qemu/9000/status/stop").and_return("UPID:stop")
+        allow(client).to receive(:wait_task)
+        expect(client).not_to receive(:post).with("/api2/json/nodes/pve1/qemu/9000/status/start")
+
+        result = provider.power_cycle_instance("pve1/qemu/9000", expected_name: old_name)
+
+        expect(result[:success]).to be false
+        expect(result[:error_code]).to eq(mismatch)
+      end
+
+      it "still stops and starts the VM when the guest is ours" do
+        stub_guest(old_name)
+        allow(client).to receive(:get).with("/api2/json/nodes/pve1/qemu/9000/status/current")
+                                      .and_return("status" => "running", "name" => old_name)
+        allow(client).to receive(:post).and_return("UPID:x")
+        allow(client).to receive(:wait_task)
+
+        result = provider.power_cycle_instance("pve1/qemu/9000", expected_name: old_name)
+
+        expect(client).to have_received(:post).with("/api2/json/nodes/pve1/qemu/9000/status/stop")
+        expect(client).to have_received(:post).with("/api2/json/nodes/pve1/qemu/9000/status/start")
+        expect(result[:success]).to be true
+      end
+    end
+
+    describe "#stop_instance" do
+      it "refuses to stop a different guest that holds the vmid" do
+        stub_guest(new_name)
+        expect_no_power_calls
+
+        result = provider.stop_instance("pve1/qemu/9000", force: true, expected_name: old_name)
+
+        expect(result[:success]).to be false
+        expect(result[:error_code]).to eq(mismatch)
+      end
+    end
+
+    describe "#reboot_instance force fallback" do
+      it "refuses up front when the guest is not ours" do
+        stub_guest(new_name)
+        expect_no_power_calls
+
+        result = provider.reboot_instance("pve1/qemu/9000", expected_name: old_name)
+
+        expect(result[:success]).to be false
+        expect(result[:error_code]).to eq(mismatch)
+      end
+
+      it "does not force-start a guest that took the vmid after the graceful reboot failed" do
+        names = [ { "name" => old_name }, { "name" => old_name }, { "name" => new_name } ]
+        allow(client).to receive(:get).with(config_url) { names.size > 1 ? names.shift : names.first }
+        allow(client).to receive(:post).with(a_string_matching(%r{status/reboot}), anything).and_return("UPID:r")
+        allow(client).to receive(:post).with(a_string_matching(%r{status/stop})).and_return("UPID:s")
+        allow(client).to receive(:wait_task) do |**kw|
+          raise System::Providers::Proxmox::Client::TaskTimeoutError, "t" if kw[:upid] == "UPID:r"
+        end
+        expect(client).not_to receive(:post).with(a_string_matching(%r{status/start}))
+
+        result = provider.reboot_instance("pve1/qemu/9000", expected_name: old_name)
+
+        expect(result[:success]).to be false
+        expect(result[:error_code]).to eq(mismatch)
+      end
+    end
+  end
+
+  describe "#probe_guest (cluster-aware existence probe)" do
+    let(:current_url) { "/api2/json/nodes/pve1/qemu/9000/status/current" }
+    let(:resources_url) { "/api2/json/cluster/resources" }
+    let(:not_found) { System::Providers::Proxmox::Client::NotFoundError }
+
+    it "is :present when the guest is on its node with the expected name" do
+      allow(client).to receive(:get).with(current_url).and_return("status" => "running", "name" => "g")
+      expect(client).not_to receive(:get).with(resources_url, anything)
+
+      expect(provider.probe_guest("pve1/qemu/9000", expected_name: "g")).to eq(:present)
+    end
+
+    it "is :recycled when the vmid on its node carries another name" do
+      allow(client).to receive(:get).with(current_url).and_return("name" => "other")
+      expect(provider.probe_guest("pve1/qemu/9000", expected_name: "g")).to eq(:recycled)
+    end
+
+    it "is :absent only when the whole cluster has no such vmid" do
+      allow(client).to receive(:get).with(current_url).and_raise(not_found, "gone")
+      allow(client).to receive(:get).with(resources_url, { "type" => "vm" })
+                                    .and_return([ { "vmid" => 9001, "type" => "qemu", "node" => "pve2", "name" => "x" } ])
+
+      expect(provider.probe_guest("pve1/qemu/9000", expected_name: "g")).to eq(:absent)
+    end
+
+    it "is :present when the guest lives on another node (migrated / HA-relocated)" do
+      allow(client).to receive(:get).with(current_url).and_raise(not_found, "not on this node")
+      allow(client).to receive(:get).with(resources_url, { "type" => "vm" })
+                                    .and_return([ { "vmid" => 9000, "type" => "qemu", "node" => "pve2", "name" => "g" } ])
+
+      expect(provider.probe_guest("pve1/qemu/9000", expected_name: "g")).to eq(:present)
+    end
+
+    it "is :recycled when another node's vmid carries a different name" do
+      allow(client).to receive(:get).with(current_url).and_raise(not_found, "gone")
+      allow(client).to receive(:get).with(resources_url, { "type" => "vm" })
+                                    .and_return([ { "vmid" => 9000, "type" => "qemu", "node" => "pve2", "name" => "x" } ])
+
+      expect(provider.probe_guest("pve1/qemu/9000", expected_name: "g")).to eq(:recycled)
+    end
+
+    it "raises (never :absent) when the cluster lookup fails" do
+      allow(client).to receive(:get).with(current_url).and_raise(not_found, "gone")
+      allow(client).to receive(:get).with(resources_url, { "type" => "vm" })
+                                    .and_raise(System::Providers::Proxmox::Client::Error, "boom")
+      allow(provider.logger).to receive(:error)
+
+      expect { provider.probe_guest("pve1/qemu/9000", expected_name: "g") }
+        .to raise_error(System::Providers::BaseProvider::ProviderError)
     end
   end
 end

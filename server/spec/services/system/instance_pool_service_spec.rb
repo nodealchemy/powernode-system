@@ -1008,7 +1008,9 @@ RSpec.describe System::InstancePoolService, type: :service do
   # System::Providers::ProxmoxProvider#power_cycle_instance for the provider
   # side this delegates to.
   describe "#reload_pending_seeds!" do
-    let(:provider_double) { instance_double(System::Providers::ProxmoxProvider, power_cycle_instance: true) }
+    let(:provider_double) do
+      instance_double(System::Providers::ProxmoxProvider, power_cycle_instance: true, probe_guest: :present)
+    end
 
     # IMP-a8df0ef0e00c: the class-level wrapper was spec-only dead code —
     # production reaches the (public) instance method exclusively through
@@ -1042,7 +1044,8 @@ RSpec.describe System::InstancePoolService, type: :service do
       count = reload_pending_seeds!(pool)
 
       expect(count).to eq(1)
-      expect(provider_double).to have_received(:power_cycle_instance).with(cloud_instance_id)
+      expect(provider_double).to have_received(:power_cycle_instance)
+        .with(cloud_instance_id, expected_name: m.expected_guest_name)
       expect(m.reload.config["seed_reload_count"]).to eq(1)
       expect(m.config["last_seed_reload_at"]).to be_present
     end
@@ -1133,8 +1136,95 @@ RSpec.describe System::InstancePoolService, type: :service do
       count = reload_pending_seeds!(pool)
 
       expect(count).to eq(1)
-      expect(failing.reload.config["seed_reload_count"]).to be_nil
+      # A failed attempt is still an attempt: it is counted (and throttled) so
+      # the cap bounds a member whose cycle never succeeds.
+      expect(failing.reload.config["seed_reload_count"]).to eq(1)
+      expect(failing.config["last_seed_reload_at"]).to be_present
+      expect(failing.pool_state).to eq("warming")
       expect(healthy.reload.config["seed_reload_count"]).to eq(1)
+    end
+
+    it "(d) a transient provider error does not error the member and leaves it eligible for the next throttled try" do
+      m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      allow(provider_double).to receive(:power_cycle_instance).and_raise(Timeout::Error, "PVE unreachable")
+
+      expect(reload_pending_seeds!(pool)).to eq(0)
+
+      expect(m.reload.pool_state).to eq("warming")
+      expect(m.config["seed_reload_error"]).to be_nil
+    end
+
+    it "(d) a failed (non-refusal) power-cycle result is counted against the cap, not treated as success" do
+      m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      allow(provider_double).to receive(:power_cycle_instance).and_return({ success: false, error: "boom" })
+
+      expect(reload_pending_seeds!(pool)).to eq(0)
+
+      expect(m.reload.pool_state).to eq("warming")
+      expect(m.config["seed_reload_count"]).to eq(1)
+    end
+
+    it "(c) a vanished VM is terminal: the member is errored with a reason and the next tick never selects it" do
+      m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      allow(provider_double).to receive(:probe_guest).and_return(:absent)
+      allow(provider_double).to receive(:power_cycle_instance)
+        .and_raise(System::Providers::BaseProvider::ResourceNotFoundError, "unable to find configuration file for VM 9000")
+
+      expect(reload_pending_seeds!(pool)).to eq(0)
+
+      m.reload
+      expect(m.pool_state).to eq("errored")
+      expect(m.config["seed_reload_count"]).to eq(1)
+      expect(m.config["seed_reload_error"]).to match(/no longer exists/i)
+
+      expect(reload_pending_seeds!(pool)).to eq(0)
+      expect(provider_double).to have_received(:power_cycle_instance).once
+    end
+
+    it "(c) a node-scoped not-found does NOT error a guest that is live elsewhere in the cluster (migrated / HA-relocated)" do
+      m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      allow(provider_double).to receive(:probe_guest).and_return(:present)
+      allow(provider_double).to receive(:power_cycle_instance)
+        .and_raise(System::Providers::BaseProvider::ResourceNotFoundError, "not on this node")
+
+      reload_pending_seeds!(pool)
+
+      expect(m.reload.pool_state).to eq("warming")
+      expect(m.config["seed_reload_count"]).to eq(1)
+    end
+
+    it "(c) a failed cluster lookup is transient: the member stays warming" do
+      m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      allow(provider_double).to receive(:probe_guest).and_raise(System::Providers::BaseProvider::ProviderError, "api down")
+      allow(provider_double).to receive(:power_cycle_instance)
+        .and_raise(System::Providers::BaseProvider::ResourceNotFoundError, "not on this node")
+
+      reload_pending_seeds!(pool)
+
+      expect(m.reload.pool_state).to eq("warming")
+    end
+
+    it "(c) a vmid that now holds a different guest is terminal too, and is never power-cycled again" do
+      m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      allow(provider_double).to receive(:power_cycle_instance).and_return(
+        { success: false, error: "recycled", error_code: System::Providers::BaseProvider::GUEST_NAME_MISMATCH }
+      )
+
+      reload_pending_seeds!(pool)
+
+      expect(m.reload.pool_state).to eq("errored")
+      expect(m.config["seed_reload_error"]).to match(/different guest/i)
+    end
+
+    it "refuses to power-cycle a member that has no guest name to verify, counting the attempt" do
+      m = seed_warming_with_cloud_id(warming_started_at: 3.minutes.ago)
+      allow_any_instance_of(System::NodeInstance).to receive(:expected_guest_name).and_return(nil)
+
+      expect(reload_pending_seeds!(pool)).to eq(0)
+
+      expect(provider_double).not_to have_received(:power_cycle_instance)
+      expect(m.reload.config["seed_reload_count"]).to eq(1)
+      expect(m.pool_state).to eq("warming")
     end
 
     it "respects a SiteSetting override for seed_reload_after_seconds" do
@@ -1162,6 +1252,73 @@ RSpec.describe System::InstancePoolService, type: :service do
       described_class.recycle_stale_members!(pool: pool)
 
       expect(observed).to eq(baseline)
+    end
+
+    # Nothing used to read provider state for a warming member, so one whose VM
+    # had been destroyed sat until the 30 min warming timeout. An EXPLICIT
+    # not-found now fails it on the next tick; anything else (a transient
+    # transport error, a failed result) must not.
+    describe "failing a warming member whose provider VM is gone from the whole cluster" do
+      let(:provider_double) do
+        instance_double(System::Providers::ProxmoxProvider, power_cycle_instance: true, probe_guest: :present,
+                        terminate_instance: { success: true, status: "terminated" })
+      end
+
+      it "errors a young warming member (no heartbeat) the provider reports absent cluster-wide" do
+        m = seed_warming_with_cloud_id(warming_started_at: 20.seconds.ago)
+        allow(provider_double).to receive(:probe_guest).and_return(:absent)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(provider_double).to have_received(:probe_guest)
+          .with(m.config["cloud_instance_id"], expected_name: m.expected_guest_name)
+        # Errored this tick; the errored cleanup that follows in the same tick
+        # may already have moved it on (terminate -> draining).
+        expect(m.reload.pool_state).not_to eq("warming")
+        expect(m.config["seed_reload_error"]).to match(/no longer exists/i)
+        expect(provider_double).to have_received(:terminate_instance)
+          .with(m.config["cloud_instance_id"], expected_name: m.expected_guest_name)
+        expect(provider_double).not_to have_received(:power_cycle_instance)
+      end
+
+      it "errors it when the id now holds a different guest" do
+        m = seed_warming_with_cloud_id(warming_started_at: 20.seconds.ago)
+        allow(provider_double).to receive(:probe_guest).and_return(:recycled)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(m.reload.pool_state).not_to eq("warming")
+        expect(m.config["seed_reload_error"]).to match(/different guest/i)
+      end
+
+      it "does NOT error a guest that moved to another node (live migration / HA relocation)" do
+        m = seed_warming_with_cloud_id(warming_started_at: 20.seconds.ago)
+        allow(provider_double).to receive(:probe_guest).and_return(:present)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(m.reload.pool_state).to eq("warming")
+        expect(m.config["seed_reload_error"]).to be_nil
+      end
+
+      it "does NOT error it when the cluster lookup itself fails (transient)" do
+        a = seed_warming_with_cloud_id(warming_started_at: 20.seconds.ago)
+        allow(provider_double).to receive(:probe_guest).and_raise(System::Providers::BaseProvider::ProviderError, "api down")
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(a.reload.pool_state).to eq("warming")
+      end
+
+      it "leaves a member that already heartbeated alone" do
+        enrolled = seed_warming_with_cloud_id(warming_started_at: 20.seconds.ago, last_heartbeat_at: 5.seconds.ago)
+        seed_warming_with_cloud_id(warming_started_at: 20.seconds.ago)
+
+        described_class.recycle_stale_members!(pool: pool)
+
+        expect(provider_double).to have_received(:probe_guest).once
+        expect(enrolled.reload.pool_state).to eq("warming")
+      end
     end
 
     it "folds the cycled count into recycle_stale_members!'s returned counts under :seed_reloads" do

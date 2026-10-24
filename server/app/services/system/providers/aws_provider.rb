@@ -92,7 +92,7 @@ module System
         end
       end
 
-      def stop_instance(instance_id, force: false)
+      def stop_instance(instance_id, force: false, expected_name: nil)
         log_operation("stop_instance", instance_id: instance_id, force: force)
 
         begin
@@ -114,7 +114,7 @@ module System
         end
       end
 
-      def reboot_instance(instance_id)
+      def reboot_instance(instance_id, expected_name: nil)
         log_operation("reboot_instance", instance_id: instance_id)
 
         begin
