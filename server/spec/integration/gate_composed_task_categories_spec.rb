@@ -81,8 +81,12 @@ module GateComposedTaskCategories
   # action_category, composed or literal.
   # ==================================================================
   #
-  # :source is asserted to still be present at :file / :line, so a site that
-  # moves or changes shape fails here instead of silently drifting out of scope.
+  # :source is asserted to still be present in :file on a code (non-comment)
+  # line, the exact number of times this enumeration lists it, so a site that
+  # changes shape, vanishes or is duplicated fails here instead of silently
+  # drifting out of scope. There is deliberately NO line number: a pinned line
+  # broke on every unrelated insertion above the site and carried no property
+  # the count does not.
   #
   # :commands is the SET the site's variable can take, and the reasoning for
   # each set is in its :domain note.
@@ -96,7 +100,6 @@ module GateComposedTaskCategories
   GATE_SITES = [
     {
       file: "app/controllers/api/v1/system/tasks_controller.rb",
-      line: 112,
       source: 'action_category: "system.task.#{attrs[:command]}"',
       executor: "System::Executors::ExecuteTask",
       domain: "attrs[:command] is caller-supplied free text from task_params. " \
@@ -118,7 +121,6 @@ module GateComposedTaskCategories
     },
     {
       file: "app/controllers/concerns/system/node_instance_gating.rb",
-      line: 106,
       source: 'action_category: "system.task.#{event}"',
       # TWO executors behind one category now (campaign 01a0790b increment 1):
       # NodeInstanceGating::LIFECYCLE_EXECUTORS routes start/stop/reboot to
@@ -141,7 +143,6 @@ module GateComposedTaskCategories
     },
     {
       file: "app/controllers/concerns/system/node_instance_gating.rb",
-      line: 161,
       source: 'action_category: "system.task.#{event}"',
       executor: "System::Executors::ExecuteTask",
       domain: "#gate_ip_action(event). Callers, both in " \
@@ -168,7 +169,6 @@ module GateComposedTaskCategories
       # probe.node_inspect verb above it; stale from then) and 338 -> 348 at
       # 2c862e24 (IMP-9951cbf20bb0 added unit.dropin's). RE-AUDITED — still
       # the MANUAL_OPERATION_POLICIES derivation, unchanged in shape.
-      line: 348,
       source: '"system.task.#{command}"',
       # NOT a gate site: it composes the category NAME the seed, PolicyReconciler
       # and the engine's registration all consume, and calls no gate. Enumerated
@@ -196,7 +196,6 @@ module GateComposedTaskCategories
       # 630 -> 637); the last was 611f2b5d (IMP-9951cbf20bb0, 692 -> 695).
       # RE-AUDITED — same literal, same arm. 695 -> 702 at IMP-a41ceb3cdd64
       # (the ssh-host-key-clear permission entry and reason constant above it).
-      line: 719, # 702 -> 705 once the merged ssh-host-key and agent-condition commits landed together; 705 -> 707 with C3-1 tool families; 707 -> 719 (12 lines added above), re-audited: same literal, same arm
       source: 'action_category: "system.task.terminate"',
       # NOT ExecuteTask. This arm replays System::Executors::TerminateInstance,
       # which calls ProvisioningService directly and inserts no System::Task —
@@ -213,7 +212,6 @@ module GateComposedTaskCategories
       file: "app/services/ai/tools/system_fleet_tool.rb",
       # ADDED unenumerated at 0b3b3884 (IMP-88e82d59b7f2, the governed
       # system_restart_unit verb); the literal backstop has reported it since.
-      line: 1143, # was 1116 before IMP-a41ceb3cdd64 added lines above it; 1123 -> 1129 in the merge with the other loop branches; 1129 -> 1131 with C3-1 tool families; 1131 -> 1143 (12 lines added above), re-audited: same literal, same arm
       source: 'action_category: "system.task.restart"',
       # NOT ExecuteTask. The generic replay executor re-invokes the verb, whose
       # arm (#restart_unit -> System::UnitRestartService#restart!) inserts ONE
@@ -328,22 +326,26 @@ RSpec.describe "gate-composed system.task action categories", type: :model do
 
   describe "the enumerated sites still look the way this spec claims" do
     sites.each do |site|
-      it "#{site[:file]}:#{site[:line]} still contains #{site[:source].inspect}" do
+      it "#{site[:file]} still contains #{site[:source].inspect}" do
         path = GateComposedTaskCategories::EXTENSION_ROOT.join(site[:file])
 
         expect(path).to exist, "enumerated gate site file is gone: #{site[:file]}"
 
-        # EXACT line, not a window. A tolerant window would let a site drift a
-        # line or two while the backstop below still counted it correctly,
-        # leaving the enumeration quietly wrong about where the code is.
-        actual = File.readlines(path)[site[:line] - 1].to_s
+        # CODE lines only (comments that quote the literal are not producers),
+        # and the EXACT number of occurrences this enumeration lists for the
+        # file+source pair: a second producer of the same literal, or the loss
+        # of one, is drift just as a shape change is.
+        occurrences = File.readlines(path).count do |line|
+          !line.lstrip.start_with?("#") && line.include?(site[:source])
+        end
+        enumerated = sites.count { |s| s[:file] == site[:file] && s[:source] == site[:source] }
 
-        expect(actual).to include(site[:source]),
-                          "#{site[:file]}:#{site[:line]} no longer contains #{site[:source].inspect} — " \
-                          "the enumeration in this spec has drifted from the code it describes.\n" \
-                          "  line #{site[:line]} is now: #{actual.strip.inspect}\n" \
-                          "If the site merely MOVED, update :line. If it changed shape, " \
-                          "re-derive its value set before touching anything else."
+        expect(occurrences).to eq(enumerated),
+                               "#{site[:file]} has #{occurrences} code line(s) containing " \
+                               "#{site[:source].inspect} but this spec enumerates #{enumerated} — " \
+                               "the enumeration has drifted from the code it describes. " \
+                               "If a site was added or removed, update GATE_SITES. If it changed " \
+                               "shape, re-derive its value set before touching anything else."
       end
     end
   end
@@ -385,7 +387,7 @@ RSpec.describe "gate-composed system.task action categories", type: :model do
     end
 
     sites.select { |s| s[:executor] == "System::Executors::ExecuteTask" }.each do |site|
-      it "#{site[:file]}:#{site[:line]} — #{site[:domain].truncate(80)}" do
+      it "#{site[:file]} — #{site[:domain].truncate(80)}" do
         commands = site[:commands].call
         expect(commands).not_to be_empty, "a gate site with an empty value set is an enumeration bug"
 
@@ -393,7 +395,7 @@ RSpec.describe "gate-composed system.task action categories", type: :model do
         unexpected   = uninsertable - broken
 
         expect(unexpected).to be_empty,
-                              "#{site[:file]}:#{site[:line]} names system.task.<cmd> for " \
+                              "#{site[:file]} names system.task.<cmd> for " \
                               "#{unexpected.inspect}, which System::Task refuses to insert. " \
                               "Every such request fails closed: under the seeded auto_approve " \
                               "policy the gate creates a deferred operation and executes it " \

@@ -16,7 +16,17 @@ RSpec.describe "c13-2 batch E-A destructive system verbs park", type: :service d
   let(:category) { create(:system_node_module_category, account: account) }
   let(:template) { create(:system_node_template, account: account, node_platform: platform_record) }
 
-  after { ::Mcp::Principal.reset! }
+  # Restore, never reset!: reset! nils the resolvers the extension engine wires at
+  # boot, which silently turns every later instance-principal example in the
+  # process into a refusal (system_fleet_tool_inspect_node_spec).
+  around do |example|
+    orig_instance = ::Mcp::Principal.instance_resolver
+    orig_grant = ::Mcp::Principal.tool_grant_resolver
+    example.run
+  ensure
+    ::Mcp::Principal.instance_resolver = orig_instance
+    ::Mcp::Principal.tool_grant_resolver = orig_grant
+  end
 
   def user_with(*perms) = create(:user, account: account, permissions: perms)
 
