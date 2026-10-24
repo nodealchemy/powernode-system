@@ -46,7 +46,10 @@ RSpec.describe "Api::V1::System::FederationApi::Resources pessimistic checks",
     mtls_headers.merge(
       "X-Calling-Instance" => calling_instance_uuid,
       "X-Sdwan-Network"    => network.id,
-      "REMOTE_ADDR"        => "10.0.0.42"
+      # Federation arrives through Traefik: the socket peer is loopback and the
+      # caller's address rides X-Forwarded-For (what remote_ip then reports).
+      "REMOTE_ADDR"        => "127.0.0.1",
+      "X-Forwarded-For"    => "10.0.0.42"
     )
   end
 
@@ -91,7 +94,8 @@ RSpec.describe "Api::V1::System::FederationApi::Resources pessimistic checks",
       get path, headers: mtls_headers
         .merge("Authorization" => "Bearer #{grant.bearer_token}",
                "X-Sdwan-Network" => network.id,
-               "REMOTE_ADDR" => "10.0.0.42")
+               "REMOTE_ADDR" => "127.0.0.1",
+               "X-Forwarded-For" => "10.0.0.42")
       # no X-Calling-Instance
 
       expect(response).to have_http_status(:forbidden)
