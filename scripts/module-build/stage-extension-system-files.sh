@@ -132,3 +132,25 @@ if [ ! -f "$EXT_ROOT/config/runbooks.yml" ]; then
   echo "[stage-1.5] extension-system: FATAL — config/runbooks.yml did not land in the staged tree after rsync (checked $EXT_ROOT/config/runbooks.yml). System::Status::RemediationWiring#register_runbook_source! will fail on every boot of any hub-backend that loads this build." >&2
   exit 1
 fi
+
+# --- Build identity: extensions/system/BUILD_INFO.json -------------------
+# The core build records its own revision in server/BUILD_INFO.json (stage15.sh's
+# "build identity" block); the extension had no equivalent, so nothing on a hub
+# could say which extension commit it runs (scripts/verify-hub-deploy.sh reads
+# HUB_EXT_SHA_CMD). Same shape and the same source tag as the core file, with the
+# EXTENSION's own sha: this workspace's HEAD, not the parent clone's.
+#
+# DEFENSIVE like the core block: `--verify` so an unborn head prints nothing, and
+# a failure records `unknown` rather than omitting the file -- an absent marker
+# must never read like a successful one. No remote is recorded (a clone URL can
+# carry a token). The tag is null and release false: the extension is versioned
+# by its sha, not by release tags.
+ext_sha="$(git -C "$WORKSPACE" rev-parse --verify HEAD 2>/dev/null || true)"
+[ -n "$ext_sha" ] || ext_sha="unknown"
+ext_short="$(printf '%s' "$ext_sha" | cut -c1-7)"
+ext_branch="$(git -C "$WORKSPACE" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+case "$ext_branch" in ''|HEAD) ext_branch="${BUILD_BRANCH:-unknown}" ;; esac
+printf '{"version":"ext+%s","sha":"%s","short_sha":"%s","branch":"%s","tag":null,"release":false,"built_at":"%s","source":"module-build"}\n' \
+  "$ext_short" "$ext_sha" "$ext_short" "$ext_branch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$EXT_ROOT/BUILD_INFO.json"
+echo "[stage-1.5] extension-system build identity: sha=${ext_short} branch=${ext_branch}"

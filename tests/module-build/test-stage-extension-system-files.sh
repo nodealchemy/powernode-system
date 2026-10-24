@@ -108,6 +108,47 @@ echo "=== integration: full workspace (server/ + config/ + worker/ + extension.j
   rm -rf "$WS" "$FAT"
 }
 
+echo "=== build identity: extensions/system/BUILD_INFO.json carries the extension's OWN sha ==="
+{
+  WS=$(mktemp -d)
+  FAT=$(mktemp -d)
+  make_full_workspace "$WS"
+  git -C "$WS" init -q -b develop
+  git -C "$WS" -c user.email=t@example.invalid -c user.name=t add -A
+  git -C "$WS" -c user.email=t@example.invalid -c user.name=t commit -q -m fixture
+  want_sha=$(git -C "$WS" rev-parse HEAD)
+
+  run_cli --workspace "$WS" --fat-root "$FAT"
+  info="$FAT/opt/powernode/extensions/system/BUILD_INFO.json"
+
+  assert_eq "git workspace: exit 0" "0" "$RUN_RC"
+  assert_file_exists "writes extensions/system/BUILD_INFO.json" "$info"
+  assert_eq "sha is the workspace HEAD" "$want_sha" "$(jq -r .sha "$info" 2>/dev/null)"
+  assert_eq "short_sha is its first 7" "${want_sha:0:7}" "$(jq -r .short_sha "$info" 2>/dev/null)"
+  assert_eq "branch is the checked-out branch" "develop" "$(jq -r .branch "$info" 2>/dev/null)"
+  assert_eq "source is module-build" "module-build" "$(jq -r .source "$info" 2>/dev/null)"
+  # Same key set as server/BUILD_INFO.json (stage15.sh's core block).
+  assert_eq "same shape as the core file" "branch,built_at,release,sha,short_sha,source,tag,version" \
+    "$(jq -r 'keys | join(",")' "$info" 2>/dev/null)"
+
+  rm -rf "$WS" "$FAT"
+}
+
+echo "=== build identity: a workspace with no git records sha=unknown, never omits the file ==="
+{
+  WS=$(mktemp -d)
+  FAT=$(mktemp -d)
+  make_full_workspace "$WS"
+
+  run_cli --workspace "$WS" --fat-root "$FAT"
+  info="$FAT/opt/powernode/extensions/system/BUILD_INFO.json"
+
+  assert_eq "no-git workspace: exit 0" "0" "$RUN_RC"
+  assert_eq "sha is the explicit unknown" "unknown" "$(jq -r .sha "$info" 2>/dev/null)"
+
+  rm -rf "$WS" "$FAT"
+}
+
 echo "=== unit: config/ missing from workspace — RED, exit 1, names config/ ==="
 {
   WS=$(mktemp -d)
