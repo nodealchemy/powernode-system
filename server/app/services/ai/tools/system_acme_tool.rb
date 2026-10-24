@@ -56,7 +56,12 @@ module Ai
                               "and last_renewal_error_present (whether a renewal error is recorded; the text is never returned)",
                      refuses: "no certificate with that id exists in this account"
       declare_action "system_acme_renew_certificate", mutating: true
-      declare_action "system_acme_revoke_certificate", mutating: true, destructive: true
+      declare_action "system_acme_revoke_certificate", mutating: true, destructive: true,
+                     human_only: true,
+                     action_category: "system.acme_cert.revoke",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
 
       def self.definition
         {
@@ -119,6 +124,19 @@ module Ai
       end
 
       protected
+
+      # Hoists the per-action permission check so a GATED action, which returns
+      # from BaseTool#execute before #call, is authorized exactly as an ungated
+      # one is: before the park and again at replay. For a human_only verb the
+      # replay runs as the confirming person, so this is also what makes THEM
+      # hold system.acme.revoke; a caller with no user (an agent) is refused
+      # (c13-2 batch E-C).
+      def authorization_error(params)
+        action = routed_action_name(params)
+        return nil if action_permitted?(action)
+
+        error_result("permission denied: #{required_perm_for(action)} required")
+      end
 
       def call(params)
         return error_result("permission denied: #{required_perm_for(params[:action])} required") unless action_permitted?(params[:action])

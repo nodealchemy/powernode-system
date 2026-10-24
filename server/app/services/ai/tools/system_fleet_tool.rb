@@ -945,7 +945,11 @@ module Ai
                      gate_context: :dispatch_module_build_batch_gate_context,
                      on_proceed: :deferred_tool_call_result
       declare_action "system_drain_instance", mutating: true, destructive: true
-      declare_action "system_drain_instance_pool", mutating: true, destructive: true
+      declare_action "system_drain_instance_pool", mutating: true, destructive: true,
+                     action_category: "system.instance_pool_drain",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_drift_report", mutating: false, returns: "drift, the four lists with their counts, and last_heartbeat_at"
       declare_action "system_find_node_with_gpu", mutating: false, returns: "instances and count; not paginated"
       declare_action "system_get_cve", mutating: false, family: "supply_chain", returns: "cve", refuses: "no CVE has that id"
@@ -1025,9 +1029,17 @@ module Ai
                      on_proceed: :deferred_tool_call_result,
                      returns: "task_id, instance_id, collector, status, finished and, once the agent has answered, result: the collector's redacted output (timed_out and wait_seconds when it waited)",
                      refuses: "the collector or an argument is outside the fixed allow-list, the instance is not in this account, an instance principal names any instance but its own, or the instance is not running"
-      declare_action "system_instance_hold", mutating: true, destructive: true
+      declare_action "system_instance_hold", mutating: true, destructive: true,
+                     action_category: "system.instance_hold",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_instance_hold_status", mutating: false, returns: "the recorded hold (held, expired, reason, held_by, held_at, expires_at), provider_enforced, provider_state, a summary and drift"
-      declare_action "system_instance_release_hold", mutating: true, destructive: true, returns: "instance_id, name and a message"
+      declare_action "system_instance_release_hold", mutating: true, destructive: true, returns: "instance_id, name and a message",
+                     action_category: "system.instance_hold_release",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_launch_agent_fleet", mutating: true, refuses: "there is no calling user; fleet_spec is missing; the system_agent_fleet mission template is not seeded"
       declare_action "system_lease_ci_runner", mutating: true, family: "devops", returns: "ci_runner_lease", refuses: "the purpose cannot be leased by hand"
       declare_action "system_list_ci_runner_leases", mutating: false, family: "devops", paginated: true
@@ -1325,7 +1337,12 @@ module Ai
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :rollback_module_version_gate_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_rotate_vault_transit_pepper", mutating: true, destructive: true
+      declare_action "system_rotate_vault_transit_pepper", mutating: true, destructive: true,
+                     human_only: true,
+                     action_category: "system.vault_pepper.rotate",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_runbook_generate", mutating: true, returns: "the markdown runbook the skill executor produced"
       declare_action "system_set_default_disk_image_publication",
                      mutating: true, family: "devops",

@@ -4411,7 +4411,7 @@ end
         .with(reencrypt_existing: true)
         .and_return(result)
 
-      r = call("system_rotate_vault_transit_pepper")
+      r = call_direct("system_rotate_vault_transit_pepper")
       expect(r[:success]).to be true
       expect(r[:data][:rotated]).to be true
       expect(r[:data][:rotated_count]).to eq(47)
@@ -4427,7 +4427,7 @@ end
         .with(reencrypt_existing: false)
         .and_return(result)
 
-      r = call("system_rotate_vault_transit_pepper", reencrypt_existing: false)
+      r = call_direct("system_rotate_vault_transit_pepper", reencrypt_existing: false)
       expect(r[:success]).to be true
       expect(r[:data][:rotated_count]).to eq(0)
     end
@@ -4439,7 +4439,7 @@ end
       )
       expect(::Security::CredentialRestorationService).to receive(:rotate_transit_pepper!).and_return(result)
 
-      r = call("system_rotate_vault_transit_pepper")
+      r = call_direct("system_rotate_vault_transit_pepper")
       expect(r[:success]).to be false
       expect(r[:error]).to include("vault unreachable")
     end
@@ -6575,7 +6575,7 @@ end
     end
 
     it "emits system_drain_instance_pool one level deep" do
-      r = call("system_drain_instance_pool", pool_id: empty_pool.id)
+      r = call_direct("system_drain_instance_pool", pool_id: empty_pool.id)
       expect(r[:success]).to be true
       expect(r[:data].keys).to contain_exactly(:pool, :drain_result)
       expect(r[:data][:pool][:status]).to eq("draining")

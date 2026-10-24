@@ -20,6 +20,13 @@ RSpec.describe Ai::Tools::SystemAcmeTool do
     tool.execute(params: { action: action }.merge(rest))
   end
 
+  # c13-2 batch E-C: system_acme_revoke_certificate is human_only and now parks
+  # for a caller, so the handler itself is exercised past the gate. Parking has
+  # its own spec (destructive_verbs_park_system_batch_c_spec.rb).
+  def call_direct(action, **rest)
+    tool.send(:call, { action: action }.merge(rest))
+  end
+
   # Recursively collect every scalar value in a nested hash/array so we can
   # prove a secret never leaks into the serialized result.
   def deep_values(obj)
@@ -231,7 +238,7 @@ RSpec.describe Ai::Tools::SystemAcmeTool do
         .with(certificate: cert, reason: "keyCompromise")
         .and_return(result)
 
-      r = call("system_acme_revoke_certificate", certificate_id: cert.id, reason: "keyCompromise")
+      r = call_direct("system_acme_revoke_certificate", certificate_id: cert.id, reason: "keyCompromise")
       expect(r[:success]).to be true
       expect(r[:data][:revoked]).to be true
       expect(r[:data][:certificate][:id]).to eq(cert.id)
@@ -242,13 +249,13 @@ RSpec.describe Ai::Tools::SystemAcmeTool do
       expect(::Acme::CertificateManager).to receive(:revoke!)
         .with(certificate: cert, reason: nil)
         .and_return(result)
-      call("system_acme_revoke_certificate", certificate_id: cert.id)
+      call_direct("system_acme_revoke_certificate", certificate_id: cert.id)
     end
 
     it "guards on !terminal? (refuses already-revoked certs without calling the manager)" do
       revoked_cert = create(:system_acme_certificate, :revoked, account: account)
       expect(::Acme::CertificateManager).not_to receive(:revoke!)
-      r = call("system_acme_revoke_certificate", certificate_id: revoked_cert.id)
+      r = call_direct("system_acme_revoke_certificate", certificate_id: revoked_cert.id)
       expect(r[:success]).to be false
       expect(r[:error]).to include("Already revoked")
     end
@@ -259,7 +266,7 @@ RSpec.describe Ai::Tools::SystemAcmeTool do
         ok?: false, error: "acme unreachable", certificate: cert, caller_safe: true
       )
       allow(::Acme::CertificateManager).to receive(:revoke!).and_return(result)
-      r = call("system_acme_revoke_certificate", certificate_id: cert.id)
+      r = call_direct("system_acme_revoke_certificate", certificate_id: cert.id)
       expect(r[:success]).to be false
       expect(r[:error]).to include("acme unreachable")
     end
@@ -273,7 +280,7 @@ RSpec.describe Ai::Tools::SystemAcmeTool do
       allow(::Acme::CertificateManager).to receive(:revoke!).and_return(result)
       expect(Rails.logger).to receive(:error).with(/lego subprocess stderr/)
 
-      r = call("system_acme_revoke_certificate", certificate_id: cert.id)
+      r = call_direct("system_acme_revoke_certificate", certificate_id: cert.id)
 
       expect(r[:success]).to be false
       expect(r[:error]).to eq("Revoke failed")
@@ -289,7 +296,7 @@ RSpec.describe Ai::Tools::SystemAcmeTool do
         .and_raise(StandardError, "Errno::ENOENT: /var/lib/powernode/vault/internal/path")
       expect(Rails.logger).to receive(:error).with(/Errno::ENOENT.*internal\/path/)
 
-      r = call("system_acme_revoke_certificate", certificate_id: cert.id)
+      r = call_direct("system_acme_revoke_certificate", certificate_id: cert.id)
       expect(r[:success]).to be false
       expect(r[:error]).not_to include("internal/path")
       expect(r[:error]).to eq(::Ai::Tools::BaseTool::DISPATCH_FALLBACK_GENERIC_MESSAGE)
