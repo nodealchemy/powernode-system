@@ -25,6 +25,13 @@ RSpec.describe Ai::Tools::SystemIngressTool do
 
   let(:tool) { described_class.new(account: account, user: permissive_user) }
 
+  # c13-2 batch E-A: these verbs now park for a caller, so the behaviour of the
+  # handler itself is exercised past the gate. Parking has its own spec
+  # (destructive_verbs_park_system_batch_a_spec.rb).
+  def call_direct(action, **rest)
+    tool.send(:call, { action: action }.merge(rest))
+  end
+
   def stub_executor(const_name, double_obj, result)
     # Capture the real descriptor BEFORE stubbing the const — the tool calls
     # klass.descriptor to filter inputs to declared keys (fix #3).
@@ -331,7 +338,7 @@ RSpec.describe Ai::Tools::SystemIngressTool do
 
     it "regenerates the reverse proxy on delete when the service was publicly exposed" do
       svc = create_service!(slug: "pub-del", protocol: "tls", public_enabled: true)
-      tool.execute(params: { action: "system_delete_service", service_id: svc.id })
+      call_direct("system_delete_service", service_id: svc.id)
       expect(::Sdwan::ServiceExposureWriter).to have_received(:write!).with(account: account)
     end
 
@@ -358,7 +365,7 @@ RSpec.describe Ai::Tools::SystemIngressTool do
 
     it "deletes a service and regenerates only if it was exposed" do
       exposed = create_service!(slug: "del-exposed", local_enabled: true)
-      tool.execute(params: { action: "system_delete_service", service_id: exposed.id })
+      call_direct("system_delete_service", service_id: exposed.id)
       expect(::Sdwan::Service.find_by(id: exposed.id)).to be_nil
       expect(::Sdwan::ServiceExposureWriter).to have_received(:write!).with(account: account)
     end
@@ -390,7 +397,7 @@ RSpec.describe Ai::Tools::SystemIngressTool do
         svc = create_service!(slug: "del-werr", local_enabled: true)
 
         result = nil
-        expect { result = tool.execute(params: { action: "system_delete_service", service_id: svc.id }) }
+        expect { result = call_direct("system_delete_service", service_id: svc.id) }
           .not_to raise_error
         expect(result[:success]).to be false
         expect(result[:error]).to match(/regen failed/i)

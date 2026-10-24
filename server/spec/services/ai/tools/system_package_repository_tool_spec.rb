@@ -16,6 +16,13 @@ RSpec.describe Ai::Tools::SystemPackageRepositoryTool do
     tool.execute(params: { action: action }.merge(rest))
   end
 
+  # c13-2 batch E-A: these verbs now park for a caller, so the behaviour of the
+  # handler itself is exercised past the gate. Parking has its own spec
+  # (destructive_verbs_park_system_batch_a_spec.rb).
+  def call_direct(action, **rest)
+    tool.send(:call, { action: action }.merge(rest))
+  end
+
   # F5-10 case 1 — dispatch table: every advertised action routes to a
   # handler. A name in ACTION_PERMISSIONS without a `when` branch falls
   # through to "Unknown action", which this catches (registry/handler drift).
@@ -87,7 +94,7 @@ RSpec.describe Ai::Tools::SystemPackageRepositoryTool do
 
     it "deletes a repository" do
       repo = create(:system_package_repository, account: account)
-      r = call("system_delete_package_repository", repository_id: repo.id)
+      r = call_direct("system_delete_package_repository", repository_id: repo.id)
       expect(r[:success]).to be true
       expect(System::PackageRepository.exists?(repo.id)).to be false
     end

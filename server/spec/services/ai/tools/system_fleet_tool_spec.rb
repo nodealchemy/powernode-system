@@ -19,6 +19,13 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     tool.execute(params: { action: action }.merge(rest))
   end
 
+  # c13-2 batch E-A: these verbs now park for a caller, so the behaviour of the
+  # handler itself is exercised past the gate. Parking has its own spec
+  # (destructive_verbs_park_system_batch_a_spec.rb).
+  def call_direct(action, **rest)
+    tool.send(:call, { action: action }.merge(rest))
+  end
+
   # Forces Ai::AutonomyGate's :proceed branch, where the executor runs inline.
   # Approval-gated tool actions resolve to require_approval by default (no
   # seeded policy in a spec account), so anything asserting the post-action
@@ -934,7 +941,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     it "system_delete_template deletes an unused template and reports its name" do
       t2 = create(:system_node_template, account: account,
                   node_platform: platform_record, name: "delete-me")
-      r = call("system_delete_template", template_id: t2.id)
+      r = call_direct("system_delete_template", template_id: t2.id)
       expect(r[:success]).to be true
       expect(r.dig(:data, :deleted)).to be true
       expect(r.dig(:data, :name)).to eq("delete-me")
@@ -943,7 +950,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
 
     it "system_delete_template refuses while nodes use the template, naming the count" do
       create(:system_node, account: account, node_template: template, name: "still-here")
-      r = call("system_delete_template", template_id: template.id)
+      r = call_direct("system_delete_template", template_id: template.id)
       expect(r[:success]).to be false
       expect(r[:error]).to include("in use by 1 node")
       expect(System::NodeTemplate.exists?(template.id)).to be true
@@ -952,7 +959,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
     it "system_delete_template does not reach another account's template" do
       # The call-level RecordNotFound rescue converts the scoped miss into a
       # clean envelope — the row must survive untouched.
-      r = call("system_delete_template", template_id: other_account_template.id)
+      r = call_direct("system_delete_template", template_id: other_account_template.id)
       expect(r[:success]).to be false
       expect(System::NodeTemplate.exists?(other_account_template.id)).to be true
     end
@@ -3511,14 +3518,14 @@ end
 
     describe "system_delete_cve" do
       it "destroys the CVE and cascades to exposures" do
-        r = call("system_delete_cve", cve_id: cve_id)
+        r = call_direct("system_delete_cve", cve_id: cve_id)
         expect(r[:success]).to be true
         expect(r[:data][:deleted]).to be true
         expect(::System::Cve.find_by(cve_id: cve_id)).to be_nil
       end
 
       it "returns error when CVE doesn't exist" do
-        r = call("system_delete_cve", cve_id: "CVE-2026-99999")
+        r = call_direct("system_delete_cve", cve_id: "CVE-2026-99999")
         expect(r[:success]).to be false
       end
     end
@@ -4843,7 +4850,7 @@ end
 
     it "system_delete_provider deletes the provider" do
       provider = create(:system_provider, account: account)
-      r = call("system_delete_provider", provider_id: provider.id)
+      r = call_direct("system_delete_provider", provider_id: provider.id)
 
       expect(r[:success]).to be true
       expect(System::Provider.find_by(id: provider.id)).to be_nil
@@ -4865,7 +4872,7 @@ end
 
     it "system_delete_provider scopes to the current account" do
       other = create(:system_provider) # different account
-      r = call("system_delete_provider", provider_id: other.id)
+      r = call_direct("system_delete_provider", provider_id: other.id)
 
       expect(r[:success]).to be false
       expect(System::Provider.find_by(id: other.id)).to be_present

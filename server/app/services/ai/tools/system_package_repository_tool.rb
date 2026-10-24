@@ -52,6 +52,10 @@ module Ai
                      see_also: { "system_resolve_package_dependencies" => "previewing the closure without writes" }
       declare_action "system_create_package_repository", mutating: true
       declare_action "system_delete_package_repository", mutating: true, destructive: true,
+                     action_category: "system.package_repository.delete",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result,
                      refuses: [ "no accessible repository (this account's or a shared one) has that id", "the repository is shared and the caller lacks manage_shared",
                                 "package module links still reference the repository" ]
       declare_action "system_discover_packages", mutating: false
@@ -262,6 +266,17 @@ module Ai
       end
 
       protected
+
+      # Hoists the per-action permission check so a GATED action, which never
+      # reaches #call before parking, is authorized exactly as an ungated one
+      # is (BaseTool#execute consults this before the gate), and again at replay
+      # (c13-2 batch E-A). Same seam as SystemFleetTool#authorization_error.
+      def authorization_error(params)
+        action = routed_action_name(params)
+        return nil if action_permitted?(action)
+
+        error_result("permission denied: #{required_perm_for(action)} required")
+      end
 
       def call(params)
         action = params[:action]

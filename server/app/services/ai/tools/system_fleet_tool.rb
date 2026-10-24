@@ -834,12 +834,32 @@ module Ai
       declare_action "system_create_volume", mutating: true, family: "storage"
       declare_action "system_cve_runbook_generate", mutating: true, family: "supply_chain", returns: "the markdown runbook the skill executor produced"
       declare_action "system_cve_triage", mutating: true, family: "supply_chain"
-      declare_action "system_delete_cve", mutating: true, family: "supply_chain", destructive: true
+      declare_action "system_delete_cve", mutating: true, family: "supply_chain", destructive: true,
+                     action_category: "system.cve.delete",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_delete_instance_pool", mutating: true, destructive: true
-      declare_action "system_delete_module", mutating: true, destructive: true
-      declare_action "system_delete_node", mutating: true, destructive: true
-      declare_action "system_delete_provider", mutating: true, destructive: true
-      declare_action "system_delete_template", mutating: true, destructive: true
+      declare_action "system_delete_module", mutating: true, destructive: true,
+                     action_category: "system.module.delete",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
+      declare_action "system_delete_node", mutating: true, destructive: true,
+                     action_category: "system.node.delete",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
+      declare_action "system_delete_provider", mutating: true, destructive: true,
+                     action_category: "system.provider.delete",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
+      declare_action "system_delete_template", mutating: true, destructive: true,
+                     action_category: "system.template.delete",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_delete_volume", mutating: true, family: "storage", destructive: true
       declare_action "system_deploy_inference_server", mutating: true
       # HIER-P2B-ENG — approval-gated on core's release.deploy_platform (the

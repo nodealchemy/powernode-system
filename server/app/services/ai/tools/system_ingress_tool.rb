@@ -127,7 +127,11 @@ module Ai
       declare_action "system_create_service", mutating: true,
                      returns: "service, the full record",
                      refuses: "the attributes fail validation"
-      declare_action "system_delete_service", mutating: true, destructive: true
+      declare_action "system_delete_service", mutating: true, destructive: true,
+                     action_category: "system.service.delete",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_expose_service_local", mutating: true, gated_in_call: true
       declare_action "system_expose_service_public_tcp", mutating: true, gated_in_call: true,
                      returns: "service_id, slug, public_enabled, edge_mode, client_auth, host and routes_configured",
