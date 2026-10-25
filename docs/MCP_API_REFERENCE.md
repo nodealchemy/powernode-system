@@ -143,6 +143,7 @@ The platform stores it in `system_task_logs` (one row per task, replaced by a re
 | `system_delete_instance_pool` | Remove a drained pool (refuses while members are still attached) |
 | `system_acquire_pooled_instance` | Atomic claim of a `ready` member |
 | `system_return_pooled_instance` | Return a claimed member to the pool (reaper resets state). A healthy return is ungated; a return of a member that still holds a live CI runner lease parks for approval under `system.task.terminate` (c13-4) |
+| `system_release_ci_runner` | Release a CI runner lease: deregister the runner and recycle its pooled instance. Approval-gated under `system.task.terminate`, fail closed (c13-4): runs inline ONLY when `force` is not `true` AND the lease's work is provably finished (module_build: terminal build task; generic: fetched, terminal workflow run; disk_image_build: the same plus the publication). No consumer signal, a failed run fetch, a running build or `force: true` all park. An unknown or finished lease is answered inline |
 | `system_replenish_instance_pool` | Manual trigger of the reaper for this pool |
 
 #### Container runtimes

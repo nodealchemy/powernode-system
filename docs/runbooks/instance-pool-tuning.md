@@ -220,31 +220,55 @@ platform.system_terminate_instance({ instance_id: "<instance-id>" })
 platform.system_return_pooled_instance({
   instance_id: "<instance-id>"
 })
-// → { returned: true, disposition: "recycled" | "reused" | "errored",
+// → { returned: true, disposition: "recycled" | "reused" | "cordoned" | "errored",
 //     instance: { ... }, pool: { ... } }
 ```
 
 `instance_id` is the **only** parameter this verb declares, and it is required.
 
-**Approval gate (c13-4).** A healthy return, which recycles or reuses a member
-nobody else holds, is ungated. A return of a member that still holds a live CI
-runner lease (`leased`, `registered`, `busy` or `releasing`) would terminate the
-VM under that lease, so it parks through `Ai::Executors::DeferredToolCall` under
+**Approval gate (c13-4).** A return of a member that holds no live CI runner
+lease is ungated. A return of a member that still holds one (`leased`,
+`registered`, `busy` or `releasing`) would take the VM out from under that
+lease, so it parks through `Ai::Executors::DeferredToolCall` under
 `system.task.terminate` (the category `system_terminate_instance` uses; seeded
-`require_approval`) and needs a person's own session to approve. The approved
-call closes each lease through `CiRunnerLeaseService.release!(force: true)`
-(runner deregistered, lease `released`) and recycles the member once. It parks
-**on purpose even in a `reuse_without_reset` pool**: reusing a leased member
-would put it back to `ready` with its runner still registered, which is worse
-than the recycle.
+`require_approval`) and needs a person's own session to approve. A call the
+handler would refuse anyway (not a pool member, or not `claimed`) is answered
+inline, not parked.
 
-To avoid the park, release the lease with `system_release_ci_runner`: that
-alone deregisters the runner and returns and recycles the member, so no
-separate return is needed. It is ungated for an idle runner and parks when
-`force` is `true` or the lease may be mid-build (status `busy` or `releasing`, a
-build task still running, or a runner row that is missing). A runner that reads
-busy is refused inline without `force`, and an unknown or finished lease is
-answered inline too, so neither parks.
+The approved call first closes each live lease through
+`CiRunnerLeaseService.release!(force: true)` (runner deregistered, lease
+`released`), then reports the member's disposition:
+
+- **recycle pool (default):** the VM is terminated once and the disposition is
+  `recycled`, cordoned or not.
+- **`reuse_without_reset` pool:** the runner is deregistered first, then the
+  member goes back to `ready` (`reused`, no terminate), or `cordoned` if it is
+  fenced. It parks **on purpose** even here: returning a leased member to `ready`
+  with its runner still registered would be worse than the recycle, so the
+  approval is what authorises the deregister-then-reuse.
+
+**`system_release_ci_runner` is an allowlist, fail closed.** It runs without
+approval ONLY when `force` is not `true` AND the lease's work is provably
+finished, by the same signals the lease sweep releases on
+(`CiRunnerLeaseSweepService#work_finished?`):
+
+| Lease purpose | Ungated only when |
+|---|---|
+| `module_build` | its build Task exists and is terminal (a missing task parks) |
+| `generic` | its workflow run was fetched and is terminal (no run reference, a failed fetch or an in-flight run parks) |
+| `disk_image_build` | the same, and the publication has arrived |
+| anything else (`lint_discovery`) | never; it parks |
+
+The runner's own state is not read, because a warm builder self-registers with
+Gitea by label (a lease can run a job with no runner row, and the busy flag lags
+the run). So **an operator releasing a lease that carries no consumer signal
+(no build task, no workflow run) needs an approval**; there is no exception. A
+busy runner without `force` parks too; its approval replays without force and the
+lease service then refuses the busy runner. An unknown or finished lease, and a
+`releasing` lease whose member is no longer claimed, are answered inline.
+
+To avoid a separate return, release the lease: releasing it alone deregisters the
+runner and returns and recycles the member.
 
 > ### ⚠️ `pool_id` is NOT accepted here, and B does not "return to ready" by default
 >
@@ -400,7 +424,7 @@ will stop something.
 | Replenish | **Ungated** | `system.instance_pool_replenish` → `auto_approve` | `POST .../:id/replenish` and `system_replenish_instance_pool`, both on `System::InstancePoolService.replenish!` |
 | Drain | **MCP gated (c13-2 batch E-C); REST route ungated** | `system.instance_pool_drain` → `require_approval` | `system_drain_instance_pool` parks and replays through `Ai::Executors::DeferredToolCall`; `POST .../:id/drain` still calls `InstancePoolService.drain!` with no gate site |
 | Recycle stale | **MCP gated (c13-2 batch E-D); REST route and the 60 s sweep ungated, PLANE-SCOPED for an autonomous caller** (Environment campaign, incr. 7) | `system_recycle_pool` parks under `system.instance_pool_recycle` (unseeded, so `require_approval`); the REST route and the sweep are measured as `system.instance_terminate` — consulted, not gated | `POST .../:id/recycle_stale` (what the worker sweep calls) and `system_recycle_pool` (which replays as the original caller after approval), both on `InstancePoolService.recycle_stale_members!` — this one **terminates members**. The reaper (and an AGENT calling the MCP verb) now asks the pool's plane whether it would escalate a terminate there, and on a plane that would — protected (`ops`), supervised (`prod`), or listing the category in `approval_required_categories` — it withholds: members are flagged `pool_recycle_withheld_at`, one `system.pool.recycle_withheld_by_plane` event is emitted, and the summary reports `withheld_by_plane`. `dev` and `ci` churn exactly as before. A real USER forcing the phase through `system_recycle_pool` is not withheld — a person is what the escalation exists to reach |
-| Return / release (c13-4) | **MCP gated on the terminating path only** | `system.task.terminate` → `require_approval` | `system_return_pooled_instance` parks only when the member holds a live CI runner lease; `system_release_ci_runner` parks on `force` or a possibly mid-build lease. A healthy return or idle release stays ungated; both replay through `Ai::Executors::DeferredToolCall` and need a person's own session |
+| Return / release (c13-4) | **MCP gated on the terminating path only** | `system.task.terminate` → `require_approval` | `system_return_pooled_instance` parks only when the member holds a live CI runner lease; `system_release_ci_runner` is an allowlist: ungated only when `force` is not set and the lease's work is provably finished (terminal build task or workflow run, publication arrived for disk images), else it parks. A return of an unleased member stays ungated; both replay through `Ai::Executors::DeferredToolCall` and need a person's own session |
 | Acquire | **Ungated** | `system.instance_pool_acquire` → `auto_approve` | `system_acquire_pooled_instance`, plus four internal callers, on `InstancePoolService.acquire!` |
 
 Two qualifications on the word "ungated", both of which shrink it further:
