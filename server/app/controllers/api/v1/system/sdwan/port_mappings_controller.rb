@@ -165,7 +165,7 @@ module Api
             render_error(
               "Malformed value for: #{dropped.sort.join(', ')} — check each field's type " \
               "(source_cidrs is an array of CIDR strings, metadata an object)",
-              status: :unprocessable_entity
+              status: :unprocessable_content
             )
           end
 

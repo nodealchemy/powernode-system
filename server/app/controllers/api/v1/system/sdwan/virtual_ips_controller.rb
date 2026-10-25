@@ -174,7 +174,7 @@ module Api
           def failover
             require_permission("system.sdwan.vips.manage")
             if (blocker = @vip.failover_blocker(target_peer_id: params[:target_peer_id]))
-              return render_error(blocker, status: :unprocessable_entity)
+              return render_error(blocker, status: :unprocessable_content)
             end
 
             id = @vip.id

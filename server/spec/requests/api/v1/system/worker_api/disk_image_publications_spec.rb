@@ -337,7 +337,7 @@ RSpec.describe "Worker API: disk_image_publications", :account_bootstrap, type: 
       post "/api/v1/system/worker_api/disk_image_publications/initiate",
            params: initiate_params.to_json, headers: headers
 
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
     end
 
     it "422 when the platform has no cosign trust policy (direct upload requires publisher pinning)" do
@@ -346,7 +346,7 @@ RSpec.describe "Worker API: disk_image_publications", :account_bootstrap, type: 
       post "/api/v1/system/worker_api/disk_image_publications/initiate",
            params: initiate_params.to_json, headers: headers
 
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(response.body).to include("cosign trust policy")
     end
   end

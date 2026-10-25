@@ -70,7 +70,7 @@ RSpec.describe "Api::V1::System::NodeApi::Status#upload_task_log", type: :reques
 
     upload(task, { log: "early\n" })
 
-    expect(response).to have_http_status(:unprocessable_entity)
+    expect(response).to have_http_status(:unprocessable_content)
     expect(System::TaskLog.where(task_id: task.id)).to be_empty
   end
 
@@ -93,7 +93,7 @@ RSpec.describe "Api::V1::System::NodeApi::Status#upload_task_log", type: :reques
 
     upload(task, { log: "z" * 500 })
 
-    expect(response).to have_http_status(:payload_too_large)
+    expect(response).to have_http_status(:content_too_large)
     expect(System::TaskLog.where(task_id: task.id)).to be_empty
   end
 
@@ -112,7 +112,7 @@ RSpec.describe "Api::V1::System::NodeApi::Status#upload_task_log", type: :reques
 
     upload(task, { log: nil })
 
-    expect(response).to have_http_status(:unprocessable_entity)
+    expect(response).to have_http_status(:unprocessable_content)
     expect(System::TaskLog.where(task_id: task.id)).to be_empty
   end
 end

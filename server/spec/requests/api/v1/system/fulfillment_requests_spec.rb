@@ -206,7 +206,7 @@ RSpec.describe "Operator API — Fulfillment Requests", type: :request do
 
         post "/api/v1/system/fulfillment_requests/#{fr.id}/approve", headers: headers
 
-        expect(response).to have_http_status(:unprocessable_entity)
+        expect(response).to have_http_status(:unprocessable_content)
         expect(::System::FulfillmentAdvanceOrchestrator).not_to have_received(:advance!)
       end
     end

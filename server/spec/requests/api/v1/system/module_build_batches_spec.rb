@@ -205,7 +205,7 @@ RSpec.describe "Operator API — Module Build Batches", type: :request do
       post "/api/v1/system/module_build_batches/#{batch.id}/cancel",
            headers: auth_headers_for(canceller)
 
-      expect(response).to have_http_status(:unprocessable_entity)
+      expect(response).to have_http_status(:unprocessable_content)
       expect(batch.reload.status).to eq("complete")
     end
 

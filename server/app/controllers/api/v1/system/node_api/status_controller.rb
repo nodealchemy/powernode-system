@@ -467,18 +467,18 @@ module Api
           def upload_task_log
             if request.content_length.to_i > ::System::TaskLogStore::MAX_UPLOAD_BYTES
               return render_error("A task log upload is limited to #{::System::TaskLogStore::MAX_UPLOAD_BYTES} bytes",
-                                  status: :payload_too_large)
+                                  status: :content_too_large)
             end
 
             task = current_instance.tasks.find(params[:id])
             unless task.running? || task.finished?
               return render_error("A log can only be uploaded for a running or finished task (this one is #{task.status})",
-                                  status: :unprocessable_entity)
+                                  status: :unprocessable_content)
             end
 
             body = heartbeat_payload
             log = body["log"]
-            return render_error("log must be a string", status: :unprocessable_entity) unless log.is_a?(::String)
+            return render_error("log must be a string", status: :unprocessable_content) unless log.is_a?(::String)
 
             ::System::TaskLogStore.write!(
               task: task, instance: current_instance, text: log,

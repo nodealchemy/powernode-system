@@ -57,7 +57,7 @@ module Api
           unless result.ok?
             return render_error(
               "Batch is already #{@batch.status} and cannot be cancelled",
-              :unprocessable_entity
+              :unprocessable_content
             )
           end
 

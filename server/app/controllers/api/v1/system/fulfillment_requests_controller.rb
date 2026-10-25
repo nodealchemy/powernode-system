@@ -87,7 +87,7 @@ module Api
           unless @fulfillment_request.composed?
             return render_error(
               "fulfillment request is #{@fulfillment_request.state}, not composed",
-              :unprocessable_entity
+              :unprocessable_content
             )
           end
 
