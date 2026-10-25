@@ -142,7 +142,7 @@ The platform stores it in `system_task_logs` (one row per task, replaced by a re
 | `system_drain_instance_pool` | Stop replenishing (enforced — `replenish!` refuses a non-active pool) + terminate ready members; claimed members keep running. Reversible: `status: "active"` warms the pool back to its standing `target_size` |
 | `system_delete_instance_pool` | Remove a drained pool (refuses while members are still attached) |
 | `system_acquire_pooled_instance` | Atomic claim of a `ready` member |
-| `system_return_pooled_instance` | Return a claimed member to the pool (reaper resets state) |
+| `system_return_pooled_instance` | Return a claimed member to the pool (reaper resets state). A healthy return is ungated; a return of a member that still holds a live CI runner lease parks for approval under `system.task.terminate` (c13-4) |
 | `system_replenish_instance_pool` | Manual trigger of the reaper for this pool |
 
 #### Container runtimes

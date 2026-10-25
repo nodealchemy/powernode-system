@@ -226,6 +226,16 @@ platform.system_return_pooled_instance({
 
 `instance_id` is the **only** parameter this verb declares, and it is required.
 
+**Approval gate (c13-4).** A healthy return, which recycles or reuses a member
+nobody else holds, is ungated. A return of a member that still holds a live CI
+runner lease (`leased`, `registered`, `busy` or `releasing`) would terminate the
+VM under that lease, so it parks through `Ai::Executors::DeferredToolCall` under
+`system.task.terminate` (the category `system_terminate_instance` uses; seeded
+`require_approval`) and needs a person's own session to approve. Release the
+lease with `system_release_ci_runner` first to avoid the park. That verb is
+ungated too, except `force: true` (releasing a runner that is mid-build), which
+parks under the same category.
+
 > ### ⚠️ `pool_id` is NOT accepted here, and B does not "return to ready" by default
 >
 > | Old key / claim | What is actually true |
