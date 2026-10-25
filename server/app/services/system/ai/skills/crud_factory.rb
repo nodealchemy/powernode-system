@@ -45,7 +45,15 @@ module System
 
           tool_class, action = route
           result = tool(tool_class).execute(params: payload.merge(action: action))
-          result[:success] ? success(result[:data]) : failure(result[:error])
+          return failure(result[:error]) unless result[:success]
+
+          # A gated tool action (system_delete_architecture) parks instead of
+          # running. Keep that visible at the TOP level, in the shape
+          # BaseSkillExecutor#pending_result uses, so a caller reading only
+          # `success` cannot report an unexecuted operation as done.
+          return { success: true, pending: true, data: result[:data] } if result.dig(:data, :pending) == true
+
+          success(result[:data])
         end
       end
     end

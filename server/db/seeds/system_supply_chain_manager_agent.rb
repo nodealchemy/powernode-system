@@ -58,7 +58,7 @@ supply_chain_prompt = <<~PROMPT
   | `system.architecture.propose` | auto_approve | `architecture_propose` skill — the Ai::AgentProposal it files IS the human gate |
   | `system.architecture.create` | require_approval | `architecture_create` skill |
   | `system.architecture.update` | require_approval | `architecture_update` skill |
-  | `system.architecture.delete` | require_approval | `architecture_delete` skill |
+  | `system.architecture.delete` | require_approval | `system_delete_architecture` tool (the `architecture_delete` skill reaches it) |
 
   `suggest_architectures_for_fleet` is read-shaped (no gate): use it to ground
   a materialisation in the operator's actual fleet coverage before proposing

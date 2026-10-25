@@ -280,13 +280,12 @@ RSpec.describe "instance principal → nested skill executor → tool" do
       stub_const("Ai::Tools::SystemIngressTool::ACTION_EXECUTOR_OVERRIDES",
                  { "system_expose_service_publicly" => { architecture_id: architecture.id } })
 
-      # ArchitectureDeleteExecutor declares `requires_approval: true`, and since
-      # IMP-7e2bdc1774e4 BaseSkillExecutor#execute honours that BEFORE #perform.
-      # An auto-execute policy keeps the gate out of the way so THE DENY OVERLAY
-      # is what refuses below — otherwise these examples would pass on the
-      # approval refusal and stop proving anything about the overlay at all,
-      # which is the whole subject of this file. It also pins the stronger
-      # property: deny wins even where policy says proceed.
+      # ArchitectureDeleteExecutor declares no gate of its own (c13-2 batch E-D):
+      # the nested system_delete_architecture tool is the single gate. A user
+      # caller would park there, but the examples below are instance and
+      # userless callers, and the deny overlay refuses the instance ones BEFORE
+      # any gate. The policy stub is kept so deny winning even where policy says
+      # proceed stays pinned.
       auto_execute_skill_policy!(account, ::System::Ai::Skills::ArchitectureDeleteExecutor)
     end
 
@@ -324,14 +323,13 @@ RSpec.describe "instance principal → nested skill executor → tool" do
     # with user: nil and no instance provenance, and legitimately means
     # "trusted in-process caller".
     it "still lets a userless in-process caller run the same destroy-shaped action" do
-      # `gated: true` is what System::Fleet::DecisionEngine passes: the tick loop
-      # resolves the InterventionPolicy against the SIGNAL's category before it
-      # builds the executor, so the executor's own gate stands down for it
-      # (IMP-7e2bdc1774e4). The property under test is unchanged — a userless
-      # in-process caller still reaches the destroy-shaped nested tool.
+      # A userless in-process caller still reaches the destroy-shaped nested
+      # tool. The executor has no gate of its own (c13-2 batch E-D); the tool's
+      # gate resolves the same category, so the auto-execute policy stubbed above
+      # is what lets it proceed here (without one it parks).
       result = ::System::Ai::Skills::ArchitectureDeleteExecutor
                  .new(account: account, agent: nil, user: nil)
-                 .execute(gated: true, architecture_id: architecture.id)
+                 .execute(architecture_id: architecture.id)
 
       expect(result[:success]).to be true
       expect(::System::NodeArchitecture.exists?(architecture.id)).to be false

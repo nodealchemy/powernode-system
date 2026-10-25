@@ -20,9 +20,16 @@ module System
             deleted: :boolean,
             architecture_id: :string
           },
-          requires_approval: true,
+          # NOT gated here: this executor reaches system_delete_architecture
+          # through CrudFactory, and that tool action is itself gated
+          # (Ai::Executors::DeferredToolCall, category system.architecture.delete,
+          # c13-2 batch E-D). A gate on both parked a second approval on the
+          # replay and the row survived. The tool is the single gate; its
+          # deny overlay and permission check run on every path.
+          requires_approval: false,
           # DECLARED, not derived — see ArchitectureCreateExecutor
-          # (IMP-51e5c6184ae4): the seeded row is "system.architecture.delete".
+          # (IMP-51e5c6184ae4): the seeded row is "system.architecture.delete",
+          # the same category the tool's declaration parks under.
           action_category: "system.architecture.delete"
         )
 

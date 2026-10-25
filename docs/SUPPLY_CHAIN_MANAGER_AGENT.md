@@ -62,7 +62,12 @@ The agent ships with **7 intervention policies**:
 | `system.architecture.propose` | `auto_approve` | executor: `ArchitectureProposeExecutor` | The `Ai::AgentProposal` it creates is itself the human-review gate |
 | `system.architecture.create` | `require_approval` | executor: `ArchitectureCreateExecutor` | Catalog change — affects every account's available platforms |
 | `system.architecture.update` | `require_approval` | executor: `ArchitectureUpdateExecutor` | Catalog change |
-| `system.architecture.delete` | `require_approval` | executor: `ArchitectureDeleteExecutor` | Catalog change |
+| `system.architecture.delete` | `require_approval` | gated at the `system_delete_architecture` tool (reached by `ArchitectureDeleteExecutor`) | Catalog change |
+
+`architecture_delete` declares no gate of its own since c13-2 batch E-D: the
+`system_delete_architecture` tool it delegates to is the single gate and resolves the
+`system.architecture.delete` row, so one approval deletes and a skill run returns
+`pending: true` until then.
 
 "Reached through" is the door whose gate resolves the row: a **sensor** lane is
 gated on the Fleet Autonomy tick under this agent (HIER-P2A owner gating —
