@@ -4137,7 +4137,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         allow(fake_gitea_client).to receive(:delete_runner).and_return(success: true)
         allow(::System::ProvisioningService).to receive(:terminate_instance)
 
-        r = call("system_release_ci_runner", lease_id: lease_id)
+        r = call_direct("system_release_ci_runner", lease_id: lease_id)
 
         expect(r[:success]).to be true
         expect(r[:data][:ci_runner_lease][:status]).to eq("released")
@@ -4151,7 +4151,7 @@ RSpec.describe Ai::Tools::SystemFleetTool do
         lease_id = lease_r[:data][:ci_runner_lease][:id]
         runner.update!(status: "busy", busy: true)
 
-        r = call("system_release_ci_runner", lease_id: lease_id)
+        r = call_direct("system_release_ci_runner", lease_id: lease_id)
 
         expect(r[:success]).to be false
         expect(r[:error]).to include("busy")

@@ -68,6 +68,36 @@ module System
       @summary
     end
 
+    # Is the lease's work PROVABLY finished? An ALLOWLIST, answered false on any
+    # doubt, for callers that must not tear a build down (the MCP
+    # system_release_ci_runner gate). Runner state is deliberately not read: a
+    # warm builder self-registers with Gitea by label, so a lease can run a job
+    # with no git_runner_id, and the busy flag lags the run.
+    #
+    #   module_build      the build Task exists and is terminal (a missing Task is
+    #                     false, as is a lease with no build_task_id);
+    #   generic           the workflow run was FETCHED and is terminal (no run
+    #                     reference, a failed fetch or an in-flight run is false);
+    #   disk_image_build  the same, plus #publish_confirmed? exactly as the sweep
+    #                     waits for it before releasing;
+    #   anything else     false (lint_discovery is the platform's own).
+    def work_finished?(lease)
+      case lease.purpose
+      when "module_build"
+        return false if lease.build_task_id.blank?
+
+        task = ::System::Task.find_by(id: lease.build_task_id, account_id: @account.id)
+        task.present? && task.finished?
+      when "generic", "disk_image_build"
+        run = fetch_run(lease)
+        return false unless run && terminal_run?(run)
+
+        lease.purpose == "disk_image_build" ? publish_confirmed?(lease, run) : true
+      else
+        false
+      end
+    end
+
     # The readvance backstop below for ONE batch, on demand — the operator door
     # (system_readvance_module_build_batch) for when the cron that drives #run!
     # is not running: that tick is the only caller of the backstop, so a dead

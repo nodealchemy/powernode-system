@@ -3,14 +3,24 @@
 require "rails_helper"
 
 # c13-4 (operator ruling, 2026-10-24): system_return_pooled_instance and
-# system_release_ci_runner gate ONLY the terminating path through
+# system_release_ci_runner gate the terminating path through
 # Ai::Executors::DeferredToolCall, under the existing system.task.terminate
-# category. A healthy return/release that recycles a member stays ungated.
+# category.
 #
-#   system_release_ci_runner     force: true  (tears down a running build)
-#   system_return_pooled_instance a member that still holds a live CI runner
-#                                 lease (returning it terminates the VM under
-#                                 the lease, bypassing the lease's own release)
+#   system_release_ci_runner      ALLOWLIST, fail closed: ungated only when force
+#                                 is not true AND the lease's work is provably
+#                                 finished (CiRunnerLeaseSweepService#work_finished?:
+#                                 a terminal build task for module_build; a
+#                                 fetched, terminal workflow run for generic and
+#                                 disk_image_build, plus publish confirmation for
+#                                 the latter). No consumer signal, a failed run
+#                                 fetch or any other purpose parks. An unknown or
+#                                 finished lease, or a releasing lease whose member
+#                                 is no longer claimed, is answered inline.
+#   system_return_pooled_instance a member that still holds a live CI runner lease
+#                                 parks (returning it terminates the VM under the
+#                                 lease). A call the handler would refuse anyway
+#                                 (not a pool member, not claimed) is answered inline.
 RSpec.describe "c13-4 terminate/force paths of pool return and CI release park", type: :service do
   let(:account) { create(:account) }
   let!(:owner) { create(:user, account: account) } # first user: account owner
@@ -81,14 +91,24 @@ RSpec.describe "c13-4 terminate/force paths of pool return and CI release park",
            pool_state: "ready", pool_warming_started_at: 1.minute.ago, last_heartbeat_at: Time.current)
   end
 
-  def lease_for(instance, runner_busy: false)
+  # A generic lease correlated to a runner. With run: true it also carries a
+  # workflow run reference (the consumer signal the gate reads via the sweep's
+  # run fetch, stubbed by stub_run).
+  def lease_for(instance, runner_busy: false, run: false, purpose: "generic")
     runner = create(:git_runner, account: account,
                     name: ::System::CiRunnerRegistrationResolver.runner_name(instance))
     runner.update!(status: "busy", busy: true) if runner_busy
     instance.update!(pool_state: "claimed", pool_acquired_at: Time.current)
+    attrs = run ? { workflow_run_id: "42", workflow_run_repo: "acme/repo" } : {}
     ::System::CiRunnerLease.create!(account: account, node_instance: instance, instance_pool: pool,
-                                    status: runner_busy ? "busy" : "registered",
-                                    runner_name: runner.name, git_runner_id: runner.id)
+                                    purpose: purpose, status: runner_busy ? "busy" : "registered",
+                                    runner_name: runner.name, git_runner_id: runner.id, **attrs)
+  end
+
+  # What CiRunnerLeaseSweepService#fetch_run answers: a run hash, or nil (a failed fetch).
+  def stub_run(status: "completed", conclusion: "success")
+    run = status && { status: status, conclusion: conclusion }
+    allow_any_instance_of(::System::CiRunnerLeaseSweepService).to receive(:fetch_run).and_return(run)
   end
 
   # A module_build-style lease: no git_runner_id, tracked by a build Task.
@@ -117,19 +137,26 @@ RSpec.describe "c13-4 terminate/force paths of pool return and CI release park",
   describe "system_release_ci_runner" do
     let(:instance) { seed_leased_member }
 
+    def release(lease, **extra) = run(action: "system_release_ci_runner", lease_id: lease.id, **extra)
+
+    def expect_released_inline(result, lease)
+      expect(result).to include(success: true)
+      expect(result.dig(:data, :pending)).to be_nil
+      expect(Ai::DeferredOperation.count).to eq(0)
+      expect(lease.reload.status).to eq("released")
+    end
+
     it "force: true parks, deregistering and terminating nothing" do
       lease = lease_for(instance, runner_busy: true)
 
-      parked = run(action: "system_release_ci_runner", lease_id: lease.id, force: true)
-
-      expect_parked(parked)
+      expect_parked(release(lease, force: true))
       expect(lease.reload.status).to eq("busy")
       expect(terminated).to be_empty
     end
 
     it "force: true releases on approval, as the original caller" do
       lease = lease_for(instance, runner_busy: true)
-      parked = run(action: "system_release_ci_runner", lease_id: lease.id, force: true)
+      parked = release(lease, force: true)
 
       operation = approve!(parked)
 
@@ -138,35 +165,207 @@ RSpec.describe "c13-4 terminate/force paths of pool return and CI release park",
       expect(lease.reload.status).to eq("released")
     end
 
-    it "a plain release of an idle runner is ungated and recycles the member" do
-      lease = lease_for(instance)
-
-      result = run(action: "system_release_ci_runner", lease_id: lease.id)
-
-      expect(result).to include(success: true)
-      expect(result.dig(:data, :pending)).to be_nil
-      expect(result.dig(:data, :ci_runner_lease, :status)).to eq("released")
-      expect(Ai::DeferredOperation.count).to eq(0)
-      expect(terminated).to eq([ instance.id ])
-    end
-
-    it "a plain release of a busy runner is still refused inline, parking nothing" do
+    it "force given as the string \"true\" parks like force: true, and the approval forces the release" do
       lease = lease_for(instance, runner_busy: true)
 
-      result = run(action: "system_release_ci_runner", lease_id: lease.id)
+      parked = release(lease, force: "true")
+      expect_parked(parked)
+      operation = approve!(parked)
 
-      expect(result[:success]).to be(false)
-      expect(result[:error]).to include("busy")
-      expect(Ai::DeferredOperation.count).to eq(0)
+      expect(operation.status).to eq("completed")
+      expect(lease.reload.status).to eq("released")
     end
 
-    it "force: false is ungated" do
-      lease = lease_for(instance)
+    it "force: true parks even when the work is provably finished" do
+      stub_run
+      lease = lease_for(instance, run: true)
 
-      result = run(action: "system_release_ci_runner", lease_id: lease.id, force: false)
+      expect_parked(release(lease, force: true))
+      expect(terminated).to be_empty
+    end
 
-      expect(result.dig(:data, :pending)).to be_nil
-      expect(Ai::DeferredOperation.count).to eq(0)
+    describe "ungated: the lease's work is provably finished" do
+      it "generic lease whose workflow run is terminal" do
+        stub_run(status: "completed")
+        lease = lease_for(instance, run: true)
+
+        result = release(lease)
+
+        expect_released_inline(result, lease)
+        expect(terminated).to eq([ instance.id ])
+      end
+
+      it "force: false is ungated the same way" do
+        stub_run(status: "failed", conclusion: "failure")
+        lease = lease_for(instance, run: true)
+
+        expect_released_inline(release(lease, force: false), lease)
+      end
+
+      it "module_build lease whose build task is in a terminal state" do
+        lease = build_lease_for(instance, task_status: "complete")
+
+        result = release(lease)
+
+        expect_released_inline(result, lease)
+        expect(terminated).to eq([ instance.id ])
+      end
+
+      it "disk_image_build lease whose run is terminal and whose publication arrived" do
+        stub_run(status: "completed", conclusion: "success")
+        lease = lease_for(instance, run: true, purpose: "disk_image_build")
+        lease.update!(leased_at: 1.hour.ago)
+        allow_any_instance_of(::System::CiRunnerLeaseSweepService).to receive(:publish_arrived?).and_return(true)
+
+        expect_released_inline(release(lease), lease)
+      end
+
+      it "an unknown lease id is answered inline, parking nothing" do
+        result = run(action: "system_release_ci_runner", lease_id: SecureRandom.uuid, force: true)
+
+        expect(result[:success]).to be(false)
+        expect(result[:error]).to match(/not found/i)
+        expect(Ai::DeferredOperation.count).to eq(0)
+      end
+
+      it "another account's lease is answered inline, parking nothing" do
+        foreign = ::System::CiRunnerLease.create!(account: create(:account), node_instance: instance, status: "registered")
+
+        result = release(foreign, force: true)
+
+        expect(result[:success]).to be(false)
+        expect(result[:error]).to match(/not found/i)
+        expect(Ai::DeferredOperation.count).to eq(0)
+        expect(foreign.reload.status).to eq("registered")
+        expect(terminated).to be_empty
+      end
+
+      it "an already finished lease is idempotent, even with force" do
+        lease = ::System::CiRunnerLease.create!(account: account, node_instance: instance, status: "released")
+
+        result = release(lease, force: true)
+
+        expect(result).to include(success: true)
+        expect(result.dig(:data, :pending)).to be_nil
+        expect(Ai::DeferredOperation.count).to eq(0)
+        expect(terminated).to be_empty
+      end
+
+      it "a releasing lease whose member is no longer claimed (the handler has nothing left to tear down)" do
+        lease = lease_for(instance)
+        lease.update!(status: "releasing")
+        instance.update!(pool_state: "draining")
+
+        result = release(lease)
+
+        expect(result.dig(:data, :pending)).to be_nil
+        expect(Ai::DeferredOperation.count).to eq(0)
+        expect(terminated).to be_empty
+      end
+    end
+
+    describe "parks: the work is not provably finished (fail closed)" do
+      it "M-1a: a generic lease still `leased` with no runner and no consumer signal" do
+        fresh = ::System::CiRunnerLease.create!(account: account, node_instance: seed_claimed(instance), instance_pool: pool,
+                                                status: "leased", runner_name: "fresh-runner")
+
+        expect_parked(release(fresh))
+        expect(fresh.reload.status).to eq("leased")
+        expect(terminated).to be_empty
+      end
+
+      it "a registered lease with an idle runner but no consumer signal at all" do
+        lease = lease_for(instance)
+
+        expect_parked(release(lease))
+        expect(terminated).to be_empty
+      end
+
+      it "M-1b: a registered lease whose workflow run is still in progress (sweep has not marked it busy)" do
+        stub_run(status: "in_progress", conclusion: nil)
+        lease = lease_for(instance, run: true)
+
+        expect_parked(release(lease))
+        expect(terminated).to be_empty
+      end
+
+      it "a run fetch failure" do
+        stub_run(status: nil)
+        lease = lease_for(instance, run: true)
+
+        expect_parked(release(lease))
+        expect(terminated).to be_empty
+      end
+
+      it "a busy runner without force (no time-of-check gap: it parks rather than being refused inline)" do
+        stub_run(status: "in_progress", conclusion: nil)
+        lease = lease_for(instance, run: true, runner_busy: true)
+
+        parked = release(lease)
+        expect_parked(parked)
+
+        # The approval does not force: the lease service still refuses the busy runner.
+        operation = approve!(parked)
+        expect(operation.result.with_indifferent_access).to include(success: false)
+        expect(operation.result.with_indifferent_access[:error]).to include("busy")
+        expect(lease.reload.status).to eq("busy")
+        expect(terminated).to be_empty
+      end
+
+      it "a lease status of busy with no consumer signal" do
+        lease = lease_for(instance)
+        lease.update!(status: "busy")
+
+        expect_parked(release(lease))
+      end
+
+      it "a lease already in releasing whose member is still claimed" do
+        lease = lease_for(instance)
+        lease.update!(status: "releasing")
+
+        expect_parked(release(lease))
+      end
+
+      it "a module_build lease whose build task is running" do
+        lease = build_lease_for(instance, task_status: "running")
+
+        expect_parked(release(lease))
+        expect(lease.reload.status).to eq("registered")
+        expect(terminated).to be_empty
+      end
+
+      it "a module_build lease whose build task is pending" do
+        expect_parked(release(build_lease_for(instance, task_status: "pending")))
+      end
+
+      it "L-4: a module_build lease whose build task row is missing" do
+        lease = build_lease_for(instance, task_status: "complete")
+        ::System::Task.where(id: lease.build_task_id).delete_all
+
+        expect_parked(release(lease))
+      end
+
+      it "a module_build lease with no build task id" do
+        lease = lease_for(instance, purpose: "module_build")
+
+        expect_parked(release(lease))
+      end
+
+      it "L-2: a disk_image_build lease whose run succeeded but whose publication has not arrived" do
+        stub_run(status: "completed", conclusion: "success")
+        lease = lease_for(instance, run: true, purpose: "disk_image_build")
+        lease.update!(leased_at: 1.hour.ago)
+
+        expect_parked(release(lease))
+        expect(terminated).to be_empty
+      end
+
+      it "a lint_discovery lease (the platform's own, no operator consumer signal)" do
+        stub_run
+        lease = lease_for(instance, run: true, purpose: "lint_discovery")
+
+        expect_parked(release(lease))
+      end
     end
 
     it "refuses a caller lacking the tool's permission, parking nothing" do
@@ -180,112 +379,9 @@ RSpec.describe "c13-4 terminate/force paths of pool return and CI release park",
       expect(Ai::DeferredOperation.count).to eq(0)
     end
 
-    it "force: true on another account's lease is ungated: the handler refuses inline, parking nothing" do
-      other = create(:account)
-      foreign = ::System::CiRunnerLease.create!(account: other, node_instance: instance, status: "registered")
-
-      result = run(action: "system_release_ci_runner", lease_id: foreign.id, force: true)
-
-      expect(result[:success]).to be(false)
-      expect(result[:error]).to match(/not found|couldn't find/i)
-      expect(Ai::DeferredOperation.count).to eq(0)
-      expect(foreign.reload.status).to eq("registered")
-      expect(terminated).to be_empty
-    end
-
-    it "force: true on an unknown lease id is ungated and answered inline" do
-      result = run(action: "system_release_ci_runner", lease_id: SecureRandom.uuid, force: true)
-
-      expect(result[:success]).to be(false)
-      expect(result[:error]).to match(/not found|couldn't find/i)
-      expect(Ai::DeferredOperation.count).to eq(0)
-    end
-
-    it "force: true on an already finished lease is ungated and idempotent" do
-      lease = ::System::CiRunnerLease.create!(account: account, node_instance: instance, status: "released")
-
-      result = run(action: "system_release_ci_runner", lease_id: lease.id, force: true)
-
-      expect(result).to include(success: true)
-      expect(result.dig(:data, :pending)).to be_nil
-      expect(Ai::DeferredOperation.count).to eq(0)
-      expect(terminated).to be_empty
-    end
-
-    it "force given as the string \"true\" parks like force: true, and the approval forces the release" do
-      lease = lease_for(instance, runner_busy: true)
-
-      parked = run(action: "system_release_ci_runner", lease_id: lease.id, force: "true")
-      expect_parked(parked)
-      operation = approve!(parked)
-
-      expect(operation.status).to eq("completed")
-      expect(lease.reload.status).to eq("released")
-    end
-
-    # M1: the service refuses a non-forced release only when the runner row
-    # reads busy. These states reach release! with nothing to refuse them.
-    it "parks a non-forced release of a module_build lease (no runner) whose build task is running" do
-      lease = build_lease_for(instance, task_status: "running")
-
-      parked = run(action: "system_release_ci_runner", lease_id: lease.id)
-
-      expect_parked(parked)
-      expect(lease.reload.status).to eq("registered")
-      expect(terminated).to be_empty
-    end
-
-    it "does not park a no-runner module_build lease whose build task has finished" do
-      lease = build_lease_for(instance, task_status: "complete")
-
-      result = run(action: "system_release_ci_runner", lease_id: lease.id)
-
-      expect(result).to include(success: true)
-      expect(result.dig(:data, :pending)).to be_nil
-      expect(terminated).to eq([ instance.id ])
-    end
-
-    it "parks a non-forced release when the lease status is busy but the runner row reads idle" do
-      lease = lease_for(instance)
-      lease.update!(status: "busy")
-
-      parked = run(action: "system_release_ci_runner", lease_id: lease.id)
-
-      expect_parked(parked)
-      expect(terminated).to be_empty
-    end
-
-    it "parks a non-forced release of a lease whose runner row is gone" do
-      lease = lease_for(instance)
-      Devops::GitRunner.where(id: lease.git_runner_id).delete_all
-
-      parked = run(action: "system_release_ci_runner", lease_id: lease.id)
-
-      expect_parked(parked)
-      expect(terminated).to be_empty
-    end
-
-    it "parks a non-forced release of a lease already in releasing" do
-      lease = lease_for(instance)
-      lease.update!(status: "releasing")
-
-      parked = run(action: "system_release_ci_runner", lease_id: lease.id)
-
-      expect_parked(parked)
-    end
-
-    it "leaves a freshly leased lease with no runner and no build task ungated" do
-      node = create(:system_node, account: account, node_template: template)
-      fresh = create(:system_node_instance, node: node, status: "running", variety: "cloud",
-                     provider_region: region, provider_instance_type: itype, instance_pool_id: pool.id,
-                     pool_state: "claimed", pool_acquired_at: Time.current, last_heartbeat_at: Time.current)
-      lease = ::System::CiRunnerLease.create!(account: account, node_instance: fresh, instance_pool: pool,
-                                              status: "leased", runner_name: "fresh-runner")
-
-      result = run(action: "system_release_ci_runner", lease_id: lease.id)
-
-      expect(result).to include(success: true)
-      expect(result.dig(:data, :pending)).to be_nil
+    def seed_claimed(inst)
+      inst.update!(pool_state: "claimed", pool_acquired_at: Time.current)
+      inst
     end
   end
 
@@ -330,7 +426,7 @@ RSpec.describe "c13-4 terminate/force paths of pool return and CI release park",
       approve!(parked)
 
       expect(lease.reload.status).to eq("released")
-      expect(::Devops::GitRunner.where(id: lease.git_runner_id)).not_to exist if lease.git_runner_id
+      expect(::Devops::GitRunner.where(id: lease.git_runner_id)).not_to exist
       expect(member.reload.pool_state).to eq("draining")
       expect(terminated).to eq([ member.id ])
     end
@@ -348,10 +444,54 @@ RSpec.describe "c13-4 terminate/force paths of pool return and CI release park",
       expect(member.reload.pool_state).to eq("claimed")
     end
 
-    # S3: the lease was released (ungated, idle) while the return sat parked.
-    it "refuses the replay, recycling nothing twice, when the lease was released while parked" do
+    # L-5: in a reuse_without_reset pool the approved return deregisters the runner
+    # first (lease released), then the member goes back to ready: no terminate.
+    it "reuses a leased member in a reuse_without_reset pool on approval: runner deregistered, no terminate" do
+      pool.update!(metadata: { "reuse_without_reset" => true })
       lease = lease_for(member)
       parked = run(action: "system_return_pooled_instance", instance_id: member.id)
+
+      operation = approve!(parked)
+
+      result = operation.result.with_indifferent_access
+      expect(operation.status).to eq("completed")
+      expect(result).not_to include(success: false)
+      expect(result.dig(:data, :disposition)).to eq("reused")
+      expect(lease.reload.status).to eq("released")
+      expect(::Devops::GitRunner.where(id: lease.git_runner_id)).not_to exist
+      expect(member.reload.pool_state).to eq("ready")
+      expect(terminated).to be_empty
+    end
+
+    # L-1: a recycle pool says "recycled" even when the member is cordoned; the
+    # label "cordoned" belongs to the reuse path only.
+    it "labels a cordoned leased member in a recycle pool \"recycled\"" do
+      allow_any_instance_of(::System::NodeInstance).to receive(:cordoned?).and_return(true)
+      lease_for(member)
+      parked = run(action: "system_return_pooled_instance", instance_id: member.id)
+
+      operation = approve!(parked)
+
+      expect(operation.result.with_indifferent_access.dig(:data, :disposition)).to eq("recycled")
+      expect(terminated).to eq([ member.id ])
+    end
+
+    it "answers inline, parking nothing, for a member that is not claimed even with a live lease" do
+      lease_for(member)
+      member.update!(pool_state: "draining")
+
+      result = run(action: "system_return_pooled_instance", instance_id: member.id)
+
+      expect(result[:success]).to be(false)
+      expect(result[:error]).to include("can only return 'claimed'")
+      expect(Ai::DeferredOperation.count).to eq(0)
+    end
+
+    # S3: the lease was released (ungated, idle) while the return sat parked.
+    it "refuses the replay, recycling nothing twice, when the lease was released while parked" do
+      lease = lease_for(member, run: true)
+      parked = run(action: "system_return_pooled_instance", instance_id: member.id)
+      stub_run # the run finished meanwhile, so the release needs no approval
       run(action: "system_release_ci_runner", lease_id: lease.id)
       expect(terminated).to eq([ member.id ])
 

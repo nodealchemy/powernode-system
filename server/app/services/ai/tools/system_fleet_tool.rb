@@ -1172,9 +1172,10 @@ module Ai
                      gate_context: :deferred_tool_call_context,
                      on_proceed: :deferred_tool_call_result
       declare_action "system_refresh_instance_modules", mutating: true
-      # c13-4 (operator ruling 2026-10-24): only force: true meets the gate. It
-      # releases a runner that is mid-build, tearing the build down with the VM.
-      # A plain release (idle runner, or the inline busy refusal) is ungated.
+      # c13-4 (operator ruling 2026-10-24): the release recycles the VM, so it is
+      # gated unless the lease's work is provably finished and force is not set
+      # (fail closed; see #release_ci_runner_ungated?). An unknown or finished
+      # lease is answered inline.
       declare_action "system_release_ci_runner", mutating: true, family: "devops", returns: "ci_runner_lease, re-read",
                      action_category: TERMINATE_GATE_CATEGORY,
                      executor_class: "Ai::Executors::DeferredToolCall",
@@ -2793,7 +2794,7 @@ module Ai
             }
           },
           "system_release_ci_runner" => {
-            description: "Release a CI runner lease: deregister the runner from Gitea and recycle its pooled instance (terminate + backfill). Refuses a busy runner unless force is set (never tears down a running build). APPROVAL-GATED (system.task.terminate) when force is true, or when the lease may be mid-build: status busy or releasing, a build task still running, or a runner row that is missing. A plain release of an idle runner, an unknown or finished lease, or a runner that reads busy (refused inline) is ungated.",
+            description: "Release a CI runner lease: deregister the runner from Gitea and recycle its pooled instance (terminate + backfill). Refuses a busy runner unless force is set (never tears down a running build). APPROVAL-GATED (system.task.terminate), fail closed: the call runs without approval ONLY when force is not true AND the lease's work is provably finished (module_build: its build task is terminal; generic: its workflow run was fetched and is terminal; disk_image_build: the same plus the publication arrived). A lease with no build task or workflow run, a run that cannot be fetched, a running build, a busy runner or force true all park. An unknown or finished lease is answered inline.",
             parameters: {
               lease_id: { type: "string", required: true, description: "UUID of the CiRunnerLease to release (account-scoped)" },
               force: { type: "boolean", required: false, description: "Release even if the runner is currently busy (default false). force true parks for approval (system.task.terminate)" }
@@ -9585,8 +9586,11 @@ module Ai
           if instance.pool_state == "claimed"
             ::System::InstancePoolService.release!(instance: instance, pool: pool)
           else
+            # Labels as InstancePoolService#perform_release! gives them: a recycle
+            # pool says "recycled" (cordoned or not); "cordoned" belongs to the
+            # reuse_without_reset path, which fences a cordoned member.
             { "ready" => "reused", "errored" => "errored" }.fetch(instance.pool_state) do
-              instance.cordoned? ? "cordoned" : "recycled"
+              pool.metadata.is_a?(Hash) && pool.metadata["reuse_without_reset"] && instance.cordoned? ? "cordoned" : "recycled"
             end
           end
 
@@ -10020,39 +10024,32 @@ module Ai
         [ true, "true" ].include?(params[:force])
       end
 
-      # The ungated arm of system_release_ci_runner (c13-4, M1). The gate keys on
-      # STATE, not on the force flag alone, because CiRunnerLeaseService#release!
-      # refuses a non-forced release only when the runner row reads busy. It has
-      # nothing to refuse with when the runner is unknown (module_build leases
-      # carry no git_runner_id; a runner row may be gone; a GitRunner sync may be
-      # stale), and a non-forced call would then tear a mid-build VM down.
+      # The ungated arm of system_release_ci_runner (c13-4): an ALLOWLIST, fail
+      # closed. The runner signals cannot be trusted to say "idle" (a warm
+      # builder self-registers by label so a lease can run a job with no
+      # git_runner_id; the busy flag lags the run; a fetch can fail), so the call
+      # is ungated ONLY when the lease is resolvable and its work is PROVABLY
+      # finished, and parks otherwise. Consequence, stated: an operator releasing
+      # a lease that carries no consumer signal (no build task, no workflow run)
+      # needs an approval; there is no exception for it.
       #
-      # Ungated (the handler answers inline):
-      #   * the lease is unresolvable in this account or already finished, so the
-      #     handler refuses or no-ops and an approval could never do more;
-      #   * the runner reads busy and force is not set, so release! refuses;
-      #   * a healthy idle lease: status leased/registered, its runner known and
-      #     not busy (or no runner at all because none registered yet), and no
-      #     build task still in flight.
-      # Everything else, and every force, parks.
+      # Answered inline, never parked (an approval could not do more):
+      #   * a lease unresolvable in this account, or already finished;
+      #   * a releasing lease whose member is no longer claimed: the teardown is
+      #     already done, release! only closes the lease.
+      # Then force true parks. Then the allowlist, in
+      # CiRunnerLeaseSweepService#work_finished? (the same signals the sweep
+      # releases on). The runner's busy flag is NOT consulted: a busy runner
+      # without force parks like any other unproven lease, so no time-of-check
+      # gap can release it without approval (its approval still replays without
+      # force, and the lease service then refuses the busy runner).
       def release_ci_runner_ungated?(params)
         lease = ::System::CiRunnerLease.where(account_id: @account.id).find_by(id: params[:lease_id])
         return true if lease.nil? || lease.finished?
+        return true if lease.releasing? && !lease.node_instance&.pool_claimed?
         return false if release_ci_runner_force?(params)
 
-        runner = lease.git_runner_id.present? ? @account.git_runners.find_by(id: lease.git_runner_id) : nil
-        return true if runner&.busy?
-        return false unless %w[leased registered].include?(lease.status)
-        return false if lease.git_runner_id.present? && runner.nil?
-
-        !release_ci_runner_build_in_flight?(lease)
-      end
-
-      def release_ci_runner_build_in_flight?(lease)
-        return false if lease.build_task_id.blank?
-
-        task = ::System::Task.find_by(id: lease.build_task_id, account_id: @account.id)
-        task.present? && !task.finished?
+        ::System::CiRunnerLeaseSweepService.new(account: @account).work_finished?(lease)
       end
 
       # The ungated arm of system_return_pooled_instance: the member holds no
@@ -10065,6 +10062,8 @@ module Ai
       def return_pooled_instance_not_leased?(params)
         instance = account_instances.find_by(id: params[:instance_id])
         return true unless instance
+        # The handler refuses these inline; an approval could not do more.
+        return true if instance.instance_pool_id.blank? || instance.pool_state != "claimed"
 
         !::System::CiRunnerLease.where(account_id: @account.id, node_instance_id: instance.id).active.exists?
       end
