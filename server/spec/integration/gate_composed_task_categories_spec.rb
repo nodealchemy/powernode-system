@@ -224,6 +224,20 @@ module GateComposedTaskCategories
               "category TasksController#create composes for a restart, so one " \
               "operator-tuned row governs a unit restart through either door.",
       commands: -> { %w[restart] }
+    },
+    {
+      file: "app/services/ai/tools/system_fleet_tool.rb",
+      # ADDED at c13-2 batch E-D: system_upgrade_boot_image became gate-routed
+      # and reuses the category its command already used.
+      source: 'action_category: "system.task.upgrade_boot_image"',
+      # NOT ExecuteTask. The generic replay executor re-invokes the verb, whose
+      # arm (#upgrade_boot_image -> System::BootImage::UpgradeDispatcher) inserts
+      # ONE System::Task with command "upgrade_boot_image". The drift-rollout
+      # lane calls the dispatcher directly and never meets this gate.
+      executor: "Ai::Executors::DeferredToolCall",
+      domain: "Literal category on the MCP system_upgrade_boot_image arm — the " \
+              "seeded require_approval row for the command governs the verb too.",
+      commands: -> { %w[upgrade_boot_image] }
     }
   ].freeze
 
