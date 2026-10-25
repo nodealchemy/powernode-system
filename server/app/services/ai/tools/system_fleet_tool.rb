@@ -1180,7 +1180,7 @@ module Ai
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :deferred_tool_call_context,
                      on_proceed: :deferred_tool_call_result,
-                     ungated_when: :release_ci_runner_not_forced?
+                     ungated_when: :release_ci_runner_ungated?
       # IMP-4e49eb79c5e0 — THE DR LANE'S FIRST DOOR (the additive half).
       # Acquires a warm pool member, moves the failed instance's volumes, VIPs
       # and SDWAN membership onto it, and TERMINATES NOTHING — the reap is
@@ -2717,7 +2717,7 @@ module Ai
 
           # === Gap remediation slice 3 — pool ops + canary marking ===
           "system_return_pooled_instance" => {
-            description: "Return a claimed instance back to its pool. Default disposition is 'recycled': the member drains + terminates and the replenisher provisions a fresh one (no cross-mission data residue). Pools with metadata reuse_without_reset=true (same-trust-domain workloads only) instead re-mark the member 'ready' for reuse ('reused' disposition) — unless it is cordoned (system_cordon_instance), in which case it is fenced instead: pool_state=draining, 'cordoned' disposition, and system_uncordon_instance re-admits it.",
+            description: "Return a claimed instance back to its pool. Default disposition is 'recycled': the member drains + terminates and the replenisher provisions a fresh one (no cross-mission data residue). Pools with metadata reuse_without_reset=true (same-trust-domain workloads only) instead re-mark the member 'ready' for reuse ('reused' disposition) — unless it is cordoned (system_cordon_instance), in which case it is fenced instead: pool_state=draining, 'cordoned' disposition, and system_uncordon_instance re-admits it. APPROVAL-GATED (system.task.terminate) when the member still holds a live CI runner lease: the approved call releases the lease (deregisters the runner) and recycles the member. A return of a member with no live lease is ungated, in a reuse_without_reset pool too.",
             parameters: {
               instance_id: { type: "string", required: true, description: "UUID of the claimed pool NodeInstance to return to its pool" }
             }
@@ -2793,10 +2793,10 @@ module Ai
             }
           },
           "system_release_ci_runner" => {
-            description: "Release a CI runner lease: deregister the runner from Gitea and recycle its pooled instance (terminate + backfill). Refuses a busy runner unless force is set (never tears down a running build).",
+            description: "Release a CI runner lease: deregister the runner from Gitea and recycle its pooled instance (terminate + backfill). Refuses a busy runner unless force is set (never tears down a running build). APPROVAL-GATED (system.task.terminate) when force is true, or when the lease may be mid-build: status busy or releasing, a build task still running, or a runner row that is missing. A plain release of an idle runner, an unknown or finished lease, or a runner that reads busy (refused inline) is ungated.",
             parameters: {
               lease_id: { type: "string", required: true, description: "UUID of the CiRunnerLease to release (account-scoped)" },
-              force: { type: "boolean", required: false, description: "Release even if the runner is currently busy (default false)" }
+              force: { type: "boolean", required: false, description: "Release even if the runner is currently busy (default false). force true parks for approval (system.task.terminate)" }
             }
           },
           "system_list_ci_runner_leases" => {
@@ -9572,7 +9572,23 @@ module Ai
         end
 
         pool = ::System::InstancePool.for_account(@account).find(instance.instance_pool_id)
-        disposition = ::System::InstancePoolService.release!(instance: instance, pool: pool)
+
+        # c13-4: an approved return of a member that holds a live CI runner lease
+        # closes each lease first, through the lease service (deregister the
+        # runner, recycle the member), so no lease is left pointing at a dead VM.
+        # force: the approval is the decision to tear the build down.
+        ::System::CiRunnerLease.where(account_id: @account.id, node_instance_id: instance.id).active.find_each do |lease|
+          ::System::CiRunnerLeaseService.release!(account: @account, lease: lease, force: true)
+        end
+        instance.reload
+        disposition =
+          if instance.pool_state == "claimed"
+            ::System::InstancePoolService.release!(instance: instance, pool: pool)
+          else
+            { "ready" => "reused", "errored" => "errored" }.fetch(instance.pool_state) do
+              instance.cordoned? ? "cordoned" : "recycled"
+            end
+          end
 
         success_result(
           returned: true,
@@ -9580,6 +9596,8 @@ module Ai
           instance: serialize_instance(instance.reload),
           pool: pool.reload.to_summary
         )
+      rescue ::System::CiRunnerLeaseService::LeaseError => e
+        error_result(e.message)
       end
 
       # Destroys an InstancePool. Errors if the pool still has any members
@@ -9995,15 +10013,55 @@ module Ai
         error_result(e.message)
       end
 
-      # The ungated arm of system_release_ci_runner: anything but force: true,
-      # read exactly as #release_ci_runner reads it.
-      def release_ci_runner_not_forced?(params)
-        params[:force] != true
+      # force intent, read once for the gate and the handler so they cannot
+      # disagree. The string "true" (an MCP client that stringifies booleans)
+      # counts: it parks, and its approval then really forces the release.
+      def release_ci_runner_force?(params)
+        [ true, "true" ].include?(params[:force])
+      end
+
+      # The ungated arm of system_release_ci_runner (c13-4, M1). The gate keys on
+      # STATE, not on the force flag alone, because CiRunnerLeaseService#release!
+      # refuses a non-forced release only when the runner row reads busy. It has
+      # nothing to refuse with when the runner is unknown (module_build leases
+      # carry no git_runner_id; a runner row may be gone; a GitRunner sync may be
+      # stale), and a non-forced call would then tear a mid-build VM down.
+      #
+      # Ungated (the handler answers inline):
+      #   * the lease is unresolvable in this account or already finished, so the
+      #     handler refuses or no-ops and an approval could never do more;
+      #   * the runner reads busy and force is not set, so release! refuses;
+      #   * a healthy idle lease: status leased/registered, its runner known and
+      #     not busy (or no runner at all because none registered yet), and no
+      #     build task still in flight.
+      # Everything else, and every force, parks.
+      def release_ci_runner_ungated?(params)
+        lease = ::System::CiRunnerLease.where(account_id: @account.id).find_by(id: params[:lease_id])
+        return true if lease.nil? || lease.finished?
+        return false if release_ci_runner_force?(params)
+
+        runner = lease.git_runner_id.present? ? @account.git_runners.find_by(id: lease.git_runner_id) : nil
+        return true if runner&.busy?
+        return false unless %w[leased registered].include?(lease.status)
+        return false if lease.git_runner_id.present? && runner.nil?
+
+        !release_ci_runner_build_in_flight?(lease)
+      end
+
+      def release_ci_runner_build_in_flight?(lease)
+        return false if lease.build_task_id.blank?
+
+        task = ::System::Task.find_by(id: lease.build_task_id, account_id: @account.id)
+        task.present? && !task.finished?
       end
 
       # The ungated arm of system_return_pooled_instance: the member holds no
       # live CI runner lease. An unknown or foreign instance id is "not leased"
       # here and is refused by the handler itself, parking nothing.
+      #
+      # A leased member parks EVEN in a reuse_without_reset pool, on purpose:
+      # the reuse path would put it back to ready with its runner still
+      # registered, which is worse than the recycle.
       def return_pooled_instance_not_leased?(params)
         instance = account_instances.find_by(id: params[:instance_id])
         return true unless instance
@@ -10012,8 +10070,10 @@ module Ai
       end
 
       def release_ci_runner(params)
-        lease = ::System::CiRunnerLease.where(account_id: @account.id).find(params[:lease_id])
-        ::System::CiRunnerLeaseService.release!(account: @account, lease: lease, force: params[:force] == true)
+        lease = ::System::CiRunnerLease.where(account_id: @account.id).find_by(id: params[:lease_id])
+        return error_result("CI runner lease not found") unless lease
+
+        ::System::CiRunnerLeaseService.release!(account: @account, lease: lease, force: release_ci_runner_force?(params))
         success_result(ci_runner_lease: serialize_ci_runner_lease(lease.reload))
       rescue ::System::CiRunnerLeaseService::LeaseError => e
         error_result(e.message)
