@@ -603,6 +603,14 @@ module Ai
       # literals are core's; restated here for the class-body-evaluation reason
       # POOL_CREATE_CATEGORY gives, and pinned against core by
       # spec/services/ai/tools/system_fleet_release_gating_spec.rb.
+      # c13-4: the category system_terminate_instance already gates on, reused for
+      # the terminating arms of system_return_pooled_instance and
+      # system_release_ci_runner. A constant, not the literal, so the gate-site
+      # census (gate_composed_task_categories_spec) keeps one site per verb that
+      # NAMES the category in a declare_action rather than counting these twice.
+      # "*terminate*" is in HumanSessionPolicy::DESTRUCTIVE_CATEGORY_PATTERNS, so
+      # approving either parked call needs a person's own session.
+      TERMINATE_GATE_CATEGORY = "system.task.terminate"
       RELEASE_BUILD_DISPATCH_CATEGORY = "release.build_dispatch"
       RELEASE_PROMOTE_CATEGORY        = "release.promote"
       RELEASE_ROLLBACK_CATEGORY       = "release.rollback"
@@ -662,8 +670,10 @@ module Ai
       # from that list — this paragraph is a pointer to it, not a second oracle.
       # Nothing else on this tool meets a gate.
       # The same ProvisioningService.terminate_instance call is still reachable
-      # from verbs that are not gated: system_return_pooled_instance (via
-      # System::InstancePoolService#terminate_member) and the skill executors
+      # from verbs that are not gated: system_return_pooled_instance's healthy
+      # recycle (via System::InstancePoolService#terminate_member; the leased-
+      # member terminate is gated since c13-4, as is system_release_ci_runner
+      # force) and the skill executors
       # that call the service below this chokepoint entirely. Each is mapped to
       # system.instances.control, the SAME permission this action checks, so a
       # caller holding exactly that credential can still destroy instances with
@@ -1162,7 +1172,15 @@ module Ai
                      gate_context: :deferred_tool_call_context,
                      on_proceed: :deferred_tool_call_result
       declare_action "system_refresh_instance_modules", mutating: true
-      declare_action "system_release_ci_runner", mutating: true, family: "devops", returns: "ci_runner_lease, re-read"
+      # c13-4 (operator ruling 2026-10-24): only force: true meets the gate. It
+      # releases a runner that is mid-build, tearing the build down with the VM.
+      # A plain release (idle runner, or the inline busy refusal) is ungated.
+      declare_action "system_release_ci_runner", mutating: true, family: "devops", returns: "ci_runner_lease, re-read",
+                     action_category: TERMINATE_GATE_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result,
+                     ungated_when: :release_ci_runner_not_forced?
       # IMP-4e49eb79c5e0 — THE DR LANE'S FIRST DOOR (the additive half).
       # Acquires a warm pool member, moves the failed instance's volumes, VIPs
       # and SDWAN membership onto it, and TERMINATES NOTHING — the reap is
@@ -1310,7 +1328,16 @@ module Ai
                      refuses: "the key is not in this account, is not an operator key, or is consumed, revoked or expired"
       declare_action "system_replenish_instance_pool", mutating: true, returns: "pool summary and the replenish result"
       declare_action "system_report_storage_migration_progress", mutating: true, family: "storage", returns: "storage_migration, full record", refuses: "the status change is not a legal transition"
-      declare_action "system_return_pooled_instance", mutating: true
+      # c13-4 (operator ruling 2026-10-24): gated only when the return would
+      # terminate a member that still holds a live CI runner lease (the lease's
+      # own release is the path that deregisters the runner first). A healthy
+      # return that recycles an unleased member stays ungated.
+      declare_action "system_return_pooled_instance", mutating: true,
+                     action_category: TERMINATE_GATE_CATEGORY,
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result,
+                     ungated_when: :return_pooled_instance_not_leased?
       # HIER-P2H — the three disk-image verbs, approval-gated on the categories
       # the Disk Image Manager seed already carries (see DISK_IMAGE_*_CATEGORY
       # above). Same shape as system_delete_volume_snapshot: the generic replay
@@ -9966,6 +9993,22 @@ module Ai
         success_result(ci_runner_lease: serialize_ci_runner_lease(lease))
       rescue ::System::CiRunnerLeaseService::LeaseError => e
         error_result(e.message)
+      end
+
+      # The ungated arm of system_release_ci_runner: anything but force: true,
+      # read exactly as #release_ci_runner reads it.
+      def release_ci_runner_not_forced?(params)
+        params[:force] != true
+      end
+
+      # The ungated arm of system_return_pooled_instance: the member holds no
+      # live CI runner lease. An unknown or foreign instance id is "not leased"
+      # here and is refused by the handler itself, parking nothing.
+      def return_pooled_instance_not_leased?(params)
+        instance = account_instances.find_by(id: params[:instance_id])
+        return true unless instance
+
+        !::System::CiRunnerLease.where(account_id: @account.id, node_instance_id: instance.id).active.exists?
       end
 
       def release_ci_runner(params)
