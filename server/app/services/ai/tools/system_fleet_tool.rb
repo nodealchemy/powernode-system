@@ -648,43 +648,32 @@ module Ai
       # consulted. On :proceed the response is what it always was
       # (`terminated: true` + the instance); on require_approval it parks.
       #
-      # SCOPE, stated so this is not read as more than it is. SEVENTEEN verbs on
-      # this tool are gate-routed: system_terminate_instance (this one),
-      # system_create_instance_pool and system_update_instance_pool
-      # (IMP-067f39468350, declared below), system_replace_instance /
-      # system_reap_instance (IMP-4e49eb79c5e0, the DR lane's two doors, also
-      # below), system_delete_volume_snapshot (IMP-e025722ef14e),
-      # system_gitops_apply_proposal (IMP-0b4f18ae4384), system_cordon_instance /
-      # system_uncordon_instance (IMP-0467eee9fc57),
-      # system_gitops_register_repository (SWEEP-2026-09-03) and the three
-      # disk-image verbs system_set_default_disk_image_publication /
-      # system_revert_disk_image / system_set_disk_image_retention (HIER-P2H),
-      # and the four release verbs system_dispatch_module_build_batch /
-      # system_promote_module_version / system_rollback_module_version /
-      # system_deploy_platform (HIER-P2B-ENG, on core's engineering categories).
-      # The authoritative census is
+      # SCOPE, stated so this is not read as more than it is. Many verbs on this
+      # tool are gate-routed: system_terminate_instance (this one), the instance-
+      # pool, DR-lane, disk-image, release and cordon verbs declared below, and
+      # the destructive verbs the c13-2 batches (E-A to E-D) routed through
+      # Ai::Executors::DeferredToolCall — including system_destroy_instance,
+      # system_stop_instance, system_reboot_instance, system_drain_instance,
+      # system_drain_instance_pool, system_recycle_pool and
+      # system_upgrade_boot_image, and system_platform_resilience for op
+      # drain_instance only (`ungated_when`). The authoritative census is
       # server/spec/services/ai/tools/action_declaration_completeness_spec.rb
       # (GATE_ROUTED_ACTIONS) in core, which reds when the DECLARATIONS drift
-      # from that list — this sentence is a pointer to it, not a second oracle.
+      # from that list — this paragraph is a pointer to it, not a second oracle.
       # Nothing else on this tool meets a gate.
       # The same ProvisioningService.terminate_instance call is still reachable
-      # UNGATED from sibling verbs on this tool — system_recycle_pool,
-      # system_drain_instance_pool and system_return_pooled_instance (all via
-      # System::InstancePoolService#terminate_member) and system_reap_agent_fleet
-      # (System::AgentFleetMissionService) — plus several skill executors that
-      # call the service below this chokepoint entirely. Each is mapped to
+      # from verbs that are not gated: system_return_pooled_instance (via
+      # System::InstancePoolService#terminate_member) and the skill executors
+      # that call the service below this chokepoint entirely. Each is mapped to
       # system.instances.control, the SAME permission this action checks, so a
       # caller holding exactly that credential can still destroy instances with
       # no policy evaluation by naming a different verb.
       #
-      # PARTIALLY narrowed by the Environment campaign's increment 7, and only
-      # for one of the four: system_recycle_pool passes `actor:` by PRINCIPAL, so
-      # an agent calling it is subject to the pool plane's own escalation rules
+      # system_recycle_pool passes `actor:` by PRINCIPAL, so an agent calling it
+      # is subject to the pool plane's own escalation rules
       # (InstancePoolService#plane_withholds_destruction) exactly as the 60s
-      # sweep is, while a real user is not. That is a plane consult, NOT a gate —
-      # nothing parks, nothing replays. drain, return_pooled_instance and
-      # reap_agent_fleet still evaluate no policy at all. Gate-routing them needs
-      # an executor + replay contract this increment does not own.
+      # sweep is, while a real user is not. It is now ALSO gate-routed (c13-2
+      # batch E-D), which is a separate control from that plane consult.
       #
       # system_destroy_instance is NOT declared here. It is a registry-row
       # cascade delete, not a provider terminate: no seeded action_category
@@ -944,7 +933,11 @@ module Ai
                      executor_class: "Ai::Executors::DeferredToolCall",
                      gate_context: :dispatch_module_build_batch_gate_context,
                      on_proceed: :deferred_tool_call_result
-      declare_action "system_drain_instance", mutating: true, destructive: true
+      declare_action "system_drain_instance", mutating: true, destructive: true,
+                     action_category: "system.instance_drain",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_drain_instance_pool", mutating: true, destructive: true,
                      action_category: "system.instance_pool_drain",
                      executor_class: "Ai::Executors::DeferredToolCall",
@@ -1067,7 +1060,16 @@ module Ai
       declare_action "system_module_publication_integrity", mutating: false
       declare_action "system_module_publish_target", mutating: false
       declare_action "system_platform_maintenance", mutating: true
-      declare_action "system_platform_resilience", mutating: true, returns: "the skill executor's result for the op", refuses: "op is missing"
+      # c13-2 batch E-D — gated for op=drain_instance ONLY, under the same
+      # category as system_drain_instance (it reaches the same executor drain).
+      # `ungated_when` is the existing per-payload seam (see system_deploy_platform):
+      # scale and failover_check dispatch to #call exactly as before.
+      declare_action "system_platform_resilience", mutating: true, returns: "the skill executor's result for the op", refuses: "op is missing",
+                     action_category: "system.instance_drain",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :platform_resilience_drain_gate_context,
+                     on_proceed: :deferred_tool_call_result,
+                     ungated_when: :platform_resilience_not_drain?
       # `mutating: true`, not false: CompositeHealthProbe#call_and_persist!
       # (System::Platform::CompositeHealthProbe) writes a PlatformHealthSnapshot
       # row on every invocation, exactly the readOnlyHint precedent
@@ -1154,7 +1156,11 @@ module Ai
                      on_proceed: :deferred_tool_call_result
       declare_action "system_readvance_module_build_batch", mutating: true
       declare_action "system_recent_signals", mutating: false, returns: "events, count and the live channel name"
-      declare_action "system_recycle_pool", mutating: true, destructive: true
+      declare_action "system_recycle_pool", mutating: true, destructive: true,
+                     action_category: "system.instance_pool_recycle",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_refresh_instance_modules", mutating: true
       declare_action "system_release_ci_runner", mutating: true, family: "devops", returns: "ci_runner_lease, re-read"
       # IMP-4e49eb79c5e0 — THE DR LANE'S FIRST DOOR (the additive half).
@@ -1410,7 +1416,11 @@ module Ai
       declare_action "system_update_template", mutating: true
       declare_action "system_update_template_module", mutating: true
       declare_action "system_update_volume", mutating: true, family: "storage", returns: "volume, full record", refuses: "no mutable field is supplied"
-      declare_action "system_upgrade_boot_image", mutating: true, destructive: true
+      declare_action "system_upgrade_boot_image", mutating: true, destructive: true,
+                     action_category: "system.task.upgrade_boot_image",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_validate_module_manifest", mutating: false
       declare_action "system_wait_for", mutating: false, returns: "converged, timed_out and the rollout snapshot: instance_count, converged_count and the pending nodes", refuses: "module_version_id or environment is missing or not in this account, or the version has no oci_digest"
 
@@ -7725,6 +7735,31 @@ module Ai
         success_result(result[:data])
       end
 
+      # The op the call names, read exactly as #platform_resilience reads it.
+      def platform_resilience_op(params)
+        (params[:op].presence || params[:resilience_action].presence).to_s
+      end
+
+      # The ungated arm of system_platform_resilience: every op but drain_instance
+      # (including a missing op, which #platform_resilience refuses inline).
+      def platform_resilience_not_drain?(params)
+        platform_resilience_op(params) != "drain_instance"
+      end
+
+      # The drain op's gate context. The executor demands system.instances.control
+      # for a drain (the wrapper's own grant is system.platform.scale); that check
+      # is re-applied here so a caller who could only be refused on replay parks
+      # nothing. Replay re-runs the executor as the original caller, which checks
+      # it again.
+      def platform_resilience_drain_gate_context(params)
+        if @user && !@user.has_permission?("system.instances.control")
+          raise CallerFacingError,
+                "Draining an instance stops it, which requires the system.instances.control permission"
+        end
+
+        deferred_tool_call_context(params)
+      end
+
       def platform_resilience(params)
         op = params[:op].presence || params[:resilience_action].presence
         return error_result("op is required (drain_instance | scale | failover_check)") if op.blank?
@@ -8967,8 +9002,9 @@ module Ai
       # forcing the phase is the person a plane's escalation exists to reach, so
       # the plane does not withhold from them. An AGENT principal takes the
       # :reaper branch and is withheld on a protected plane exactly as the 60s
-      # sweep is — the verb is not gate-routed yet (see the census above
-      # #declare_action), so this is the only place that distinction can be made.
+      # sweep is. The verb is also gate-routed since c13-2 batch E-D
+      # (system.instance_pool_recycle, replayed as the original caller), so a
+      # parked call re-derives the actor from that caller at replay.
       def recycle_pool(params)
         target_id = params[:pool_id].presence
         pool = ::System::InstancePool.where(account_id: @account.id).find(target_id)

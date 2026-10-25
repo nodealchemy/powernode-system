@@ -2552,9 +2552,12 @@ RSpec.describe Ai::Tools::SystemFleetTool do
       "-----END PUBLIC KEY-----"
     end
 
+    # c13-2 batch E-D: the verb parks for a caller, so the dispatcher behaviour is
+    # exercised past the gate (destructive_verbs_park_system_batch_d_spec.rb
+    # covers the park).
     def call_with_user(action, **rest)
-      user_tool.execute(params: { action: action }.merge(rest))
-end
+      user_tool.send(:call, { action: action }.merge(rest))
+    end
 
     # IMP-01a07b6c. THE DOOR, not the dispatcher: INV-1 was enforced only on
     # the fleet drift-rollout executor's plan-time partition, and this verb
@@ -3229,7 +3232,7 @@ end
         .with(instance: an_object_having_attributes(id: instance.id), action: :stop)
         .and_return(::System::Runtime::Result.ok(data: { status: "stopped" }))
 
-      r = call("system_drain_instance", instance_id: instance.id)
+      r = call_direct("system_drain_instance", instance_id: instance.id)
 
       expect(r[:success]).to be true
       expect(r[:data][:drained]).to be true
@@ -3241,7 +3244,7 @@ end
       allow(::System::InstanceControlService).to receive(:execute)
         .and_return(::System::Runtime::Result.err(error: "instance is under an operator ops hold"))
 
-      r = call("system_drain_instance", instance_id: instance.id)
+      r = call_direct("system_drain_instance", instance_id: instance.id)
 
       expect(r[:success]).to be false
       expect(r[:error]).to include("ops hold")
@@ -3252,7 +3255,7 @@ end
       # template is exactly the cross-account shape the environment check refuses.
       other_node = create(:system_node, account: create(:account), name: "other")
       other = create(:system_node_instance, :running, node: other_node)
-      r = call("system_drain_instance", instance_id: other.id)
+      r = call_direct("system_drain_instance", instance_id: other.id)
       expect(r[:success]).to be false
     end
   end
@@ -6591,7 +6594,7 @@ end
     # One of the three verbs that were already correct — pinned so a future
     # "make them consistent" edit cannot regress it in the other direction.
     it "leaves the already-correct system_recycle_pool sibling one level deep" do
-      r = call("system_recycle_pool", pool_id: pool.id)
+      r = call_direct("system_recycle_pool", pool_id: pool.id)
       expect(r[:success]).to be true
       expect(r[:data].keys).to contain_exactly(:pool, :recycle_result)
     end

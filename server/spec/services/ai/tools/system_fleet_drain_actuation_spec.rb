@@ -22,8 +22,11 @@ RSpec.describe Ai::Tools::SystemFleetTool, "system_drain_instance actuation" do
   let(:instance) { create(:system_node_instance, :running, node: node, account: account) }
   let(:tool)     { described_class.new(account: account, internal: true) }
 
+  # c13-2 batch E-D: system_drain_instance now parks for approval, so the
+  # actuation is exercised past the gate (parking is covered by
+  # destructive_verbs_park_system_batch_d_spec.rb).
   def call(action, **rest)
-    tool.execute(params: { action: action }.merge(rest))
+    tool.send(:call, { action: action }.merge(rest))
   end
 
   def stub_stop_ok!

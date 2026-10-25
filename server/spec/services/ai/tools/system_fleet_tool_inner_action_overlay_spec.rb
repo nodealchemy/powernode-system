@@ -34,6 +34,14 @@ RSpec.describe "instance principal → SystemFleetTool inner-action ops" do
   let(:account) { create(:account) }
   let(:node_instance) { double("NodeInstance", id: SecureRandom.uuid, account: account) }
 
+  # Forces Ai::AutonomyGate's :proceed branch for the approval-gated drain op
+  # (c13-2 batch E-D), so these examples keep exercising #execute.
+  def auto_approve_policy!
+    allow_any_instance_of(::Ai::InterventionPolicyService).to receive(:resolve).and_return(
+      { policy: "auto_approve", channels: [], conditions: {}, record: nil }
+    )
+  end
+
   # The grant an operator would actually write: the benign composer name, and
   # nothing else. Both names are non-destroy-shaped, so may_invoke? clears them.
   let(:granted_names) do
@@ -208,10 +216,11 @@ RSpec.describe "instance principal → SystemFleetTool inner-action ops" do
     # entry-point mapping. A user holding only the entry-point grant is refused
     # by the executor (pinned in platform_resilience_executor_spec.rb); this
     # file is about the OVERLAY, so its operator holds what the drain needs.
+    # system.nodes.read is the tool floor a parked drain re-checks at replay (c13-2 batch E-D).
     let(:operator) do
       create(:user, account: account,
                     permissions: %w[system.platform.read system.platform.scale
-                                    system.instances.control])
+                                    system.instances.control system.nodes.read])
     end
 
     {
@@ -228,6 +237,11 @@ RSpec.describe "instance principal → SystemFleetTool inner-action ops" do
         it "runs #{action} op #{op.inspect} for a user" do
           spy = executor_spy_class.new
           allow(spec[:executor]).to receive(:new).and_return(spy)
+
+          # c13-2 batch E-D: resilience op=drain_instance is approval-gated
+          # (destructive_verbs_park_system_batch_d_spec.rb covers the park). The
+          # proceed policy keeps the op running through #execute here.
+          auto_approve_policy! if action == "system_platform_resilience" && op == "drain_instance"
 
           result = ::Ai::Tools::SystemFleetTool
                      .new(account: account, user: operator)
@@ -256,6 +270,10 @@ RSpec.describe "instance principal → SystemFleetTool inner-action ops" do
       allow(::System::InstanceControlService).to receive(:execute)
         .and_return(::System::Runtime::Result.ok(data: { status: "stopped" }))
 
+      # The op is approval-gated since c13-2 batch E-D; a proceed policy runs it
+      # inline through #execute (the park itself is in the batch D spec).
+      auto_approve_policy!
+
       result = ::Ai::Tools::SystemFleetTool
                  .new(account: account, user: operator)
                  .execute(params: { action: "system_platform_resilience",
@@ -282,18 +300,19 @@ RSpec.describe "instance principal → SystemFleetTool inner-action ops" do
       allow(::System::InstanceControlService).to receive(:execute)
         .and_return(::System::Runtime::Result.ok(data: { status: "stopped" }))
 
+      # The op is approval-gated since c13-2 batch E-D and an in-process caller
+      # has no bypass (BaseTool documents none), so through #execute it parks
+      # rather than draining; no reconciler reaches this op through the tool
+      # (DecisionEngine drives the executor and services directly).
       result = ::Ai::Tools::SystemFleetTool
                  .new(account: account, user: nil, internal: true)
                  .execute(params: { action: "system_platform_resilience",
                                     op: "drain_instance", instance_id: target.id }
                             .with_indifferent_access)
 
-      expect(result[:success]).to be true
-      expect(::System::InstanceControlService).to have_received(:execute)
-        .with(instance: an_object_having_attributes(id: target.id), action: :stop)
-      event = ::System::FleetEvent.find_by(kind: "platform.resilience.drain_started",
-                                           node_instance_id: target.id)
-      expect(event&.payload&.dig("by_user")).to be_nil
+      expect(result).to include(success: true)
+      expect(result[:data]).to include(pending: true, action_category: "system.instance_drain")
+      expect(::System::InstanceControlService).not_to have_received(:execute)
     end
   end
 

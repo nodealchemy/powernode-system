@@ -276,23 +276,4 @@ RSpec.describe "c13-2 batch E-B destructive system fleet verbs park", type: :ser
       expect(::System::ProviderVolume.where(id: volume.id)).to exist
     end
   end
-
-  describe "deliberately untouched (held by operator decision)" do
-    HELD = {
-      "system_upgrade_boot_image" => Ai::Tools::SystemFleetTool,
-      "system_drain_instance" => Ai::Tools::SystemFleetTool,
-      "system_recycle_pool" => Ai::Tools::SystemFleetTool,
-      "system_delete_architecture" => Ai::Tools::SystemArchitectureCatalogTool
-    }.freeze
-
-    HELD.each do |action, klass|
-      it "leaves #{action} ungated and on the agents' denied list" do
-        decl = klass.declared_action(action)
-
-        expect(decl[:executor_class]).to be_nil
-        expect(klass.may_park?(decl)).to be(false)
-        expect(Ai::ClaudeExport::ThinLoader::DENIED_DESTRUCTIVE_ACTIONS).to include(action)
-      end
-    end
-  end
 end

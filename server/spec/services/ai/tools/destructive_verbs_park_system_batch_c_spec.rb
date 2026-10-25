@@ -318,23 +318,4 @@ RSpec.describe "c13-2 batch E-C destructive system verbs park", type: :service d
       expect(acted).to be_empty
     end
   end
-
-  describe "deliberately untouched (held by operator decision)" do
-    HELD = {
-      "system_upgrade_boot_image" => FLEET,
-      "system_drain_instance" => FLEET,
-      "system_recycle_pool" => FLEET,
-      "system_delete_architecture" => Ai::Tools::SystemArchitectureCatalogTool
-    }.freeze
-
-    HELD.each do |action, klass|
-      it "leaves #{action} ungated and on the agents' denied list" do
-        decl = klass.declared_action(action)
-
-        expect(decl[:executor_class]).to be_nil
-        expect(klass.may_park?(decl)).to be(false)
-        expect(Ai::ClaudeExport::ThinLoader::DENIED_DESTRUCTIVE_ACTIONS).to include(action)
-      end
-    end
-  end
 end

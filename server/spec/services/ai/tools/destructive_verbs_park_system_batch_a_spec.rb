@@ -200,11 +200,4 @@ RSpec.describe "c13-2 batch E-A destructive system verbs park", type: :service d
       expect(::System::Node.where(id: foreign.id)).to exist
     end
   end
-
-  describe "deliberately untouched" do
-    it "leaves system_delete_architecture ungated (held by operator decision)" do
-      decl = Ai::Tools::SystemArchitectureCatalogTool.declared_action("system_delete_architecture")
-      expect(decl[:executor_class]).to be_nil
-    end
-  end
 end

@@ -42,6 +42,14 @@ RSpec.describe Ai::Tools::SystemArchitectureCatalogTool do
       .execute(params: { action: action }.merge(rest))
   end
 
+  # c13-2 batch E-D: system_delete_architecture parks for a caller, so the
+  # handler is exercised past the gate (destructive_verbs_park_system_batch_d_spec.rb
+  # covers the park).
+  def call_as_direct(user, action, **rest)
+    described_class.new(account: account, user: user)
+      .send(:call, { action: action }.merge(rest))
+  end
+
   # ── action_definitions registration ────────────────────────────────────
 
   describe ".action_definitions" do
@@ -165,7 +173,7 @@ RSpec.describe Ai::Tools::SystemArchitectureCatalogTool do
     end
 
     it "delete_architecture rejects canonical rows even with manage permission" do
-      r = call_as(manage_user, "system_delete_architecture", architecture_id: canonical_amd64.id)
+      r = call_as_direct(manage_user, "system_delete_architecture", architecture_id: canonical_amd64.id)
       expect(r[:success]).to be false
       expect(r[:error]).to match(/canonical.*immutable/i)
       expect(System::NodeArchitecture.exists?(canonical_amd64.id)).to be true
@@ -184,7 +192,7 @@ RSpec.describe Ai::Tools::SystemArchitectureCatalogTool do
       expect(upd[:success]).to be true
       expect(System::NodeArchitecture.find(id).description).to eq("updated")
 
-      del = call_as(manage_user, "system_delete_architecture", architecture_id: id)
+      del = call_as_direct(manage_user, "system_delete_architecture", architecture_id: id)
       expect(del[:success]).to be true
       expect(System::NodeArchitecture.exists?(id)).to be false
     end

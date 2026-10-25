@@ -373,13 +373,13 @@ will stop something.
 | Verb | Autonomy gate | Declared policy | What actually runs it |
 |---|---|---|---|
 | Create pool | **Gated on both doors** — `Ai::GatedActions#gate_create!` (REST) and `declare_action` (MCP, IMP-067f39468350) | `system.instance_pool_create` → `require_approval` | `POST /api/v1/system/instance_pools` → `System::Executors::InstancePool::CreatePool`. The MCP verb `system_create_instance_pool` — the one Phase 1 above prescribes — parks under the same category and replays through `Ai::Executors::DeferredToolCall` |
-| Delete pool | **Gated on the REST route ONLY** — `gate!` | `system.instance_pool_delete` → `require_approval` | `DELETE /api/v1/system/instance_pools/:id` → `DeletePool`, which calls `pool.destroy!` — the row is DESTROYED, not archived. Until IMP-4de09f201a0f this column claimed the REST route "only sets status: archived", which was never true: the executor always destroyed the row and the closure's archive wrote to a row that was already gone (then 404'd on the reload). The MCP verb `system_delete_instance_pool` (Phase 5 above) is equally destructive and additionally **ungated** — that, not the blast radius, is the difference |
+| Delete pool | **Gated on the REST route ONLY** — `gate!` | `system.instance_pool_delete` → `require_approval` | `DELETE /api/v1/system/instance_pools/:id` → `DeletePool`, which calls `pool.destroy!` — the row is DESTROYED, not archived. Until IMP-4de09f201a0f this column claimed the REST route "only sets status: archived", which was never true: the executor always destroyed the row and the closure's archive wrote to a row that was already gone (then 404'd on the reload). The MCP verb `system_delete_instance_pool` (Phase 5 above) is equally destructive and, since c13-2 batch E-B, parks under the same category (`Ai::Executors::DeferredToolCall`) |
 | Update pool — ceiling raise | **Gated on both doors** — `gate_update!` (REST) and `declare_action` (MCP, IMP-067f39468350) | `system.instance_pool_ceiling_raise` → `require_approval` | `PATCH /api/v1/system/instance_pools/:id` with a **higher** `target_size` or `max_size` → `System::Executors::InstancePool::UpdatePool`. `system_update_instance_pool` resolves the same category per payload and replays through `Ai::Executors::DeferredToolCall`. Both doors carry the **replay baseline**: an approval that lands after someone lowered `target_size`/`max_size` inline (decreases are ungated) is REFUSED rather than writing the old high number back — re-submit against current state |
 | Update pool — archive | **Gated on both doors** — `gate_update!` (REST) and `declare_action` (MCP) | `system.instance_pool_archive` → `require_approval` | `PATCH {pool: {status: "archived"}}` → `UpdatePool`, or `system_update_instance_pool` with `status: "archived"`. This is the ONLY route to the archived state — the gated `destroy` destroys the row instead (IMP-4de09f201a0f) |
 | Update pool — everything else | **Ungated** | `system.instance_pool_update` → `notify_and_proceed` (no gate site reads it) | Size **decreases**, `min_size`, `description`, regions, metadata, `status: "paused"`/`"draining"` → `@pool.update!` inline, on **both** doors |
 | Replenish | **Ungated** | `system.instance_pool_replenish` → `auto_approve` | `POST .../:id/replenish` and `system_replenish_instance_pool`, both on `System::InstancePoolService.replenish!` |
-| Drain | **Ungated** | `system.instance_pool_drain` → `require_approval` | `POST .../:id/drain` and `system_drain_instance_pool`, both on `InstancePoolService.drain!` — the declared `require_approval` has no gate site to enforce it |
-| Recycle stale | **Ungated, but PLANE-SCOPED for an autonomous caller** (Environment campaign, incr. 7) | measured as `system.instance_terminate` — consulted, not gated | `POST .../:id/recycle_stale` and `system_recycle_pool`, both on `InstancePoolService.recycle_stale_members!` — this one **terminates members**. The reaper (and an AGENT calling the MCP verb) now asks the pool's plane whether it would escalate a terminate there, and on a plane that would — protected (`ops`), supervised (`prod`), or listing the category in `approval_required_categories` — it withholds: members are flagged `pool_recycle_withheld_at`, one `system.pool.recycle_withheld_by_plane` event is emitted, and the summary reports `withheld_by_plane`. `dev` and `ci` churn exactly as before. A real USER forcing the phase through `system_recycle_pool` is not withheld — a person is what the escalation exists to reach |
+| Drain | **MCP gated (c13-2 batch E-C); REST route ungated** | `system.instance_pool_drain` → `require_approval` | `system_drain_instance_pool` parks and replays through `Ai::Executors::DeferredToolCall`; `POST .../:id/drain` still calls `InstancePoolService.drain!` with no gate site |
+| Recycle stale | **MCP gated (c13-2 batch E-D); REST route and the 60 s sweep ungated, PLANE-SCOPED for an autonomous caller** (Environment campaign, incr. 7) | `system_recycle_pool` parks under `system.instance_pool_recycle` (unseeded, so `require_approval`); the REST route and the sweep are measured as `system.instance_terminate` — consulted, not gated | `POST .../:id/recycle_stale` (what the worker sweep calls) and `system_recycle_pool` (which replays as the original caller after approval), both on `InstancePoolService.recycle_stale_members!` — this one **terminates members**. The reaper (and an AGENT calling the MCP verb) now asks the pool's plane whether it would escalate a terminate there, and on a plane that would — protected (`ops`), supervised (`prod`), or listing the category in `approval_required_categories` — it withholds: members are flagged `pool_recycle_withheld_at`, one `system.pool.recycle_withheld_by_plane` event is emitted, and the summary reports `withheld_by_plane`. `dev` and `ci` churn exactly as before. A real USER forcing the phase through `system_recycle_pool` is not withheld — a person is what the escalation exists to reach |
 | Acquire | **Ungated** | `system.instance_pool_acquire` → `auto_approve` | `system_acquire_pooled_instance`, plus four internal callers, on `InstancePoolService.acquire!` |
 
 Two qualifications on the word "ungated", both of which shrink it further:
@@ -394,17 +394,16 @@ Two qualifications on the word "ungated", both of which shrink it further:
   Recycle-stale row above. That is not a gate — a sweep with no principal has
   nobody to park an approval for — it is the reaper declining to destroy where
   the plane says a person decides.
-- **On MCP, three fleet verbs are gated.** `SystemFleetTool`'s `declare_action`
-  calls carrying `action_category`/`executor_class`/`gate_context`/`on_proceed`
-  — the quartet `BaseTool#gated_action?` reads — are
-  `system_terminate_instance`, `system_create_instance_pool` and
-  `system_update_instance_pool` (IMP-067f39468350). Every OTHER pool verb is
-  declared `mutating: true` and nothing else, so `gated_action?` is false for
-  it: `system_delete_instance_pool`, `system_drain_instance_pool`,
-  `system_recycle_pool`, `system_replenish_instance_pool` and
-  `system_acquire_pooled_instance` still meet no gate. That remainder is a
-  known, tracked gap in the governance registry rollout, not a per-pool
-  decision — see the SCOPE note in `system_fleet_tool.rb`.
+- **On MCP, most destructive fleet verbs are gated.** `SystemFleetTool`'s
+  `declare_action` calls carrying `action_category`/`executor_class`/
+  `gate_context`/`on_proceed` — the quartet `BaseTool#gated_action?` reads — now
+  include `system_terminate_instance`, `system_create_instance_pool`,
+  `system_update_instance_pool` (IMP-067f39468350) and, from the c13-2
+  batches, `system_delete_instance_pool`, `system_drain_instance_pool` and
+  `system_recycle_pool`. The pool verbs that still meet no gate are
+  `system_replenish_instance_pool` and `system_acquire_pooled_instance`. The
+  authoritative list is `GATE_ROUTED_ACTIONS` in core's
+  `action_declaration_completeness_spec.rb`.
 
 A third qualification, on where you can *retune* any of this. The Autonomy
 modal edits `Ai::InterventionPolicy` rows, and since IMP-5a2b801f3386 the

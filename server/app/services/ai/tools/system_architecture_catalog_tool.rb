@@ -33,7 +33,11 @@ module Ai
       # BaseTool#gated_action? false, so #execute still routes to #call and
       # behaviour is unchanged. Gate wiring (categories/executors) is APO-1e.
       declare_action "system_create_architecture", mutating: true
-      declare_action "system_delete_architecture", mutating: true, destructive: true
+      declare_action "system_delete_architecture", mutating: true, destructive: true,
+                     action_category: "system.architecture.delete",
+                     executor_class: "Ai::Executors::DeferredToolCall",
+                     gate_context: :deferred_tool_call_context,
+                     on_proceed: :deferred_tool_call_result
       declare_action "system_get_architecture", mutating: false,
                      returns: "architecture: names, family, aliases, flags and usage counts for node_platforms, " \
                               "package_repositories and packages",
@@ -142,6 +146,17 @@ module Ai
       end
 
       protected
+
+      # Hoists the per-action permission check so a GATED action, which returns
+      # from BaseTool#execute before #call, is authorized exactly as an ungated
+      # one is: before the park and again at replay (c13-2 batch E-D). Same seam
+      # as SystemFleetTool#authorization_error.
+      def authorization_error(params)
+        action = routed_action_name(params)
+        return nil if action_permitted?(action)
+
+        error_result("permission denied: #{required_perm_for(action)} required")
+      end
 
       def call(params)
         action = params[:action]
