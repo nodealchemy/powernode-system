@@ -231,10 +231,20 @@ nobody else holds, is ungated. A return of a member that still holds a live CI
 runner lease (`leased`, `registered`, `busy` or `releasing`) would terminate the
 VM under that lease, so it parks through `Ai::Executors::DeferredToolCall` under
 `system.task.terminate` (the category `system_terminate_instance` uses; seeded
-`require_approval`) and needs a person's own session to approve. Release the
-lease with `system_release_ci_runner` first to avoid the park. That verb is
-ungated too, except `force: true` (releasing a runner that is mid-build), which
-parks under the same category.
+`require_approval`) and needs a person's own session to approve. The approved
+call closes each lease through `CiRunnerLeaseService.release!(force: true)`
+(runner deregistered, lease `released`) and recycles the member once. It parks
+**on purpose even in a `reuse_without_reset` pool**: reusing a leased member
+would put it back to `ready` with its runner still registered, which is worse
+than the recycle.
+
+To avoid the park, release the lease with `system_release_ci_runner`: that
+alone deregisters the runner and returns and recycles the member, so no
+separate return is needed. It is ungated for an idle runner and parks when
+`force` is `true` or the lease may be mid-build (status `busy` or `releasing`, a
+build task still running, or a runner row that is missing). A runner that reads
+busy is refused inline without `force`, and an unknown or finished lease is
+answered inline too, so neither parks.
 
 > ### ⚠️ `pool_id` is NOT accepted here, and B does not "return to ready" by default
 >
@@ -390,6 +400,7 @@ will stop something.
 | Replenish | **Ungated** | `system.instance_pool_replenish` → `auto_approve` | `POST .../:id/replenish` and `system_replenish_instance_pool`, both on `System::InstancePoolService.replenish!` |
 | Drain | **MCP gated (c13-2 batch E-C); REST route ungated** | `system.instance_pool_drain` → `require_approval` | `system_drain_instance_pool` parks and replays through `Ai::Executors::DeferredToolCall`; `POST .../:id/drain` still calls `InstancePoolService.drain!` with no gate site |
 | Recycle stale | **MCP gated (c13-2 batch E-D); REST route and the 60 s sweep ungated, PLANE-SCOPED for an autonomous caller** (Environment campaign, incr. 7) | `system_recycle_pool` parks under `system.instance_pool_recycle` (unseeded, so `require_approval`); the REST route and the sweep are measured as `system.instance_terminate` — consulted, not gated | `POST .../:id/recycle_stale` (what the worker sweep calls) and `system_recycle_pool` (which replays as the original caller after approval), both on `InstancePoolService.recycle_stale_members!` — this one **terminates members**. The reaper (and an AGENT calling the MCP verb) now asks the pool's plane whether it would escalate a terminate there, and on a plane that would — protected (`ops`), supervised (`prod`), or listing the category in `approval_required_categories` — it withholds: members are flagged `pool_recycle_withheld_at`, one `system.pool.recycle_withheld_by_plane` event is emitted, and the summary reports `withheld_by_plane`. `dev` and `ci` churn exactly as before. A real USER forcing the phase through `system_recycle_pool` is not withheld — a person is what the escalation exists to reach |
+| Return / release (c13-4) | **MCP gated on the terminating path only** | `system.task.terminate` → `require_approval` | `system_return_pooled_instance` parks only when the member holds a live CI runner lease; `system_release_ci_runner` parks on `force` or a possibly mid-build lease. A healthy return or idle release stays ungated; both replay through `Ai::Executors::DeferredToolCall` and need a person's own session |
 | Acquire | **Ungated** | `system.instance_pool_acquire` → `auto_approve` | `system_acquire_pooled_instance`, plus four internal callers, on `InstancePoolService.acquire!` |
 
 Two qualifications on the word "ungated", both of which shrink it further:
